@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import BinaryIO
 
 from ..config import settings
 
@@ -29,12 +28,10 @@ class LocalStorage:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def save_upload(self, job_id: str, filename: str, stream: BinaryIO) -> Path:
+    def save_upload(self, job_id: str, filename: str, content: bytes) -> Path:
         safe_name = Path(filename).name or "image.jpg"
         target = self.job_uploads_dir(job_id) / safe_name
-        with target.open("wb") as f:
-            while chunk := stream.read(1024 * 1024):
-                f.write(chunk)
+        target.write_bytes(content)
         return target
 
     def model_path(self, job_id: str) -> Path:
