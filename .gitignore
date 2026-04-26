@@ -31,6 +31,13 @@ storage/models/
 storage/*.glb
 storage/*.gltf
 
+# Contexto bruto/local de conversa
+contexto.md
+
+# Assets 3D brutos baixados do Sketchfab.
+# Commitar apenas templates normalizados/finais ou usar Git LFS se precisar versionar binarios grandes.
+assets/templates/raw/
+
 # IDE / SO
 .idea/
 .vscode/

@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "description": "Catalogo inicial de templates 3D brutos para normalizacao no Blender.",
+  "templates": [
+    {
+      "id": "rectangular_basic",
+      "category": "rectangular",
+      "sourcePath": "raw/rectangular/rectangular_basic/scene.gltf",
+      "status": "raw",
+      "license": "CC-BY-4.0",
+      "requiresAttribution": true,
+      "notes": "Bom candidato principal para frascos retangulares genericos."
+    },
+    {
+      "id": "rectangular_modern_reference",
+      "category": "rectangular",
+      "sourcePath": "raw/rectangular/rectangular_modern_reference/scene.gltf",
+      "status": "raw_reference_only",
+      "license": "CC-BY-4.0",
+      "requiresAttribution": true,
+      "notes": "Modelo de referencia visual. Contem marca conhecida; usar com cuidado no produto final."
+    },
+    {
+      "id": "cylindrical_basic",
+      "category": "cylindrical",
+      "sourcePath": "raw/cylindrical/cylindrical_basic/scene.gltf",
+      "status": "raw",
+      "license": "CC-BY-4.0",
+      "requiresAttribution": true,
+      "notes": "Candidato para frascos altos com corpo arredondado."
+    },
+    {
+      "id": "square_compact",
+      "category": "square",
+      "sourcePath": "raw/square/square_compact/scene.gltf",
+      "status": "raw",
+      "license": "CC-BY-4.0",
+      "requiresAttribution": true,
+      "notes": "Candidato para frascos compactos/quadrados."
+    },
+    {
+      "id": "round_spherical",
+      "category": "round",
+      "sourcePath": "raw/round/round_spherical/scene.gltf",
+      "status": "raw",
+      "license": "CC-BY-4.0",
+      "requiresAttribution": true,
+      "notes": "Candidato para frascos redondos/esfericos."
+    },
+    {
+      "id": "ornamental_modernist",
+      "category": "ornamental",
+      "sourcePath": "raw/ornamental/ornamental_modernist/scene.gltf",
+      "status": "raw",
+      "license": "CC0-1.0",
+      "requiresAttribution": false,
+      "notes": "Template ornamental CC0; bom para testes sem obrigacao de credito."
+    }
+  ]
+}
