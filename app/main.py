@@ -8,16 +8,39 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .config import settings
+from .config import Settings, settings
 from .core.exceptions import register_exception_handlers
 from .core.logging import configure_logging, get_logger
 from .database import SessionFactory, create_all, engine
-from .modules.captures.processor import FakeProcessor
+from .modules.captures.processor import (
+    FakeProcessor,
+    Processor,
+    TemplateProcessor,
+)
 from .modules.captures.queue import ProcessingQueue
 from .modules.captures.router import router as captures_router
 from .modules.captures.service import CaptureService
 from .modules.health.router import router as health_router
 from .storage.local_storage import LocalStorage
+
+
+def build_processor(config: Settings = settings) -> Processor:
+    """Factory que materializa o Processor conforme `PROCESSOR_TYPE` do `.env`.
+
+    Centraliza o conhecimento de "qual processor usar" num só lugar — o resto
+    do sistema continua programando contra a ABC `Processor`.
+    """
+    if config.processor_type == "fake":
+        return FakeProcessor()
+    if config.processor_type == "template":
+        return TemplateProcessor(
+            blender_executable=config.blender_executable,
+            templates_dir=config.templates_dir,
+        )
+    # Pydantic Literal já barra valores fora desses dois antes daqui chegar,
+    # mas mantemos a guarda explícita para o caso de a Settings ser construída
+    # programaticamente em algum teste.
+    raise ValueError(f"processor_type inválido: {config.processor_type!r}")
 
 
 @asynccontextmanager
@@ -31,7 +54,7 @@ async def production_lifespan(app: FastAPI) -> AsyncIterator[None]:
     storage = LocalStorage()
     storage.ensure_dirs()
 
-    processor = FakeProcessor()
+    processor = build_processor()
     queue = ProcessingQueue()
     service = CaptureService(SessionFactory, storage, processor, queue)
 
@@ -39,7 +62,12 @@ async def production_lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.queue = queue
 
     queue.start(service.process_job)
-    log.info("Backend pronto em %s:%s", settings.app_host, settings.app_port)
+    log.info(
+        "Backend pronto em %s:%s (processor=%s)",
+        settings.app_host,
+        settings.app_port,
+        settings.processor_type,
+    )
 
     try:
         yield

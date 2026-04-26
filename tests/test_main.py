@@ -15,9 +15,10 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.config import Settings
 from app.database import Base
-from app.main import create_app
-from app.modules.captures.processor import FakeProcessor
+from app.main import build_processor, create_app
+from app.modules.captures.processor import FakeProcessor, TemplateProcessor
 from app.modules.captures.queue import ProcessingQueue
 from app.modules.captures.service import CaptureService
 from app.storage.local_storage import LocalStorage
@@ -110,3 +111,29 @@ class TestAppStructure:
         assert "/captures/{job_id}/status" in routes
         # StaticFiles aparece como Mount em /files.
         assert any(getattr(r, "path", "").startswith("/files") for r in app.routes)
+
+
+class TestBuildProcessorFactory:
+    def test_returns_fake_when_type_is_fake(self, tmp_path: Path):
+        cfg = Settings(processor_type="fake", storage_root=tmp_path)
+        processor = build_processor(cfg)
+        assert isinstance(processor, FakeProcessor)
+
+    def test_returns_template_when_type_is_template(self, tmp_path: Path):
+        cfg = Settings(
+            processor_type="template",
+            storage_root=tmp_path,
+            blender_executable=tmp_path / "blender.exe",
+            templates_dir=tmp_path / "templates",
+        )
+        processor = build_processor(cfg)
+        assert isinstance(processor, TemplateProcessor)
+        # Settings sao propagadas para o processor
+        assert processor.blender_executable == cfg.blender_executable
+        assert processor.templates_dir == cfg.templates_dir
+
+    def test_invalid_processor_type_rejected_by_pydantic(self, tmp_path: Path):
+        # Literal["fake","template"] no Settings barra valores invalidos antes
+        # de chegar no factory. Garantia da camada de config, nao do main.
+        with pytest.raises(Exception):  # pydantic.ValidationError
+            Settings(processor_type="meshroom", storage_root=tmp_path)

@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,6 +24,16 @@ class Settings(BaseSettings):
     storage_root: Path = Field(default=Path("./storage"))
 
     cors_origins: str = "*"
+
+    # ---- Pipeline 3D (Blender / TemplateProcessor) ----
+    # 'fake' = FakeProcessor (cubo sintetico, ~3s, sem deps externas).
+    # 'template' = TemplateProcessor (Blender headless customiza GLB, ~5-15s).
+    processor_type: Literal["fake", "template"] = "fake"
+
+    blender_executable: Path = Field(
+        default=Path(r"C:\Program Files\Blender Foundation\Blender 5.1\blender.exe")
+    )
+    templates_dir: Path = Field(default=Path("./assets/templates/normalized"))
 
     @property
     def cors_origin_list(self) -> list[str]:
