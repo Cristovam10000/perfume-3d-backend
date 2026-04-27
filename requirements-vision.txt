@@ -1,0 +1,18 @@
+# Dependencias do RembgBackgroundRemover e HomographyLabelExtractor (opcional).
+# Necessário quando BACKGROUND_REMOVER_TYPE=rembg ou LABEL_EXTRACTOR_TYPE=homography.
+#
+# ATENÇÃO: na primeira execução o rembg faz download de ~200MB de modelos ONNX.
+# Os modelos são cacheados em ~/.u2net/ e não precisam ser baixados novamente.
+#
+# Instalacao:
+#   pip install -r requirements-vision.txt
+#
+# GPU (opcional): em placas RTX (e.g. RTX 5050) instale onnxruntime-gpu
+# para ~5x de aceleração na remoção de fundo:
+#   pip install onnxruntime-gpu
+# (substitui o onnxruntime-cpu que vem como dep do rembg)
+
+rembg>=2.0.50
+opencv-python>=4.10
+numpy>=1.26
+pillow>=10.0
