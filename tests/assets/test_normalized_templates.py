@@ -19,7 +19,10 @@ import pytest
 BACK_ROOT = Path(__file__).resolve().parent.parent.parent
 TEMPLATES_DIR = BACK_ROOT / "assets" / "templates" / "normalized"
 
-REQUIRED_NODES = {"Bottle", "Cap", "Label"}
+REQUIRED_NODES = {"Bottle", "Label"}
+# `Cap` e `Liquid` sao opcionais — alguns templates do Sketchfab vem como
+# uma peca unica (frasco + tampa moldados juntos) e nao da pra separar.
+OPTIONAL_NODES = {"Cap", "Liquid"}
 REQUIRED_MATERIALS = {"LabelMaterial"}
 
 
