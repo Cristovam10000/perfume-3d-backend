@@ -13,6 +13,7 @@
 # (substitui o onnxruntime-cpu que vem como dep do rembg)
 
 rembg>=2.0.50
+onnxruntime>=1.23
 opencv-python>=4.10
 numpy>=1.26
 pillow>=10.0
