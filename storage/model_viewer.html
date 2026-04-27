@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Perfume 3D - Viewer Local</title>
+    <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f6eef2;
+        color: #24131c;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+
+      header {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        padding: 14px 18px;
+        background: #fff7fa;
+        border-bottom: 1px solid #ead7df;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 18px;
+        font-weight: 650;
+      }
+
+      select,
+      button {
+        height: 38px;
+        border-radius: 6px;
+        border: 1px solid #cfb7c2;
+        background: white;
+        color: #24131c;
+        padding: 0 10px;
+        font: inherit;
+      }
+
+      button {
+        cursor: pointer;
+      }
+
+      main {
+        display: grid;
+        grid-template-columns: 1fr 320px;
+        min-height: 0;
+      }
+
+      model-viewer {
+        width: 100%;
+        height: 100%;
+        min-height: 70vh;
+        background: #f6eef2;
+      }
+
+      aside {
+        padding: 18px;
+        background: #fff7fa;
+        border-left: 1px solid #ead7df;
+        overflow: auto;
+      }
+
+      .meta {
+        margin: 0 0 14px;
+        line-height: 1.45;
+      }
+
+      .hint {
+        color: #6e5964;
+        font-size: 14px;
+      }
+
+      @media (max-width: 880px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+
+        aside {
+          border-left: 0;
+          border-top: 1px solid #ead7df;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Viewer Local</h1>
+      <select id="modelSelect" aria-label="Modelo">
+        <optgroup label="Template V2 (novo - Feelin' Flame procedural)">
+          <option value="/files/models/preview_feeling_v2_customized.glb" selected>
+            V2 customizado — igual ao que o app vai gerar (cor #253D5E)
+          </option>
+          <option value="/templates/feeling_rectangular_blue.glb">
+            V2 puro — template sem customizar líquido
+          </option>
+        </optgroup>
+        <optgroup label="Versões antigas (V1) — pra comparar">
+          <option value="/files/models/0b94bc60-f7f7-43a8-8442-0628ea827aae.glb">
+            V1 original do app — cylindrical com foto colada
+          </option>
+          <option value="/files/models/candidates/0b94bc60-f7f7-43a8-8442-0628ea827aae/rectangular_basic_no_label.glb">
+            V1 candidato — rectangular_basic sem label
+          </option>
+          <option value="/files/models/candidates/0b94bc60-f7f7-43a8-8442-0628ea827aae/feeling_rectangular_blue.glb">
+            V1 candidato — procedural azul (versão ruim)
+          </option>
+          <option value="/files/models/candidates/0b94bc60-f7f7-43a8-8442-0628ea827aae/cylindrical_basic_no_label.glb">
+            V1 candidato — cylindrical_basic sem label
+          </option>
+          <option value="/files/models/candidates/0b94bc60-f7f7-43a8-8442-0628ea827aae/square_compact_no_label.glb">
+            V1 candidato — square_compact sem label
+          </option>
+        </optgroup>
+        <optgroup label="Outros templates puros (V2 mount)">
+          <option value="/templates/rectangular_basic.glb">
+            rectangular_basic
+          </option>
+          <option value="/templates/cylindrical_basic.glb">
+            cylindrical_basic
+          </option>
+          <option value="/templates/square_compact.glb">
+            square_compact
+          </option>
+          <option value="/templates/round_spherical.glb">
+            round_spherical
+          </option>
+          <option value="/templates/ornamental_modernist.glb">
+            ornamental_modernist
+          </option>
+        </optgroup>
+      </select>
+      <button id="resetCamera">Reset câmera</button>
+    </header>
+
+    <main>
+      <model-viewer
+        id="viewer"
+        src="/files/models/preview_feeling_v2_customized.glb"
+        alt="Modelo 3D do perfume"
+        camera-controls
+        auto-rotate
+        shadow-intensity="1"
+        exposure="1.05"
+        environment-image="neutral"
+        camera-orbit="20deg 75deg 105%"
+      ></model-viewer>
+
+      <aside>
+        <p class="meta"><strong>Template ativo:</strong><br />feeling_rectangular_blue (V2 procedural)</p>
+        <p class="meta"><strong>Cor do líquido aplicada:</strong><br />#253D5E (do último job real)</p>
+        <p class="meta"><strong>O que esperar:</strong><br />corpo de vidro azul com bevels, base preta, tampa chunky e label dourada com "Feelin' Flame FOR HIM" + emblema HINODE.</p>
+        <p class="hint">Use o mouse para girar e dar zoom. Troque no seletor para comparar com o V1 antigo ou com outros templates puros.</p>
+      </aside>
+    </main>
+
+    <script>
+      const viewer = document.querySelector("#viewer");
+      const select = document.querySelector("#modelSelect");
+      const reset = document.querySelector("#resetCamera");
+
+      select.addEventListener("change", () => {
+        viewer.src = select.value;
+      });
+
+      reset.addEventListener("click", () => {
+        viewer.cameraOrbit = "35deg 70deg 105%";
+        viewer.fieldOfView = "auto";
+      });
+    </script>
+  </body>
+</html>
