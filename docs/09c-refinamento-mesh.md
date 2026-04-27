@@ -1,0 +1,123 @@
+# 09c — Refinamento de Malha: Shader de Vidro PBR
+
+Pós-processador que melhora visualmente os GLBs gerados pelo `Hunyuan3DProcessor`,
+substituindo o shader opaco do corpo do frasco por vidro fisicamente correto.
+
+> **Status:** disponível como componente standalone (Fase 3). Composição com
+> `Hunyuan3DProcessor` via pipeline unificado chega na Fase 4.
+
+## O problema visual
+
+O Hunyuan3D-2mv produz GLBs onde o "vidro" do frasco é um material **opaco azulado** — a IA
+interpreta as reflexões do ambiente como cor de superfície, pintando-as como textura.
+
+O resultado bruto tem três características:
+
+1. **Corpo opaco**: o vidro transparente vira uma superfície sólida com aparência plástica.
+2. **Label boa**: a textura da label aplicada pela IA geralmente está usável.
+3. **Tampa variável**: pode vir fundida ao corpo ou razoavelmente separada, dependendo do ângulo das fotos.
+
+O `BlenderMeshRefiner` corrige o ponto 1 preservando o ponto 2.
+
+## Visão geral
+
+```
+GLB bruto (Hunyuan3D)
+    └── BlenderMeshRefiner
+            │  subprocess Blender headless
+            │  refine_ai_mesh.py
+            │
+            ├── identificar_corpo_vidro()   → maior mesh sem Image Texture
+            ├── aplicar_shader_vidro()      → Principled BSDF vidro PBR
+            ├── detectar_tampa()            → best-effort por posição Z
+            └── exportar GLB refinado
+            ▼
+    GLB refinado (vidro transparente + label preservada)
+```
+
+## Heurística: como o corpo é identificado
+
+O script `refine_ai_mesh.py` usa dois critérios em sequência:
+
+1. **Filtra labels**: descarta meshes cujo material tem `Image Texture → Base Color`
+   (qualquer material com textura conectada ao Base Color é provavelmente a label).
+2. **Maior área**: dos candidatos restantes, seleciona o de maior área de superfície
+   total (produto da soma das áreas das faces pelo fator de escala do objeto).
+
+Se todos os materiais tiverem textura (caso raro em saídas do Hunyuan), o GLB é
+exportado sem alterações e um aviso é registrado.
+
+## Parâmetros do shader de vidro
+
+| Parâmetro | Valor | Justificativa |
+|---|---|---|
+| `IOR` | 1.45 | Índice de refração do vidro boro-silicato comum em perfumaria |
+| `Transmission Weight` | 1.0 | Transmissão total — frasco é transparente ao raio de luz |
+| `Roughness` | 0.05 | Vidro polido; valor > 0.1 produz aparência de vidro fosco |
+| `Base Color` | branco (1,1,1,1) | Sem tinte; cor percebida vem do líquido e do ambiente |
+| `Alpha` | 0.3 | Visibilidade parcial no preview Blender — não afeta exportação PBR |
+
+## Tampa (best-effort)
+
+A tampa é identificada como o mesh sem textura de maior coordenada Z após a importação
+do glTF (que converte Y-up → Z-up no Blender). Só aplica o shader de plástico escuro se:
+
+- O objeto está claramente acima do corpo (diferença Z > 20% da altura da bounding box).
+- O material não tem textura (preserva tampas texturizadas intactas).
+
+Se a heurística for inconclusiva, o mesh é ignorado sem erro.
+
+## Limitações
+
+- **Geometria não é alterada**: apenas materiais são substituídos. Imperfeições
+  na malha (faces duplas, tampa fundida ao corpo) persistem após o refinamento.
+- **Cap detection fraca**: em frascos com tampa integrada ou muito próxima ao corpo,
+  a heurística de posição Z não é conclusiva e a tampa é ignorada.
+- **Frascos muito ornamentais**: se o frasco tiver muitas partes com área similar
+  (ornamentos, gravações), o corpo pode ser identificado incorretamente.
+- **Dependência do Blender**: requer Blender 5.1+ instalado na mesma máquina que o backend.
+  Use a variável `BLENDER_EXECUTABLE` para apontar para a instalação correta.
+- **Idempotência**: rodar o refinador duas vezes no mesmo GLB produz o mesmo resultado
+  — o script remove conexões de textura existentes antes de aplicar os novos parâmetros.
+
+## Uso manual (smoke test)
+
+```bash
+# Com qualquer GLB como entrada (ex: template normalizado como stand-in):
+blender --background --python app/modules/captures/blender_scripts/refine_ai_mesh.py -- \
+    --input assets/templates/normalized/rectangular_basic.glb \
+    --output /tmp/refined.glb
+
+# Com cor de líquido:
+blender --background --python app/modules/captures/blender_scripts/refine_ai_mesh.py -- \
+    --input raw_hunyuan_output.glb \
+    --output refined.glb \
+    --liquid-color "#4466AA"
+```
+
+## Visualização comparativa
+
+O script `scripts/blender/preview_refinement.py` renderiza antes e depois lado a lado:
+
+```bash
+blender --background --python scripts/blender/preview_refinement.py -- \
+    --before raw_hunyuan_output.glb \
+    --after  refined.glb \
+    --output comparison_before_after.png
+```
+
+Útil para slides de defesa do TCC.
+
+## Próximos passos
+
+- **Fase 4**: `CaptureService` compõe `Hunyuan3DProcessor` → `BlenderMeshRefiner` → GLB final,
+  roteando jobs com base no `template_id` e flags do usuário. Também integra
+  `BackgroundRemover` e `LabelExtractor` no fluxo.
+
+## Leituras relacionadas
+
+- [09b — Pipeline IA: Hunyuan3D-2mv](09b-pipeline-ai-hunyuan.md) (gera o GLB bruto)
+- [09 — Pipeline 3D (TemplateProcessor e Blender)](09-pipeline-3d.md) (alternativa com templates)
+- Código: [`app/modules/captures/mesh_refiner.py`](../app/modules/captures/mesh_refiner.py)
+- Script Blender: [`app/modules/captures/blender_scripts/refine_ai_mesh.py`](../app/modules/captures/blender_scripts/refine_ai_mesh.py)
+- Preview comparativo: [`scripts/blender/preview_refinement.py`](../scripts/blender/preview_refinement.py)

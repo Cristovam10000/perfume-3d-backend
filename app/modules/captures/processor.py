@@ -6,8 +6,15 @@ import os
 import struct
 import subprocess
 from abc import ABC, abstractmethod
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
+
+import httpx
+
+from ...core.logging import get_logger
+
+_log = get_logger("captures.hunyuan_processor")
 
 
 class ProcessingError(Exception):
@@ -305,3 +312,130 @@ class TemplateProcessor(Processor):
             completed.stdout or b"",
             completed.stderr or b"",
         )
+
+
+# --------------------------------------------------------------------------
+# Hunyuan3DProcessor: cliente HTTP para o serviço de IA rodando em Docker.
+
+
+class Hunyuan3DProcessor(Processor):
+    """Cliente HTTP para o serviço Hunyuan3D-2mv rodando em contêiner Docker.
+
+    Não importa torch, transformers, nem qualquer dependência ML — toda a
+    inferência acontece no contêiner separado (ver docker/hunyuan/). Este
+    processor só monta a requisição multipart, aguarda o GLB e o grava em disco.
+
+    Pré-requisitos antes de instanciar em produção:
+    - Contêiner `perfume-hunyuan` rodando e com modelo carregado (/health → ready).
+    - Imagens DEVEM estar pré-segmentadas pelo BackgroundRemover (Fase 1);
+      fundo removido melhora significativamente a qualidade do mesh gerado.
+
+    `template_id`, `liquid_color` e `label_image` do `ProcessingInput` são
+    **ignorados**: o Hunyuan infere geometria e textura diretamente das fotos,
+    sem necessitar de template ou cor explícita. A integração com esses campos
+    será avaliada na Fase 4 (roteamento entre processors).
+    """
+
+    _MAX_IMAGENS = 6  # Hunyuan3D-2mv foi treinado com no máximo 6 vistas simultâneas
+
+    def __init__(
+        self,
+        service_url: str = "http://localhost:7860",
+        timeout_seconds: float = 600.0,   # IA é lenta; 10 min de folga
+        octree_resolution: int = 256,     # sweet spot para 8GB VRAM
+        num_inference_steps: int = 30,
+        _transport=None,          # parâmetro privado, apenas para testes unitários
+        _retry_interval: float = 5.0,     # intervalo entre retentativas de health check
+    ):
+        self.service_url = service_url
+        self.timeout_seconds = timeout_seconds
+        self.octree_resolution = octree_resolution
+        self.num_inference_steps = num_inference_steps
+        self._transport = _transport
+        self._retry_interval = _retry_interval
+
+    async def process(self, input: ProcessingInput) -> ProcessingResult:
+        timeout = httpx.Timeout(self.timeout_seconds)
+        kwargs: dict = {"base_url": self.service_url, "timeout": timeout}
+        if self._transport is not None:
+            kwargs["transport"] = self._transport
+
+        async with httpx.AsyncClient(**kwargs) as cliente:
+            await self._aguardar_servico(cliente)
+            bytes_glb = await self._gerar_modelo(cliente, input)
+
+        input.output_path.parent.mkdir(parents=True, exist_ok=True)
+        input.output_path.write_bytes(bytes_glb)
+
+        n_enviadas = min(len(input.image_paths), self._MAX_IMAGENS)
+        return ProcessingResult(
+            output_path=input.output_path,
+            message=f"Modelo gerado via Hunyuan3D-2mv a partir de {n_enviadas} imagem(ns)",
+        )
+
+    # ------------------------------------------------------------------ internos
+
+    async def _aguardar_servico(self, cliente: httpx.AsyncClient) -> None:
+        """Verifica readiness com até 3 tentativas antes de desistir.
+
+        Necessário porque o modelo leva ~30s para carregar após o container subir.
+        """
+        tentativas = 3
+        for tentativa in range(1, tentativas + 1):
+            try:
+                resp = await cliente.get("/health")
+                if resp.json().get("status") == "ready":
+                    return
+                _log.info(
+                    "Hunyuan ainda carregando (tentativa %d/%d): %s",
+                    tentativa, tentativas, resp.json(),
+                )
+            except Exception as exc:
+                _log.warning(
+                    "Falha ao contatar Hunyuan (tentativa %d/%d): %s",
+                    tentativa, tentativas, exc,
+                )
+
+            if tentativa < tentativas:
+                await asyncio.sleep(self._retry_interval)
+
+        raise ProcessingError(
+            f"Hunyuan service não está pronto em {self.service_url}"
+        )
+
+    async def _gerar_modelo(
+        self, cliente: httpx.AsyncClient, input: ProcessingInput
+    ) -> bytes:
+        """Envia as imagens (máx. 6) e baixa o GLB resultante."""
+        imagens = input.image_paths[: self._MAX_IMAGENS]
+
+        # ExitStack garante fechamento dos handles mesmo em caso de exceção.
+        with ExitStack() as pilha:
+            arquivos = []
+            for caminho in imagens:
+                handle = pilha.enter_context(open(caminho, "rb"))
+                arquivos.append(("images", (caminho.name, handle, "image/png")))
+
+            dados_form = {
+                "octree_resolution": str(self.octree_resolution),
+                "num_inference_steps": str(self.num_inference_steps),
+            }
+
+            _log.info(
+                "Enviando %d imagem(ns) ao Hunyuan (%s)...",
+                len(arquivos), self.service_url,
+            )
+            resp = await cliente.post("/generate", files=arquivos, data=dados_form)
+
+        if resp.status_code != 200:
+            trecho = resp.text[:500]
+            raise ProcessingError(
+                f"Hunyuan retornou HTTP {resp.status_code}: {trecho}"
+            )
+
+        bytes_glb = resp.content
+        if not bytes_glb.startswith(b"glTF"):
+            raise ProcessingError("Resposta do Hunyuan não é um GLB válido")
+
+        _log.info("GLB recebido com sucesso: %d bytes", len(bytes_glb))
+        return bytes_glb
