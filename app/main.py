@@ -12,6 +12,16 @@ from .config import Settings, settings
 from .core.exceptions import register_exception_handlers
 from .core.logging import configure_logging, get_logger
 from .database import SessionFactory, create_all, engine
+from .modules.captures.classifier import (
+    Classifier,
+    CLIPClassifier,
+    DisabledClassifier,
+)
+from .modules.captures.color_detector import (
+    AverageColorDetector,
+    ColorDetector,
+    DisabledColorDetector,
+)
 from .modules.captures.processor import (
     FakeProcessor,
     Processor,
@@ -20,6 +30,7 @@ from .modules.captures.processor import (
 from .modules.captures.queue import ProcessingQueue
 from .modules.captures.router import router as captures_router
 from .modules.captures.service import CaptureService
+from .modules.captures.templates_catalog import TEMPLATE_DESCRIPTIONS
 from .modules.health.router import router as health_router
 from .storage.local_storage import LocalStorage
 
@@ -43,6 +54,46 @@ def build_processor(config: Settings = settings) -> Processor:
     raise ValueError(f"processor_type inválido: {config.processor_type!r}")
 
 
+def build_classifier(config: Settings = settings) -> Classifier:
+    """Factory do Classifier conforme `CLASSIFIER_TYPE` do `.env`.
+
+    Para o modo `clip`, filtra `TEMPLATE_DESCRIPTIONS` mantendo apenas os
+    templates que de fato têm GLB normalizado em disco — assim o CLIP nunca
+    devolve um `template_id` que o `TemplateProcessor` não consegue usar.
+    """
+    if config.classifier_type == "disabled":
+        return DisabledClassifier(default_template_id=config.default_template_id)
+
+    if config.classifier_type == "clip":
+        available = {
+            tid: desc
+            for tid, desc in TEMPLATE_DESCRIPTIONS.items()
+            if (config.templates_dir / f"{tid}.glb").exists()
+        }
+        if not available:
+            raise ValueError(
+                f"Nenhum template GLB normalizado em {config.templates_dir} — "
+                "rode os scripts de normalização antes de ativar CLASSIFIER_TYPE=clip."
+            )
+        return CLIPClassifier(
+            model_name=config.clip_model,
+            templates=available,
+        )
+
+    raise ValueError(f"classifier_type inválido: {config.classifier_type!r}")
+
+
+def build_color_detector(config: Settings = settings) -> ColorDetector:
+    """Factory do detector de cor conforme `COLOR_DETECTOR_TYPE` do `.env`."""
+    if config.color_detector_type == "disabled":
+        return DisabledColorDetector()
+    if config.color_detector_type == "average":
+        return AverageColorDetector()
+    raise ValueError(
+        f"color_detector_type inválido: {config.color_detector_type!r}"
+    )
+
+
 @asynccontextmanager
 async def production_lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Bootstrap de produção: tabelas, storage, worker da fila."""
@@ -55,18 +106,29 @@ async def production_lifespan(app: FastAPI) -> AsyncIterator[None]:
     storage.ensure_dirs()
 
     processor = build_processor()
+    classifier = build_classifier()
+    color_detector = build_color_detector()
     queue = ProcessingQueue()
-    service = CaptureService(SessionFactory, storage, processor, queue)
+    service = CaptureService(
+        SessionFactory,
+        storage,
+        processor,
+        queue,
+        classifier=classifier,
+        color_detector=color_detector,
+    )
 
     app.state.capture_service = service
     app.state.queue = queue
 
     queue.start(service.process_job)
     log.info(
-        "Backend pronto em %s:%s (processor=%s)",
+        "Backend pronto em %s:%s (processor=%s, classifier=%s, color=%s)",
         settings.app_host,
         settings.app_port,
         settings.processor_type,
+        settings.classifier_type,
+        settings.color_detector_type,
     )
 
     try:
@@ -114,6 +176,17 @@ def create_app(
         StaticFiles(directory=static_root),
         name="files",
     )
+
+    # Templates normalizados expostos para o viewer local poder visualizar
+    # cada template "puro" (sem customização do líquido/label do job). Útil
+    # pra inspecionar a saída do `generate_*_template.py` sem precisar
+    # disparar uma captura nova pelo app.
+    if settings.templates_dir.exists():
+        app.mount(
+            "/templates",
+            StaticFiles(directory=settings.templates_dir),
+            name="templates",
+        )
 
     return app
 

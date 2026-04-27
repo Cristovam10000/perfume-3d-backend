@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import struct
+import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -219,13 +220,9 @@ class TemplateProcessor(Processor):
                 f"Template '{template_id}' não existe em {template_path}"
             )
 
-        # Por padrão, usa a primeira foto enviada pelo usuário como label
-        # quando o caller não especifica nada. A Etapa 15 (label extractor)
-        # poderá refinar isso.
+        # Label só é aplicada quando o caller fornece uma imagem já extraída.
+        # Colar a foto inteira do produto no plano de label gera artefatos ruins.
         label_image = input.label_image
-        if label_image is None and input.image_paths:
-            label_image = input.image_paths[0]
-
         args = [
             str(self.blender_executable),
             "--background",
@@ -279,21 +276,32 @@ class TemplateProcessor(Processor):
         Isolado em método pra permitir override em testes (evita custo de
         invocar o Blender real em cada caso). Retorna (returncode, stdout, stderr).
         """
+        return await asyncio.to_thread(self._run_blender_sync, args)
+
+    def _run_blender_sync(self, args: list[str]) -> tuple[int, bytes, bytes]:
+        """Executa o Blender em uma thread.
+
+        No Windows, alguns event loops não implementam subprocess assíncrono
+        nativo. `subprocess.run` dentro de `asyncio.to_thread` mantém o servidor
+        responsivo e evita `NotImplementedError` em runtime.
+        """
         env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self.timeout_seconds
+            completed = subprocess.run(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                timeout=self.timeout_seconds,
+                check=False,
             )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+        except subprocess.TimeoutExpired:
             raise ProcessingError(
                 f"Blender excedeu timeout de {self.timeout_seconds}s"
             ) from None
-        return proc.returncode or 0, stdout, stderr
+
+        return (
+            completed.returncode,
+            completed.stdout or b"",
+            completed.stderr or b"",
+        )

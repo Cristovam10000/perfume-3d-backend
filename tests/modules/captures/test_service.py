@@ -6,6 +6,12 @@ from pathlib import Path
 import pytest
 
 from app.core.exceptions import ValidationError
+from app.modules.captures.classifier import (
+    Classifier,
+    ClassificationResult,
+    DisabledClassifier,
+)
+from app.modules.captures.color_detector import ColorDetector
 from app.modules.captures.processor import (
     ProcessingInput,
     ProcessingResult,
@@ -140,3 +146,176 @@ class TestProcessJob:
         # Nenhum processor.call deve acontecer.
         await fx.service.process_job("job-que-nao-existe")
         assert fx.processor.calls == []
+
+
+class _StaticClassifier(Classifier):
+    """Devolve sempre o mesmo template_id, ignorando as imagens."""
+
+    def __init__(self, template_id: str):
+        self.template_id = template_id
+
+    async def classify(self, images):
+        return ClassificationResult(
+            template_id=self.template_id, confidence=0.9, scores={self.template_id: 0.9}
+        )
+
+
+class _BrokenClassifier(Classifier):
+    async def classify(self, images):
+        raise RuntimeError("classificador estourou")
+
+
+class TestClassifierIntegration:
+    @pytest.mark.asyncio
+    async def test_classified_template_id_is_passed_to_processor(
+        self, session_factory, tmp_path
+    ):
+        storage = LocalStorage(root=tmp_path / "storage")
+        storage.ensure_dirs()
+        processor = _RecordingProcessor()
+        service = CaptureService(
+            session_factory,
+            storage,
+            processor,
+            _StubQueue(),  # type: ignore[arg-type]
+            classifier=_StaticClassifier("cylindrical_basic"),
+        )
+
+        job_id = await service.create_job(
+            [IncomingImage(filename="a.jpg", content=b"a")]
+        )
+        await service.process_job(job_id)
+
+        assert processor.calls[0].template_id == "cylindrical_basic"
+
+    @pytest.mark.asyncio
+    async def test_classifier_failure_falls_back_to_none_template_id(
+        self, session_factory, tmp_path
+    ):
+        storage = LocalStorage(root=tmp_path / "storage")
+        storage.ensure_dirs()
+        processor = _RecordingProcessor()
+        service = CaptureService(
+            session_factory,
+            storage,
+            processor,
+            _StubQueue(),  # type: ignore[arg-type]
+            classifier=_BrokenClassifier(),
+        )
+
+        job_id = await service.create_job(
+            [IncomingImage(filename="a.jpg", content=b"a")]
+        )
+        await service.process_job(job_id)
+
+        # Job foi processado mesmo com classifier estourando
+        assert processor.calls[0].template_id is None
+        job = await service.get_job(job_id)
+        assert job.status == CaptureStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_default_classifier_is_disabled_with_fallback_id(
+        self, session_factory, tmp_path
+    ):
+        # Construindo sem injetar classifier — service usa DisabledClassifier interno
+        storage = LocalStorage(root=tmp_path / "storage")
+        storage.ensure_dirs()
+        processor = _RecordingProcessor()
+        service = CaptureService(
+            session_factory,
+            storage,
+            processor,
+            _StubQueue(),  # type: ignore[arg-type]
+        )
+
+        job_id = await service.create_job(
+            [IncomingImage(filename="a.jpg", content=b"a")]
+        )
+        await service.process_job(job_id)
+
+        # Disabled retorna o template fallback definido no service.
+        assert processor.calls[0].template_id == "rectangular_basic"
+
+
+class _StaticColorDetector(ColorDetector):
+    def __init__(self, color: str | None):
+        self.color = color
+
+    async def detect(self, images):
+        return self.color
+
+
+class _BrokenColorDetector(ColorDetector):
+    async def detect(self, images):
+        raise RuntimeError("color detector estourou")
+
+
+class TestColorDetectorIntegration:
+    @pytest.mark.asyncio
+    async def test_detected_color_is_passed_to_processor(
+        self, session_factory, tmp_path
+    ):
+        storage = LocalStorage(root=tmp_path / "storage")
+        storage.ensure_dirs()
+        processor = _RecordingProcessor()
+        service = CaptureService(
+            session_factory,
+            storage,
+            processor,
+            _StubQueue(),  # type: ignore[arg-type]
+            color_detector=_StaticColorDetector("#FFAA00"),
+        )
+
+        job_id = await service.create_job(
+            [IncomingImage(filename="a.jpg", content=b"a")]
+        )
+        await service.process_job(job_id)
+
+        assert processor.calls[0].liquid_color == "#FFAA00"
+
+    @pytest.mark.asyncio
+    async def test_color_detector_failure_falls_back_to_none(
+        self, session_factory, tmp_path
+    ):
+        storage = LocalStorage(root=tmp_path / "storage")
+        storage.ensure_dirs()
+        processor = _RecordingProcessor()
+        service = CaptureService(
+            session_factory,
+            storage,
+            processor,
+            _StubQueue(),  # type: ignore[arg-type]
+            color_detector=_BrokenColorDetector(),
+        )
+
+        job_id = await service.create_job(
+            [IncomingImage(filename="a.jpg", content=b"a")]
+        )
+        await service.process_job(job_id)
+
+        # Job foi processado mesmo com detector estourando
+        assert processor.calls[0].liquid_color is None
+        job = await service.get_job(job_id)
+        assert job.status == CaptureStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_default_color_detector_returns_none(
+        self, session_factory, tmp_path
+    ):
+        # Sem injecao = DisabledColorDetector → liquid_color = None
+        storage = LocalStorage(root=tmp_path / "storage")
+        storage.ensure_dirs()
+        processor = _RecordingProcessor()
+        service = CaptureService(
+            session_factory,
+            storage,
+            processor,
+            _StubQueue(),  # type: ignore[arg-type]
+        )
+
+        job_id = await service.create_job(
+            [IncomingImage(filename="a.jpg", content=b"a")]
+        )
+        await service.process_job(job_id)
+
+        assert processor.calls[0].liquid_color is None

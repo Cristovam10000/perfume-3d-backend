@@ -17,7 +17,17 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
 from app.database import Base
-from app.main import build_processor, create_app
+from app.main import (
+    build_classifier,
+    build_color_detector,
+    build_processor,
+    create_app,
+)
+from app.modules.captures.classifier import CLIPClassifier, DisabledClassifier
+from app.modules.captures.color_detector import (
+    AverageColorDetector,
+    DisabledColorDetector,
+)
 from app.modules.captures.processor import FakeProcessor, TemplateProcessor
 from app.modules.captures.queue import ProcessingQueue
 from app.modules.captures.service import CaptureService
@@ -137,3 +147,62 @@ class TestBuildProcessorFactory:
         # de chegar no factory. Garantia da camada de config, nao do main.
         with pytest.raises(Exception):  # pydantic.ValidationError
             Settings(processor_type="meshroom", storage_root=tmp_path)
+
+
+class TestBuildClassifierFactory:
+    def test_returns_disabled_with_default_template_id(self, tmp_path: Path):
+        cfg = Settings(
+            classifier_type="disabled",
+            default_template_id="my_default",
+            storage_root=tmp_path,
+        )
+        classifier = build_classifier(cfg)
+        assert isinstance(classifier, DisabledClassifier)
+        assert classifier.default_template_id == "my_default"
+
+    def test_clip_with_no_normalized_templates_raises(self, tmp_path: Path):
+        empty_dir = tmp_path / "templates"
+        empty_dir.mkdir()
+        cfg = Settings(
+            classifier_type="clip",
+            templates_dir=empty_dir,
+            storage_root=tmp_path,
+        )
+        with pytest.raises(ValueError, match="Nenhum template GLB"):
+            build_classifier(cfg)
+
+    def test_clip_filters_to_existing_templates(self, tmp_path: Path):
+        # Cria apenas rectangular_basic.glb — outros templates do catalog ficam fora.
+        templates_dir = tmp_path / "templates"
+        templates_dir.mkdir()
+        (templates_dir / "rectangular_basic.glb").write_bytes(b"glTF\x02fake")
+
+        cfg = Settings(
+            classifier_type="clip",
+            templates_dir=templates_dir,
+            storage_root=tmp_path,
+        )
+        classifier = build_classifier(cfg)
+        assert isinstance(classifier, CLIPClassifier)
+        # Apenas o template existente entrou no mapping.
+        assert set(classifier.templates.keys()) == {"rectangular_basic"}
+
+    def test_invalid_classifier_type_rejected_by_pydantic(self, tmp_path: Path):
+        with pytest.raises(Exception):
+            Settings(classifier_type="resnet", storage_root=tmp_path)
+
+
+class TestBuildColorDetectorFactory:
+    def test_returns_disabled_when_type_is_disabled(self, tmp_path: Path):
+        cfg = Settings(color_detector_type="disabled", storage_root=tmp_path)
+        detector = build_color_detector(cfg)
+        assert isinstance(detector, DisabledColorDetector)
+
+    def test_returns_average_when_type_is_average(self, tmp_path: Path):
+        cfg = Settings(color_detector_type="average", storage_root=tmp_path)
+        detector = build_color_detector(cfg)
+        assert isinstance(detector, AverageColorDetector)
+
+    def test_invalid_color_detector_type_rejected_by_pydantic(self, tmp_path: Path):
+        with pytest.raises(Exception):
+            Settings(color_detector_type="histogram", storage_root=tmp_path)

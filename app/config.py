@@ -35,6 +35,19 @@ class Settings(BaseSettings):
     )
     templates_dir: Path = Field(default=Path("./assets/templates/normalized"))
 
+    # ---- Classificador de forma do frasco (CLIP) ----
+    # 'disabled' = sempre usa default_template_id (sem deps extras).
+    # 'clip'     = OpenAI CLIP via transformers/torch (~2GB extra).
+    classifier_type: Literal["disabled", "clip"] = "disabled"
+    clip_model: str = "openai/clip-vit-base-patch32"
+    default_template_id: str = "rectangular_basic"
+
+    # ---- Detector de cor do liquido ----
+    # 'disabled' = template usa sua cor default.
+    # 'average'  = RGB medio do crop central das fotos. Requer Pillow (vem
+    #              transitivamente com transformers; ou pip install pillow).
+    color_detector_type: Literal["disabled", "average"] = "disabled"
+
     @property
     def cors_origin_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":

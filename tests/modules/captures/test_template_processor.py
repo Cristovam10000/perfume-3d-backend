@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import struct
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -123,7 +124,7 @@ class TestTemplateProcessorMocked:
         assert "--python" in args
 
     @pytest.mark.asyncio
-    async def test_label_image_arg_passed_when_photo_exists(self, tmp_path: Path):
+    async def test_label_image_arg_not_passed_by_default(self, tmp_path: Path):
         proc = _make_processor(tmp_path)
         run, captured = _make_fake_runner()
 
@@ -131,10 +132,10 @@ class TestTemplateProcessorMocked:
             await proc.process(_make_input(tmp_path))
 
         args = captured["calls"][0]
-        assert "--label-image" in args
+        assert "--label-image" not in args
 
     @pytest.mark.asyncio
-    async def test_explicit_label_image_overrides_first_photo(self, tmp_path: Path):
+    async def test_explicit_label_image_is_passed(self, tmp_path: Path):
         proc = _make_processor(tmp_path)
         run, captured = _make_fake_runner()
 
@@ -215,6 +216,28 @@ class TestTemplateProcessorMocked:
         with patch.object(proc, "_run_blender", side_effect=run):
             with pytest.raises(ProcessingError, match="does_not_exist"):
                 await proc.process(inp)
+
+
+    @pytest.mark.asyncio
+    async def test_run_blender_captures_process_output(self, tmp_path: Path):
+        proc = _make_processor(tmp_path)
+
+        returncode, stdout, stderr = await proc._run_blender(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; "
+                    "sys.stdout.write('stdout-ok'); "
+                    "sys.stderr.write('stderr-ok'); "
+                    "raise SystemExit(7)"
+                ),
+            ]
+        )
+
+        assert returncode == 7
+        assert stdout == b"stdout-ok"
+        assert stderr == b"stderr-ok"
 
 
 # ----------------------------------------------------------- teste integração

@@ -7,12 +7,18 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
 
 from ...core.exceptions import ValidationError
+from ...core.logging import get_logger
 from ...storage.local_storage import LocalStorage
+from .classifier import Classifier, DisabledClassifier
+from .color_detector import ColorDetector, DisabledColorDetector
 from .models import CaptureJob
 from .processor import Processor, ProcessingInput
 from .queue import ProcessingQueue
 from .repository import CaptureRepository
 from .status import CaptureStatus
+
+_log = get_logger("captures.service")
+_FALLBACK_TEMPLATE_ID = "rectangular_basic"
 
 
 @dataclass(frozen=True)
@@ -35,11 +41,17 @@ class CaptureService:
         storage: LocalStorage,
         processor: Processor,
         queue: ProcessingQueue,
+        classifier: Classifier | None = None,
+        color_detector: ColorDetector | None = None,
     ):
         self._session_factory = session_factory
         self._storage = storage
         self._processor = processor
         self._queue = queue
+        # Sem classificador / detector, usamos os bypasses. Mantem compat
+        # com construcoes legadas (testes que nao injetam dependencias).
+        self._classifier = classifier or DisabledClassifier(_FALLBACK_TEMPLATE_ID)
+        self._color_detector = color_detector or DisabledColorDetector()
 
     # ------------------------------------------------------------------ HTTP
 
@@ -78,12 +90,42 @@ class CaptureService:
         if image_paths is None:
             return  # job sumiu entre o submit e o pop — tolerante.
 
+        # Classifica forma do frasco (CLIP ou disabled) — falha graciosa cai
+        # no template default. Erro de classificador NAO falha o job.
+        template_id: str | None = None
+        try:
+            classification = await self._classifier.classify(image_paths)
+            template_id = classification.template_id
+            _log.info(
+                "Job %s classificado como '%s' (%.0f%%)",
+                job_id,
+                template_id,
+                classification.confidence * 100,
+            )
+        except Exception as exc:
+            _log.warning(
+                "Classificador falhou para job %s, usando default: %s", job_id, exc
+            )
+
+        # Detecta cor do liquido — tambem grasciosa: erro nao derruba o job.
+        liquid_color: str | None = None
+        try:
+            liquid_color = await self._color_detector.detect(image_paths)
+            if liquid_color:
+                _log.info("Job %s cor do liquido detectada: %s", job_id, liquid_color)
+        except Exception as exc:
+            _log.warning(
+                "Detector de cor falhou para job %s, usando default: %s", job_id, exc
+            )
+
         try:
             result = await self._processor.process(
                 ProcessingInput(
                     job_id=job_id,
                     image_paths=image_paths,
                     output_path=output_path,
+                    template_id=template_id,
+                    liquid_color=liquid_color,
                 )
             )
         except Exception as exc:
