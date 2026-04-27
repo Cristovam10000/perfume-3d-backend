@@ -1,0 +1,12 @@
+# Dependencias do CLIPClassifier (opcional). Pesado: ~2GB de download
+# entre torch e modelo CLIP. Instale apenas quando for ativar
+# CLASSIFIER_TYPE=clip no .env.
+#
+# Instalacao:
+#   pip install -r requirements-classifier.txt
+#
+# Em CPU funciona, mas RTX 5050 acelera ~10x.
+
+torch>=2.4
+transformers>=4.45
+pillow>=10.0
