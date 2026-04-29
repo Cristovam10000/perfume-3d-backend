@@ -30,6 +30,13 @@ storage/uploads/
 storage/models/
 storage/*.glb
 storage/*.gltf
+storage/**/*.glb
+storage/**/*.gltf
+storage/exports/
+storage/smoke/
+
+# Arquivos temporários de processamento
+tmp/
 
 # Contexto bruto/local de conversa
 contexto.md

@@ -167,6 +167,17 @@
       const viewer = document.querySelector("#viewer");
       const select = document.querySelector("#modelSelect");
       const reset = document.querySelector("#resetCamera");
+      const params = new URLSearchParams(window.location.search);
+      const srcParam = params.get("src");
+
+      if (srcParam) {
+        const option = document.createElement("option");
+        option.value = srcParam;
+        option.textContent = srcParam;
+        option.selected = true;
+        select.prepend(option);
+        viewer.src = srcParam;
+      }
 
       select.addEventListener("change", () => {
         viewer.src = select.value;

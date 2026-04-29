@@ -4,6 +4,7 @@ Pulado automaticamente se o serviço não estiver respondendo em :7860.
 Útil para validar manualmente após `docker compose up hunyuan`.
 
 Para rodar:
+    $env:RUN_HUNYUAN_REAL="1"
     pytest tests/integration/test_hunyuan_real.py -m slow -v
 
 Expectativa de tempo: 2–5 minutos na RTX 5050 com mmgp profile 4.
@@ -11,6 +12,7 @@ Expectativa de tempo: 2–5 minutos na RTX 5050 com mmgp profile 4.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import httpx
@@ -22,6 +24,13 @@ from app.modules.captures.processor import Hunyuan3DProcessor, ProcessingInput
 @pytest.fixture(scope="module")
 def hunyuan_url() -> str:
     """Verifica se o serviço Hunyuan está respondendo e pronto antes dos testes."""
+    habilitado = os.getenv("RUN_HUNYUAN_REAL", "").strip().lower()
+    if habilitado not in {"1", "true", "yes", "on"}:
+        pytest.skip(
+            "Teste real do Hunyuan desabilitado por padrao; "
+            "defina RUN_HUNYUAN_REAL=1 para rodar manualmente."
+        )
+
     url = "http://localhost:7860"
     try:
         resp = httpx.get(f"{url}/health", timeout=2.0)

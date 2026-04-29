@@ -159,6 +159,7 @@ class HomographyLabelExtractor(LabelExtractor):
             largura_frasco=w_bb,
             offset_x=x_bb,
             offset_y=y_bb,
+            silhueta=silhueta,
         )
 
         if candidato is None:
@@ -228,12 +229,20 @@ class HomographyLabelExtractor(LabelExtractor):
         largura_frasco: int,
         offset_x: int,
         offset_y: int,
+        silhueta=None,
+        min_overlap_ratio: float = 0.70,
     ):
         """Filtra e escolhe o melhor contorno quadrilateral candidato a label.
 
         Retorna (contorno, area) ou None se nenhum candidato passar os filtros.
+
+        `silhueta` (opcional) é a máscara binária em coordenadas da imagem completa.
+        Quando fornecida, rejeita candidatos cuja bounding-box tenha menos de
+        `min_overlap_ratio` de sobreposição com a silhueta — descarta etiquetas
+        pendentes (tags físicas) que ficam fora do corpo do frasco.
         """
         import cv2
+        import numpy as np
 
         area_min = self.min_area_ratio * area_mascara
         area_max = self.max_area_ratio * area_mascara
@@ -263,16 +272,43 @@ class HomographyLabelExtractor(LabelExtractor):
             if not 0.3 <= proporcao <= 3.0:
                 continue
 
-            # A label deve estar horizontalmente centrada no frasco (±35%).
+            # A label deve estar horizontalmente centrada no frasco (±25%).
+            # Tolerância reduzida de 35% → 25% para rejeitar tags pendentes
+            # que ficam deslocadas lateralmente no gargalo do frasco.
             centro_contorno_x = offset_x + x_r + w_r / 2.0
             desvio_relativo = abs(centro_contorno_x - centro_frasco_x) / max(largura_frasco, 1)
-            if desvio_relativo > 0.35:
+            if desvio_relativo > 0.25:
                 continue
 
             # Translada o contorno de volta para coordenadas da imagem completa.
             contorno_global = aproximacao.copy()
             contorno_global[:, :, 0] += offset_x
             contorno_global[:, :, 1] += offset_y
+
+            # Rejeita regiões que ficam predominantemente fora do corpo do frasco.
+            # Tags físicas penduradas passam pelo filtro de centralização mas
+            # têm grande parte da sua área fora da silhueta do frasco.
+            if silhueta is not None:
+                x_g = offset_x + x_r
+                y_g = offset_y + y_r
+                h_sil, w_sil = silhueta.shape[:2]
+                x_g = max(0, min(x_g, w_sil - 1))
+                y_g = max(0, min(y_g, h_sil - 1))
+                x2_g = max(0, min(x_g + w_r, w_sil))
+                y2_g = max(0, min(y_g + h_r, h_sil))
+                if x2_g > x_g and y2_g > y_g:
+                    regiao_sil = silhueta[y_g:y2_g, x_g:x2_g]
+                    pixels_dentro = float(np.count_nonzero(regiao_sil))
+                    pixels_total = float((y2_g - y_g) * (x2_g - x_g))
+                    overlap = pixels_dentro / pixels_total if pixels_total > 0 else 0.0
+                    if overlap < min_overlap_ratio:
+                        _log.debug(
+                            "Candidato rejeitado: sobreposição com silhueta=%.2f < %.2f "
+                            "(provável tag pendente)",
+                            overlap,
+                            min_overlap_ratio,
+                        )
+                        continue
 
             if area > maior_area:
                 maior_area = area
