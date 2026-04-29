@@ -303,16 +303,33 @@ async def gerar_hunyuan(
     *,
     service_url: str,
     wait_seconds: float,
+    timeout_seconds: float,
+    octree_resolution: int,
+    num_inference_steps: int,
 ) -> None:
     await aguardar_hunyuan(service_url, wait_seconds)
-    processor = Hunyuan3DProcessor(service_url=service_url, timeout_seconds=900.0)
-    await processor.process(
-        ProcessingInput(
-            job_id="smoke-phase5",
-            image_paths=imagens_segmentadas,
-            output_path=output_glb,
-        )
+    processor = Hunyuan3DProcessor(
+        service_url=service_url,
+        timeout_seconds=timeout_seconds,
+        octree_resolution=octree_resolution,
+        num_inference_steps=num_inference_steps,
     )
+    try:
+        await processor.process(
+            ProcessingInput(
+                job_id="smoke-phase5",
+                image_paths=imagens_segmentadas,
+                output_path=output_glb,
+            )
+        )
+    except httpx.TimeoutException as exc:
+        raise RuntimeError(
+            "Hunyuan excedeu o timeout de "
+            f"{timeout_seconds:.0f}s durante /generate. "
+            "Isso costuma acontecer quando a textura esta habilitada, "
+            "a GPU/RAM estao no limite, ou o container travou na inferencia. "
+            "Veja `docker logs --tail 120 tcc-hunyuan-1`."
+        ) from exc
 
 
 async def limpar_mesh(input_glb: Path, output_glb: Path, min_island_ratio: float) -> None:
@@ -479,6 +496,9 @@ async def main_async(args: argparse.Namespace) -> int:
                 raw_glb,
                 service_url=args.hunyuan_url,
                 wait_seconds=args.hunyuan_wait_seconds,
+                timeout_seconds=args.hunyuan_timeout_seconds,
+                octree_resolution=args.octree_resolution,
+                num_inference_steps=args.num_inference_steps,
             )
 
     with CronometroEtapa("(6/8) limpando mesh (conservador)"):
@@ -535,6 +555,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hunyuan-url", default="http://localhost:7860")
     parser.add_argument("--public-base-url", default="http://localhost:8000")
     parser.add_argument("--hunyuan-wait-seconds", type=float, default=180.0)
+    parser.add_argument("--hunyuan-timeout-seconds", type=float, default=900.0)
+    parser.add_argument("--octree-resolution", type=int, default=256)
+    parser.add_argument("--num-inference-steps", type=int, default=30)
     parser.add_argument("--max-images", type=int, default=6)
     parser.add_argument("--label-min-confidence", type=float, default=0.3)
     parser.add_argument("--label-target-size", type=int, default=2048)
@@ -569,7 +592,8 @@ def main() -> int:
     try:
         return asyncio.run(main_async(parse_args()))
     except Exception as exc:
-        log(f"ERRO: {exc}")
+        detalhe = str(exc) or repr(exc)
+        log(f"ERRO ({type(exc).__name__}): {detalhe}")
         return 1
 
 
