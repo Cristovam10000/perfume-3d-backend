@@ -14,11 +14,13 @@ back/
 ├── requirements.txt           # deps runtime
 ├── requirements-dev.txt       # deps + ferramentas de teste
 ├── requirements-classifier.txt # deps opcionais (CLIP / Pillow)
+├── requirements-vision.txt    # deps opcionais (rembg / opencv / numpy / Pillow) — pipeline IA
 ├── app/                       # código-fonte
 ├── tests/                     # suíte pytest
-├── scripts/                   # utilitários offline (Blender, smoke, label)
+├── scripts/                   # utilitários offline (Blender, smokes, label)
 ├── assets/                    # templates 3D versionados
 ├── docs/                      # esta pasta
+├── historico/                 # registro acadêmico (sessões + INDEX.md) — não tracked pelo Git
 └── storage/                   # gerado em runtime (gitignored exceto model_viewer.html)
 ```
 
@@ -49,13 +51,32 @@ app/
     │   ├── service.py         # CaptureService (orquestração das use cases)
     │   ├── router.py          # POST /captures, GET /captures/{id}/status
     │   ├── queue.py           # ProcessingQueue (asyncio.Queue + worker)
-    │   ├── processor.py       # ABC Processor + FakeProcessor + TemplateProcessor
+    │   ├── processor.py       # ABC Processor + FakeProcessor + TemplateProcessor + Hunyuan3DProcessor
     │   ├── classifier.py      # ABC Classifier + DisabledClassifier + CLIPClassifier
     │   ├── color_detector.py  # ABC ColorDetector + Disabled + AverageColorDetector
     │   ├── templates_catalog.py  # template_id → descrição em inglês para CLIP
+    │   │
+    │   │   # ── Pipeline IA standalone (Fases 1–5; ainda não plugado no service) ──
+    │   ├── background_remover.py # ABC + DisabledBackgroundRemover + RembgBackgroundRemover
+    │   ├── label_extractor.py    # ABC + DisabledLabelExtractor + HomographyLabelExtractor
+    │   ├── image_preprocessor.py # ABC + DisabledImagePreprocessor + StandardImagePreprocessor
+    │   ├── mesh_cleaner.py       # ABC + DisabledMeshCleaner + BlenderMeshCleaner
+    │   ├── mesh_refiner.py       # ABC + DisabledMeshRefiner + BlenderMeshRefiner
+    │   ├── label_upscaler.py     # ABC + DisabledLabelUpscaler + LanczosLabelUpscaler
+    │   ├── label_projector.py    # ABC + DisabledLabelProjector + BlenderLabelProjector
+    │   │
     │   └── blender_scripts/
     │       ├── __init__.py
-    │       └── customize_template.py   # roda DENTRO do Blender (importa bpy)
+    │       ├── customize_template.py   # template paramétrico (Fase 2)
+    │       ├── refine_ai_mesh.py       # shader de vidro PBR (Fase 3)
+    │       ├── cleanup_mesh.py         # ilhas + furos + normais (Fase 4)
+    │       └── project_label.py        # decal frontal de label (Fase 5)
+    │
+    ├── sales/                 # API comercial — clientes, produtos, vendas, pagamentos
+    │   ├── __init__.py
+    │   ├── router.py          # /sales/snapshot, /sales/products, /sales/sales
+    │   ├── repository.py      # SalesRepository + ensure_sales_schema (ALTER TABLE bootstrap)
+    │   └── schemas.py         # ClienteOut, ProdutoOut, VendaOut, ParcelaOut, ...
     │
     └── health/
         ├── __init__.py
@@ -65,9 +86,9 @@ app/
 ### Pontos-chave da árvore
 
 - **`main.py` é o único lugar onde tudo se encontra**. As factories `build_processor()`, `build_classifier()`, `build_color_detector()` são triviais e ficam aqui — sem container DI, sem mágica.
-- **`modules/captures/` é o único módulo de domínio**. Toda a lógica de captura, classificação, detecção de cor e geração 3D vive aqui. O módulo `health` é só `/health`.
-- **Tudo abaixo de `modules/` segue o padrão Feature-First**: cada módulo carrega seu próprio router, service, repository, models, schemas. Quando precisar de um módulo novo (ex.: histórico), siga o mesmo layout.
-- **`blender_scripts/` é especial**: rodam **dentro** do Blender via `--python`. Não importam nada do `app/` (não conseguiriam — Blender tem o próprio Python isolado).
+- **`modules/captures/` é o módulo principal de domínio 3D**. Reúne pipeline de templates (Fase 2) + pipeline IA generativa standalone (Fases 1–5, ainda não plugado no service). O módulo `sales/` é o segundo módulo de domínio (comercial); `health/` é só `/health`.
+- **Tudo abaixo de `modules/` segue o padrão Feature-First**: cada módulo carrega seu próprio router, service/repository, schemas. `sales/` é mais enxuto (sem `service.py` separado — a lógica fica no `repository.py` por ser CRUD direto sobre Postgres).
+- **`blender_scripts/` é especial**: rodam **dentro** do Blender via `--python`. Não importam nada do `app/` (não conseguiriam — Blender tem o próprio Python isolado). A convenção Blender↔wrapper usa uma única linha estruturada `STATS:...` em stdout para passar contagens (ilhas removidas, faces, índice da face frontal).
 
 ## `tests/` — pytest suite
 
@@ -81,21 +102,32 @@ tests/
 │   ├── __init__.py
 │   └── test_normalized_templates.py   # 25 testes — valida estrutura dos GLBs
 │
+├── integration/
+│   ├── __init__.py
+│   └── test_hunyuan_real.py       # exercita /generate de verdade — pulado se contêiner offline
+│
 └── modules/
     ├── __init__.py
     └── captures/
         ├── __init__.py
-        ├── test_classifier.py         # 11 testes — DisabledClassifier + CLIPClassifier mockado
-        ├── test_color_detector.py     # 12 testes — AverageColorDetector + edge cases
-        ├── test_customize_template.py # 6 testes — script Blender invocado com Blender real
-        ├── test_processor.py          # 6 testes — FakeProcessor (cubo GLB válido)
-        ├── test_queue.py              # 5 testes — ProcessingQueue assíncrona
-        ├── test_router.py             # 5 testes — POST/GET via TestClient
-        ├── test_service.py            # 11 testes — CaptureService (caminho feliz e erros)
-        └── test_template_processor.py # 12 testes — TemplateProcessor (mocks + integração)
+        ├── test_classifier.py         # DisabledClassifier + CLIPClassifier mockado
+        ├── test_color_detector.py     # AverageColorDetector + edge cases
+        ├── test_customize_template.py # script Blender invocado com Blender real
+        ├── test_processor.py          # FakeProcessor + TemplateProcessor + Hunyuan3DProcessor (FakeTransport)
+        ├── test_queue.py              # ProcessingQueue assíncrona
+        ├── test_router.py             # POST/GET via TestClient
+        ├── test_service.py            # CaptureService (caminho feliz e erros)
+        ├── test_template_processor.py # TemplateProcessor (mocks + integração)
+        ├── test_background_remover.py # DisabledBackgroundRemover + RembgBackgroundRemover (importorskip rembg)
+        ├── test_label_extractor.py    # HomographyLabelExtractor + _ordenar_cantos
+        ├── test_image_preprocessor.py # StandardImagePreprocessor (EXIF, WB, CLAHE, sharpen, resize)
+        ├── test_mesh_cleaner.py       # BlenderMeshCleaner mocked + integração Blender
+        ├── test_mesh_refiner.py       # BlenderMeshRefiner mocked + integração Blender
+        ├── test_label_upscaler.py     # LanczosLabelUpscaler
+        └── test_label_projector.py    # BlenderLabelProjector mocked + integração Blender
 ```
 
-**Total: ~86 testes em 10 arquivos** (número aproximado; execute `pytest --collect-only` para o valor exato). Nenhum teste exige Postgres rodando; alguns exigem Blender (e são pulados se ausente). Detalhes em [14 - Testes](14-testes.md).
+**Total atual: 173 testes** (`pytest --collect-only` no estado em 2026-05-09). Nenhum teste exige Postgres rodando. Vários componentes do pipeline IA pulam quando dependências (`rembg`, `cv2`, Blender 5.1+, contêiner Hunyuan) estão ausentes — convenção `pytest.importorskip` ou guard `if not blender.exists(): pytest.skip(...)`. Detalhes em [14 - Testes](14-testes.md).
 
 ## `scripts/` — utilitários offline
 
@@ -103,11 +135,15 @@ tests/
 scripts/
 ├── smoke.ps1                              # smoke test ponta a ponta via HTTP
 ├── build_feeling_label.py                 # gera PNG da label do Feelin' Flame com PIL
+├── smoke_phase3.py                        # rembg → Hunyuan → refiner (Fase 3)
+├── smoke_phase4.py                        # preprocess → rembg → Hunyuan → cleanup → refiner (Fase 4)
+├── smoke_phase5.py                        # idem + label_extract → upscale → project (Fase 5)
 └── blender/                               # rodam dentro do Blender headless
     ├── inspect_raw_templates.py           # lista materiais/meshes dos GLBs brutos
     ├── normalize_template.py              # padroniza GLBs do Sketchfab
     ├── generate_feeling_template.py       # gera o template procedural V2
-    └── preview_feeling_template.py        # render Cycles (PNG) do template
+    ├── preview_feeling_template.py        # render Cycles (PNG) do template
+    └── preview_refinement.py              # render comparativo before/after do refiner
 ```
 
 Esses scripts **não são chamados pelo backend em runtime**. São ferramentas de bancada para preparar/atualizar templates e fazer smoke tests. Detalhes em [11 - Templates 3D](11-templates-3d.md).
@@ -159,13 +195,31 @@ A pasta `storage/uploads/` e `storage/models/` são criadas no startup pelo `Loc
 
 ## `docs/` — esta pasta
 
-Conjunto **01–15** (Markdown) descrevendo o backend; o [README](README.md) desta pasta indica a ordem de leitura.
+Conjunto **01–15** (Markdown) descrevendo o backend, mais quatro docs técnicos do pipeline IA (`09b/c/d/e`) e um doc de segmentação (`10b`). O [README](README.md) desta pasta indica a ordem de leitura.
 
 ```
 docs/
 ├── README.md
-├── 01-visao-geral.md … 15-glossario.md
-└── 04-estrutura-de-pastas.md   ← este ficheiro
+├── 01-visao-geral.md
+├── 02-stack-tecnologico.md
+├── 03-inicializacao-do-projeto.md
+├── 04-estrutura-de-pastas.md   ← este ficheiro
+├── 05-arquitetura.md
+├── 06-bootstrap-e-lifespan.md
+├── 07-camada-core.md
+├── 08-modulo-captures.md
+├── 09-pipeline-3d.md            # template paramétrico (Fase 2)
+├── 09b-pipeline-ai-hunyuan.md   # cliente HTTP do contêiner Hunyuan
+├── 09c-refinamento-mesh.md      # shader de vidro PBR
+├── 09d-preprocessamento-e-cleanup.md  # ImagePreprocessor + MeshCleaner
+├── 09e-aplicacao-label.md       # LabelUpscaler + LabelProjector
+├── 10-classificador-e-cor.md
+├── 10b-segmentacao-e-label.md   # BackgroundRemover + LabelExtractor
+├── 11-templates-3d.md
+├── 12-armazenamento-e-banco.md
+├── 13-endpoints-http.md
+├── 14-testes.md
+└── 15-glossario.md
 ```
 
 ## Convenções de import e organização

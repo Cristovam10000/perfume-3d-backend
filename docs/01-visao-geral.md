@@ -58,12 +58,13 @@ Esse fluxo está documentado em detalhe em [09 - Pipeline 3D](09-pipeline-3d.md)
 - Expor o GLB final via `StaticFiles` em `/files/models/<id>.glb`.
 - Responder `GET /captures/<id>/status` com URL absoluta do modelo (montada a partir de `request.base_url` para funcionar tanto em emulador quanto em device físico).
 - Servir templates puros via `/templates/<id>.glb` para inspeção/debug.
+- Oferecer um **pipeline alternativo por IA generativa** (Hunyuan3D-2mv em contêiner Docker dedicado) com pré-processamento clássico de imagem, limpeza conservadora de malha, refinamento de shader de vidro PBR e projeção de label real extraída da foto. Esse caminho **não está integrado ao `CaptureService` ainda** (Fase 7); cada componente é exercitado standalone via smokes manuais (`scripts/smoke_phase3.py`, `smoke_phase4.py`, `smoke_phase5.py`). Ver [09b](09b-pipeline-ai-hunyuan.md), [09c](09c-refinamento-mesh.md), [09d](09d-preprocessamento-e-cleanup.md), [09e](09e-aplicacao-label.md).
+- Expor uma **API comercial mínima** (`/sales/*`) para o módulo do app que gerencia clientes, produtos, vendas parceladas, estoque e pagamentos — modelo monolítico modular: o módulo `app/modules/sales/` compartilha o mesmo banco do `captures` (ver [13](13-endpoints-http.md), [12](12-armazenamento-e-banco.md)).
 
 ## Fora do escopo (o que **não** existe)
 
 - Autenticação, multi-tenant, RBAC.
 - Pipeline de fotogrametria real (Meshroom/AliceVision/COLMAP) — está no [roadmap](#roadmap-curto).
-- Sistema comercial/financeiro (clientes, vendas, parcelas, pagamentos, notificações). O front tem um módulo de demonstração `sales` com dados mockados em memória, mas o backend não tem endpoint nenhum disso.
 - Object storage (S3, Firebase, GCS) — armazenamento é local em disco.
 - Observability (Prometheus, OpenTelemetry, Sentry).
 - Migrations com Alembic — hoje o schema é criado por `Base.metadata.create_all()` no startup.

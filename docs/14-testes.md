@@ -2,22 +2,39 @@
 
 Estratégia: testes de unidade e integração com **mocks** onde custo é alto (Blender, CLIP) e testes reais opt-in quando o binário existe.
 
-## Contagem aproximada (execução `pytest` local)
+## Contagem atual
 
-A suíte está organizada em cerca de **86** funções de teste distribuídas por ficheiro (número sujeito a crescimento):
+A suíte tem **173 funções de teste** distribuídas em ~17 ficheiros. Estado em 2026-05-09: **173 passed, 1 skipped** quando o contêiner Hunyuan está offline.
 
-| Ficheiro | Tema aproximado | Notas |
-|----------|-----------------|-------|
+### Núcleo (Fase 2 — templates + CLIP + cor)
+
+| Ficheiro | Tema | Notas |
+|----------|------|-------|
 | `tests/test_main.py` | App FastAPI, fluxo e2e com `httpx` | Cria `create_app` com SQLite, lifespan custom |
 | `tests/modules/captures/test_service.py` | `CaptureService` (job, classificador, processador) | Mocks de processor/classifier/detectors |
 | `tests/modules/captures/test_router.py` | Rotas com `TestClient` | — |
 | `tests/modules/captures/test_queue.py` | `ProcessingQueue` | — |
-| `tests/modules/captures/test_processor.py` | `FakeProcessor` | — |
+| `tests/modules/captures/test_processor.py` | `FakeProcessor` + `Hunyuan3DProcessor` (com `_FakeTransport`) | 7 testes do `Hunyuan3DProcessor` apêndice |
 | `tests/modules/captures/test_template_processor.py` | `TemplateProcessor` | Mocks de subprocess + integração real se Blender no path |
 | `tests/modules/captures/test_customize_template.py` | Script Blender de customize | Pula se sem Blender |
-| `tests/modules/captures/test_classifier.py` | Classificador | Mocks; CLIP não baixa em todos os testes |
-| `tests/modules/captures/test_color_detector.py` | Detector de cor | Imagens em memória / temporárias |
-| `tests/assets/test_normalized_templates.py` | GLBs normalizados (magic, estrutura) | Lê ficheiros em `assets/templates/normalized/` |
+| `tests/modules/captures/test_classifier.py` | Classificador CLIP | Mocks de `transformers`; sem download em CI |
+| `tests/modules/captures/test_color_detector.py` | `AverageColorDetector` | Imagens em memória / temporárias |
+| `tests/assets/test_normalized_templates.py` | GLBs normalizados (magic, estrutura, nodes obrigatórios) | Parametrizado nos 6 templates em `assets/templates/normalized/` |
+
+### Pipeline IA — Fases 1, 3, 4, 5
+
+| Ficheiro | Tema | Skip se… |
+|----------|------|----------|
+| `tests/modules/captures/test_background_remover.py` | `RembgBackgroundRemover` | `rembg` não instalado |
+| `tests/modules/captures/test_label_extractor.py` | `HomographyLabelExtractor` + `_ordenar_cantos` | `cv2` não instalado |
+| `tests/modules/captures/test_image_preprocessor.py` | `StandardImagePreprocessor` (EXIF, WB, CLAHE, sharpen, resize, JPEG quality) | `cv2`/`PIL` ausente |
+| `tests/modules/captures/test_mesh_cleaner.py` | `BlenderMeshCleaner` mocked + integração Blender | Blender ausente |
+| `tests/modules/captures/test_mesh_refiner.py` | `BlenderMeshRefiner` mocked + integração Blender | Blender ausente |
+| `tests/modules/captures/test_label_upscaler.py` | `LanczosLabelUpscaler` | Pillow ausente |
+| `tests/modules/captures/test_label_projector.py` | `BlenderLabelProjector` mocked + integração | Blender ausente |
+| `tests/integration/test_hunyuan_real.py` | exercita `POST /generate` real | Contêiner offline |
+
+> **Ausentes**: o módulo `sales/` ainda não tem cobertura automatizada. Validação manual via app Flutter contra Postgres real.
 
 ## Banco de dados
 
@@ -30,11 +47,21 @@ cd c:\TCC\back
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Opção verbosa: `pytest -q` (quieta) ou `pytest tests/modules/captures/test_classifier.py -v`.
+- `pytest -q` (quieto) — visão compacta.
+- `pytest -m "not slow"` — pula testes marcados como lentos (Hunyuan integration, integrações Blender longas).
+- `pytest tests/modules/captures/test_image_preprocessor.py -v` — alvo específico.
 
-## Integração Blender
+## Skips condicionais (`importorskip` e guards)
 
-- Vários testes de `TemplateProcessor` e `test_customize_template` procuram `BLENDER_EXECUTABLE` (env) ou o caminho default Windows. Se o Blender não estiver instalado, os testes realistas são **skipped** com `pytest.skip`.
+Convenção do pipeline IA: cada módulo Python e cada teste fazem **lazy import**. Os testes que dependem de uma lib pesada chamam `pytest.importorskip("rembg")` (ou `cv2`, `PIL`) no início. Os testes que dependem do Blender real verificam:
+
+```python
+blender = Path(os.environ.get("BLENDER_EXECUTABLE", str(DEFAULT_BLENDER)))
+if not blender.exists():
+    pytest.skip(f"Blender não encontrado em {blender}")
+```
+
+Resultado prático: a suíte roda em qualquer máquina (com ou sem GPU/Blender/Hunyuan), com testes pulados em vez de falhos quando dependências externas faltam.
 
 ## Leituras relacionadas
 

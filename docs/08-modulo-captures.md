@@ -4,6 +4,8 @@ Todo o domínio de **captura de fotos → job → modelo 3D** vive em `app/modul
 
 ## Arquivos e responsabilidades
 
+### Núcleo (em uso pelo `CaptureService`)
+
 | Arquivo | Função |
 |---------|--------|
 | `router.py` | `POST /captures`, `GET /captures/{id}/status` |
@@ -13,11 +15,30 @@ Todo o domínio de **captura de fotos → job → modelo 3D** vive em `app/modul
 | `schemas.py` | DTOs Pydantic com alias camelCase para o Flutter |
 | `status.py` | Enum / valores de status (`waiting`, `processing`, `completed`, `error`) |
 | `queue.py` | `ProcessingQueue` — fila in-process e worker assíncrono |
-| `processor.py` | `Processor` ABC, `FakeProcessor`, `TemplateProcessor`, `ProcessingInput` |
-| `classifier.py` | `Classifier` ABC, `DisabledClassifier`, `CLIPClassifier` |
-| `color_detector.py` | `ColorDetector` ABC, detectores de cor do líquido |
+| `processor.py` | `Processor` ABC + `FakeProcessor` + `TemplateProcessor` + `Hunyuan3DProcessor` + `ProcessingInput` |
+| `classifier.py` | `Classifier` ABC + `DisabledClassifier` + `CLIPClassifier` |
+| `color_detector.py` | `ColorDetector` ABC + `DisabledColorDetector` + `AverageColorDetector` |
 | `templates_catalog.py` | Dicionário `template_id` → descrição em inglês (CLIP) |
-| `blender_scripts/customize_template.py` | Roda **dentro** do Blender; não importa o FastAPI |
+| `blender_scripts/customize_template.py` | Roda **dentro** do Blender — customiza template paramétrico |
+
+### Pipeline IA — componentes standalone (Fases 1–5)
+
+Implementados como ABCs Strategy com bypass `Disabled*`. Hoje são exercitados via smokes manuais (`scripts/smoke_phase{3,4,5}.py`); a integração no `CaptureService.process_job` é deferida para a Fase 7.
+
+| Arquivo | Função | Doc dedicada |
+|---------|--------|--------------|
+| `background_remover.py` | `BackgroundRemover` ABC + `Disabled*` + `RembgBackgroundRemover` | [10b](10b-segmentacao-e-label.md) |
+| `label_extractor.py` | `LabelExtractor` ABC + `Disabled*` + `HomographyLabelExtractor` (OpenCV) | [10b](10b-segmentacao-e-label.md) |
+| `image_preprocessor.py` | `ImagePreprocessor` ABC + `Disabled*` + `StandardImagePreprocessor` (EXIF, gray-world, CLAHE, sharpen condicional, resize) | [09d](09d-preprocessamento-e-cleanup.md) |
+| `mesh_cleaner.py` | `MeshCleaner` ABC + `Disabled*` + `BlenderMeshCleaner` (loose parts → bbox volume → fill_holes 4 → normais → smooth) | [09d](09d-preprocessamento-e-cleanup.md) |
+| `mesh_refiner.py` | `MeshRefiner` ABC + `Disabled*` + `BlenderMeshRefiner` (shader de vidro PBR) | [09c](09c-refinamento-mesh.md) |
+| `label_upscaler.py` | `LabelUpscaler` ABC + `Disabled*` + `LanczosLabelUpscaler` (Pillow) | [09e](09e-aplicacao-label.md) |
+| `label_projector.py` | `LabelProjector` ABC + `Disabled*` + `BlenderLabelProjector` (decal frontal) | [09e](09e-aplicacao-label.md) |
+| `blender_scripts/refine_ai_mesh.py` | Script Blender — Fase 3 | [09c](09c-refinamento-mesh.md) |
+| `blender_scripts/cleanup_mesh.py` | Script Blender — Fase 4 | [09d](09d-preprocessamento-e-cleanup.md) |
+| `blender_scripts/project_label.py` | Script Blender — Fase 5 | [09e](09e-aplicacao-label.md) |
+
+> **Convenção comum** dos três scripts Blender da trilha IA: emitem `STATS:<chave1>=<v1>,<chave2>=<v2>,...` em uma única linha de stdout para parsing tolerante por regex no wrapper Python.
 
 ## `CaptureService` (resumo)
 
@@ -40,6 +61,11 @@ Todo o domínio de **captura de fotos → job → modelo 3D** vive em `app/modul
 ## Leituras relacionadas
 
 - [05 — Arquitetura](05-arquitetura.md)
-- [09 — Pipeline 3D](09-pipeline-3d.md)
+- [09 — Pipeline 3D (templates)](09-pipeline-3d.md)
+- [09b — Pipeline IA Hunyuan](09b-pipeline-ai-hunyuan.md)
+- [09c — Refinamento de malha](09c-refinamento-mesh.md)
+- [09d — Pré-processamento e cleanup](09d-preprocessamento-e-cleanup.md)
+- [09e — Aplicação de label](09e-aplicacao-label.md)
 - [10 — Classificador e cor](10-classificador-e-cor.md)
+- [10b — Segmentação e label](10b-segmentacao-e-label.md)
 - [13 — Endpoints HTTP](13-endpoints-http.md)
