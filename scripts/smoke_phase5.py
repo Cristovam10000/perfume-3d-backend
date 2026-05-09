@@ -306,6 +306,9 @@ async def gerar_hunyuan(
     timeout_seconds: float,
     octree_resolution: int,
     num_inference_steps: int,
+    guidance_scale: float,
+    mc_algo: str,
+    texture_resolution: int,
 ) -> None:
     await aguardar_hunyuan(service_url, wait_seconds)
     processor = Hunyuan3DProcessor(
@@ -313,6 +316,9 @@ async def gerar_hunyuan(
         timeout_seconds=timeout_seconds,
         octree_resolution=octree_resolution,
         num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
+        mc_algo=mc_algo,
+        texture_resolution=texture_resolution,
     )
     try:
         await processor.process(
@@ -499,6 +505,9 @@ async def main_async(args: argparse.Namespace) -> int:
                 timeout_seconds=args.hunyuan_timeout_seconds,
                 octree_resolution=args.octree_resolution,
                 num_inference_steps=args.num_inference_steps,
+                guidance_scale=args.guidance_scale,
+                mc_algo=args.mc_algo,
+                texture_resolution=args.texture_resolution,
             )
 
     with CronometroEtapa("(6/8) limpando mesh (conservador)"):
@@ -555,9 +564,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hunyuan-url", default="http://localhost:7860")
     parser.add_argument("--public-base-url", default="http://localhost:8000")
     parser.add_argument("--hunyuan-wait-seconds", type=float, default=180.0)
-    parser.add_argument("--hunyuan-timeout-seconds", type=float, default=900.0)
-    parser.add_argument("--octree-resolution", type=int, default=256)
-    parser.add_argument("--num-inference-steps", type=int, default=30)
+    parser.add_argument("--hunyuan-timeout-seconds", type=float, default=1200.0)
+    parser.add_argument("--octree-resolution", type=int, default=384)
+    parser.add_argument("--num-inference-steps", type=int, default=75)
+    parser.add_argument("--guidance-scale", type=float, default=7.5)
+    parser.add_argument("--mc-algo", choices=("mc", "dmc"), default="mc")
+    parser.add_argument("--texture-resolution", type=int, default=2048)
     parser.add_argument("--max-images", type=int, default=6)
     parser.add_argument("--label-min-confidence", type=float, default=0.3)
     parser.add_argument("--label-target-size", type=int, default=2048)

@@ -90,9 +90,12 @@ async def test_geracao_real_com_entrada_sintetica(hunyuan_url: str, tmp_path: Pa
     saida = tmp_path / "modelo_real.glb"
     processor = Hunyuan3DProcessor(
         service_url=hunyuan_url,
-        timeout_seconds=600.0,
-        octree_resolution=256,
-        num_inference_steps=30,
+        timeout_seconds=1200.0,
+        octree_resolution=384,
+        num_inference_steps=75,
+        guidance_scale=7.5,
+        mc_algo="dmc",
+        texture_resolution=2048,
     )
 
     resultado = await processor.process(

@@ -141,9 +141,12 @@ class TestHunyuan3DProcessor:
     def test_parametros_default(self):
         proc = Hunyuan3DProcessor()
         assert proc.service_url == "http://localhost:7860"
-        assert proc.timeout_seconds == 600.0
-        assert proc.octree_resolution == 256
-        assert proc.num_inference_steps == 30
+        assert proc.timeout_seconds == 1200.0
+        assert proc.octree_resolution == 384
+        assert proc.num_inference_steps == 75
+        assert proc.guidance_scale == 7.5
+        assert proc.mc_algo == "mc"
+        assert proc.texture_resolution == 2048
 
     @pytest.mark.asyncio
     async def test_health_check_chamado_antes_do_generate(self, tmp_path: Path):
@@ -259,6 +262,42 @@ class TestHunyuan3DProcessor:
         assert n_imagens_recebidas == 6, (
             f"Esperava 6 imagens no multipart, contou {n_imagens_recebidas}"
         )
+
+    @pytest.mark.asyncio
+    async def test_parametros_de_qualidade_sao_enviados(self, tmp_path: Path):
+        """Verifica os campos multipart que controlam qualidade no container."""
+        corpo_generate = b""
+
+        async def fake_handler(request: httpx.Request, corpo: bytes) -> httpx.Response:
+            nonlocal corpo_generate
+            if request.url.path == "/health":
+                return httpx.Response(200, json={"status": "ready"})
+            if request.url.path == "/generate":
+                corpo_generate = corpo
+                return httpx.Response(200, content=_build_cube_glb())
+            return httpx.Response(404)
+
+        transport = _FakeTransport(fake_handler)
+        imagens = self._make_fake_images(tmp_path, 2)
+
+        proc = Hunyuan3DProcessor(_transport=transport, _retry_interval=0)
+        await proc.process(
+            ProcessingInput(
+                job_id="test-parametros-qualidade",
+                image_paths=imagens,
+                output_path=tmp_path / "model.glb",
+            )
+        )
+
+        for nome, valor in {
+            "octree_resolution": b"384",
+            "num_inference_steps": b"75",
+            "guidance_scale": b"7.5",
+            "mc_algo": b"mc",
+            "texture_resolution": b"2048",
+        }.items():
+            assert f'name="{nome}"'.encode() in corpo_generate
+            assert valor in corpo_generate
 
     @pytest.mark.asyncio
     async def test_resposta_nao_200_levanta_processing_error(self, tmp_path: Path):

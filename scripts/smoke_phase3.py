@@ -140,7 +140,7 @@ async def gerar_hunyuan(
     wait_seconds: float,
 ) -> None:
     await aguardar_hunyuan(service_url, wait_seconds)
-    processor = Hunyuan3DProcessor(service_url=service_url, timeout_seconds=900.0)
+    processor = Hunyuan3DProcessor(service_url=service_url, timeout_seconds=1200.0)
     await processor.process(
         ProcessingInput(
             job_id="smoke-phase3",

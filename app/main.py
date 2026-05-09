@@ -32,6 +32,8 @@ from .modules.captures.router import router as captures_router
 from .modules.captures.service import CaptureService
 from .modules.captures.templates_catalog import TEMPLATE_DESCRIPTIONS
 from .modules.health.router import router as health_router
+from .modules.sales.repository import ensure_sales_schema
+from .modules.sales.router import router as sales_router
 from .storage.local_storage import LocalStorage
 
 
@@ -101,6 +103,7 @@ async def production_lifespan(app: FastAPI) -> AsyncIterator[None]:
     log = get_logger("app.lifespan")
 
     await create_all()
+    await ensure_sales_schema(engine)
 
     storage = LocalStorage()
     storage.ensure_dirs()
@@ -170,6 +173,7 @@ def create_app(
     register_exception_handlers(app)
     app.include_router(health_router)
     app.include_router(captures_router)
+    app.include_router(sales_router)
 
     app.mount(
         "/files",

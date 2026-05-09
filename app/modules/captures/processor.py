@@ -341,9 +341,12 @@ class Hunyuan3DProcessor(Processor):
     def __init__(
         self,
         service_url: str = "http://localhost:7860",
-        timeout_seconds: float = 600.0,   # IA é lenta; 10 min de folga
-        octree_resolution: int = 256,     # sweet spot para 8GB VRAM
-        num_inference_steps: int = 30,
+        timeout_seconds: float = 1200.0,  # IA e lenta; 20 min para steps/textura altos
+        octree_resolution: int = 384,     # qualidade maior, exige mais VRAM
+        num_inference_steps: int = 75,
+        guidance_scale: float = 7.5,
+        mc_algo: str = "mc",
+        texture_resolution: int = 2048,
         _transport=None,          # parâmetro privado, apenas para testes unitários
         _retry_interval: float = 5.0,     # intervalo entre retentativas de health check
     ):
@@ -351,6 +354,9 @@ class Hunyuan3DProcessor(Processor):
         self.timeout_seconds = timeout_seconds
         self.octree_resolution = octree_resolution
         self.num_inference_steps = num_inference_steps
+        self.guidance_scale = guidance_scale
+        self.mc_algo = mc_algo
+        self.texture_resolution = texture_resolution
         self._transport = _transport
         self._retry_interval = _retry_interval
 
@@ -419,6 +425,9 @@ class Hunyuan3DProcessor(Processor):
             dados_form = {
                 "octree_resolution": str(self.octree_resolution),
                 "num_inference_steps": str(self.num_inference_steps),
+                "guidance_scale": str(self.guidance_scale),
+                "mc_algo": self.mc_algo,
+                "texture_resolution": str(self.texture_resolution),
             }
 
             _log.info(
