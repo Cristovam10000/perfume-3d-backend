@@ -16,6 +16,7 @@ Observação estrutural: `C:\TCC` não é um repositório Git único. O históri
 | 5 | [`2026-04-28_fase4-fase5-preprocessamento-cleanup-label.md`](2026-04-28_fase4-fase5-preprocessamento-cleanup-label.md) | 2026-04-28 → 2026-04-29 | `back`: `6e6f212`, `df843ca` | **Fases 4 e 5** — `StandardImagePreprocessor`, `BlenderMeshCleaner`, `LanczosLabelUpscaler`, `BlenderLabelProjector` e smokes ponta a ponta para limpeza/refinamento/label. |
 | 6 | [`2026-05-09_integracao-sales-e-melhorias-hunyuan.md`](2026-05-09_integracao-sales-e-melhorias-hunyuan.md) | 2026-05-09 | `back`: `724915c`; relacionado: `df843ca`; `front`: mudanças locais não commitadas | **Integração comercial + ajustes Hunyuan** — módulo `sales`, endpoints de snapshot/produto/estoque/venda, sincronização inicial do front, parâmetros Hunyuan 384/75/7.5/2048 e fallback para `mc` após falha do `dmc`. |
 | 7 | [`2026-05-09_validacao-smoke-hunyuan-e-documentacao-cronologica.md`](2026-05-09_validacao-smoke-hunyuan-e-documentacao-cronologica.md) | 2026-05-09 | `back`: `724915c`; relacionados: `df843ca`, `6e6f212`; `historico/`: sem commit próprio no momento | **Validação operacional + documentação cronológica** — registra smokes reais Hunyuan/Fase 5, links do viewer, timeout de `/generate`, distinção entre `--no-label` e textura Hunyuan, bypass conservador do cleanup e auditoria Git do histórico. |
+| 8 | [`2026-05-15_integracao-pipeline-ia-e-cache-clip.md`](2026-05-15_integracao-pipeline-ia-e-cache-clip.md) | 2026-05-15 | `back`: `a2170b0` (docs) + 3 commits Fase 1/2/3 (código) | **Integração do pipeline IA ao `/captures` + cache CLIP cross-tenant** — Hunyuan vira default; `IntegratedPipeline` orquestra 8 stages dentro do worker; nova tabela `modelos_3d_universais` separada da `modelos_3d_produto` por-tenant; `productId` opcional no `POST /captures`; service refatorado magro; `PROCESSOR_TYPE` → `PIPELINE_MODE` com alias legacy; 205 testes passando. |
 
 ## Linha Do Tempo
 
@@ -31,6 +32,7 @@ timeline
     2026-04-29    : Reforço smoke_phase5 : timeout/octree/inference_steps configuráveis
     2026-05-09    : Sessão 6 — Integração comercial + Hunyuan : Sales API + sync front + parâmetros 384/75/7.5/2048 + fallback mc
                   : Sessão 7 — Validação smoke + documentação : smokes reais Hunyuan/Fase 5 + timeout + viewer + auditoria Git/historico
+    2026-05-15    : Sessão 8 — Integração pipeline IA + cache CLIP : IntegratedPipeline no /captures + modelos_3d_universais cross-tenant + productId opcional
 ```
 
 ## Convenções

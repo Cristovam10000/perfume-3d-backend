@@ -17,17 +17,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.config import Settings
 from app.database import Base
-from app.main import (
-    build_classifier,
-    build_color_detector,
-    build_processor,
-    create_app,
-)
-from app.modules.captures.classifier import CLIPClassifier, DisabledClassifier
-from app.modules.captures.color_detector import (
-    AverageColorDetector,
-    DisabledColorDetector,
-)
+from app.main import build_pipeline, create_app
+from app.modules.captures.pipeline import IntegratedPipeline
 from app.modules.captures.processor import FakeProcessor, TemplateProcessor
 from app.modules.captures.queue import ProcessingQueue
 from app.modules.captures.service import CaptureService
@@ -111,6 +102,26 @@ class TestEndToEndFlow:
         assert glb.status_code == 200
         assert glb.content[:4] == b"glTF", "Deveria servir um GLB válido"
 
+    @pytest.mark.asyncio
+    async def test_upload_with_product_id_is_accepted(
+        self, integration_client: AsyncClient
+    ):
+        """productId opcional no form-data nao deve quebrar o upload."""
+        files = [
+            ("images", ("a.jpg", b"\xff\xd8\xff\x00aaa", "image/jpeg")),
+        ]
+        data = {"productId": "42"}
+        create = await integration_client.post("/captures", files=files, data=data)
+        assert create.status_code == 201
+
+        job_id = create.json()["jobId"]
+        app = integration_client._transport.app  # type: ignore[attr-defined]
+        await app.state.queue.join()
+
+        status = await integration_client.get(f"/captures/{job_id}/status")
+        assert status.status_code == 200
+        assert status.json()["status"] == "completed"
+
 
 class TestAppStructure:
     def test_create_app_without_lifespan_boots(self, tmp_path: Path):
@@ -123,86 +134,89 @@ class TestAppStructure:
         assert any(getattr(r, "path", "").startswith("/files") for r in app.routes)
 
 
-class TestBuildProcessorFactory:
-    def test_returns_fake_when_type_is_fake(self, tmp_path: Path):
-        cfg = Settings(processor_type="fake", storage_root=tmp_path)
-        processor = build_processor(cfg)
+class TestBuildPipelineFactory:
+    def test_fake_pipeline_returns_fake_processor(self, tmp_path: Path):
+        cfg = Settings(pipeline_mode="fake", storage_root=tmp_path)
+        processor = build_pipeline(cfg, LocalStorage(root=tmp_path))
         assert isinstance(processor, FakeProcessor)
 
-    def test_returns_template_when_type_is_template(self, tmp_path: Path):
+    def test_template_pipeline_returns_template_processor(self, tmp_path: Path):
         cfg = Settings(
-            processor_type="template",
+            pipeline_mode="template",
             storage_root=tmp_path,
             blender_executable=tmp_path / "blender.exe",
             templates_dir=tmp_path / "templates",
         )
-        processor = build_processor(cfg)
+        processor = build_pipeline(cfg, LocalStorage(root=tmp_path))
         assert isinstance(processor, TemplateProcessor)
-        # Settings sao propagadas para o processor
         assert processor.blender_executable == cfg.blender_executable
         assert processor.templates_dir == cfg.templates_dir
 
-    def test_invalid_processor_type_rejected_by_pydantic(self, tmp_path: Path):
-        # Literal["fake","template"] no Settings barra valores invalidos antes
-        # de chegar no factory. Garantia da camada de config, nao do main.
+    def test_integrated_pipeline_compose_stages(self, tmp_path: Path):
+        cfg = Settings(
+            pipeline_mode="integrated",
+            cache_enabled=False,
+            pipeline_fallback_to_template=False,
+            storage_root=tmp_path,
+            blender_executable=tmp_path / "blender.exe",
+            templates_dir=tmp_path / "templates",
+        )
+        processor = build_pipeline(cfg, LocalStorage(root=tmp_path))
+        assert isinstance(processor, IntegratedPipeline)
+        # Sem cache, embedder e cache caem para Disabled.
+        from app.modules.captures.cache import DisabledModelCache
+        from app.modules.captures.embeddings import DisabledEmbedder
+
+        assert isinstance(processor.embedder, DisabledEmbedder)
+        assert isinstance(processor.cache, DisabledModelCache)
+        assert processor.fallback_processor is None
+
+    def test_integrated_with_fallback_template(self, tmp_path: Path):
+        cfg = Settings(
+            pipeline_mode="integrated",
+            pipeline_fallback_to_template=True,
+            cache_enabled=False,
+            storage_root=tmp_path,
+            blender_executable=tmp_path / "blender.exe",
+            templates_dir=tmp_path / "templates",
+        )
+        processor = build_pipeline(cfg, LocalStorage(root=tmp_path))
+        assert isinstance(processor, IntegratedPipeline)
+        assert isinstance(processor.fallback_processor, TemplateProcessor)
+
+    def test_invalid_pipeline_mode_rejected_by_pydantic(self, tmp_path: Path):
+        # Literal["fake","template","integrated"] no Settings barra valores invalidos.
         with pytest.raises(Exception):  # pydantic.ValidationError
-            Settings(processor_type="meshroom", storage_root=tmp_path)
+            Settings(pipeline_mode="meshroom", storage_root=tmp_path)
 
+    def test_legacy_processor_type_template_fitting_falls_back_to_integrated(
+        self, tmp_path: Path, caplog
+    ):
+        """O .env antigo tinha PROCESSOR_TYPE=template_fitting (invalido).
 
-class TestBuildClassifierFactory:
-    def test_returns_disabled_with_default_template_id(self, tmp_path: Path):
-        cfg = Settings(
-            classifier_type="disabled",
-            default_template_id="my_default",
-            storage_root=tmp_path,
-        )
-        classifier = build_classifier(cfg)
-        assert isinstance(classifier, DisabledClassifier)
-        assert classifier.default_template_id == "my_default"
+        O alias legacy deve manter PIPELINE_MODE=integrated com warning.
+        """
+        import logging
 
-    def test_clip_with_no_normalized_templates_raises(self, tmp_path: Path):
-        empty_dir = tmp_path / "templates"
-        empty_dir.mkdir()
-        cfg = Settings(
-            classifier_type="clip",
-            templates_dir=empty_dir,
-            storage_root=tmp_path,
-        )
-        with pytest.raises(ValueError, match="Nenhum template GLB"):
-            build_classifier(cfg)
-
-    def test_clip_filters_to_existing_templates(self, tmp_path: Path):
-        # Cria apenas rectangular_basic.glb — outros templates do catalog ficam fora.
-        templates_dir = tmp_path / "templates"
-        templates_dir.mkdir()
-        (templates_dir / "rectangular_basic.glb").write_bytes(b"glTF\x02fake")
+        from app.config import _apply_legacy_aliases
 
         cfg = Settings(
-            classifier_type="clip",
-            templates_dir=templates_dir,
+            processor_type="template_fitting",
+            pipeline_mode="integrated",
             storage_root=tmp_path,
         )
-        classifier = build_classifier(cfg)
-        assert isinstance(classifier, CLIPClassifier)
-        # Apenas o template existente entrou no mapping.
-        assert set(classifier.templates.keys()) == {"rectangular_basic"}
+        with caplog.at_level(logging.WARNING, logger="app.config"):
+            _apply_legacy_aliases(cfg)
+        assert cfg.pipeline_mode == "integrated"
+        assert any("template_fitting" in rec.message for rec in caplog.records)
 
-    def test_invalid_classifier_type_rejected_by_pydantic(self, tmp_path: Path):
-        with pytest.raises(Exception):
-            Settings(classifier_type="resnet", storage_root=tmp_path)
+    def test_legacy_processor_type_fake_is_applied(self, tmp_path: Path):
+        from app.config import _apply_legacy_aliases
 
-
-class TestBuildColorDetectorFactory:
-    def test_returns_disabled_when_type_is_disabled(self, tmp_path: Path):
-        cfg = Settings(color_detector_type="disabled", storage_root=tmp_path)
-        detector = build_color_detector(cfg)
-        assert isinstance(detector, DisabledColorDetector)
-
-    def test_returns_average_when_type_is_average(self, tmp_path: Path):
-        cfg = Settings(color_detector_type="average", storage_root=tmp_path)
-        detector = build_color_detector(cfg)
-        assert isinstance(detector, AverageColorDetector)
-
-    def test_invalid_color_detector_type_rejected_by_pydantic(self, tmp_path: Path):
-        with pytest.raises(Exception):
-            Settings(color_detector_type="histogram", storage_root=tmp_path)
+        cfg = Settings(
+            processor_type="fake",
+            pipeline_mode="integrated",
+            storage_root=tmp_path,
+        )
+        _apply_legacy_aliases(cfg)
+        assert cfg.pipeline_mode == "fake"
