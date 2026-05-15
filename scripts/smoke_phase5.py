@@ -37,6 +37,7 @@ from app.modules.captures.label_upscaler import LanczosLabelUpscaler
 from app.modules.captures.mesh_cleaner import BlenderMeshCleaner, MeshCleanupInput
 from app.modules.captures.mesh_refiner import BlenderMeshRefiner, RefinementInput
 from app.modules.captures.processor import Hunyuan3DProcessor, ProcessingInput
+from app.modules.captures.top_projector import BlenderTopProjector, TopProjectionInput
 
 
 EXTENSOES_IMAGEM = {".jpg", ".jpeg", ".png", ".webp"}
@@ -386,6 +387,47 @@ async def projetar_label(
     )
 
 
+async def segmentar_top(top_image: Path, destino: Path) -> Path:
+    """Remove fundo da foto do topo via rembg. Retorna PNG RGBA sem fundo."""
+    import asyncio
+    from PIL import Image
+    import rembg
+
+    def _run() -> Path:
+        dados = top_image.read_bytes()
+        resultado = rembg.remove(dados)
+        saida = destino / f"top_segmented.png"
+        saida.parent.mkdir(parents=True, exist_ok=True)
+        saida.write_bytes(resultado)
+        # Valida que gerou RGBA
+        img = Image.open(saida)
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+            img.save(saida)
+        return saida
+
+    saida = await asyncio.to_thread(_run)
+    log(f"  fundo do topo removido: {saida.name}")
+    return saida
+
+
+async def projetar_topo(
+    input_glb: Path,
+    top_image: Path,
+    output_glb: Path,
+    tmp_root: Path,
+) -> None:
+    projector = BlenderTopProjector(timeout_seconds=120.0)
+    await projector.project(
+        TopProjectionInput(
+            input_glb=input_glb,
+            top_image=top_image,
+            output_glb=output_glb,
+        )
+    )
+    log(f"  textura do topo projetada: {output_glb.name}")
+
+
 def copiar_para_storage(
     *,
     raw_glb: Path,
@@ -441,11 +483,21 @@ async def main_async(args: argparse.Namespace) -> int:
     cleaned_glb = tmp_root / "cleaned.glb"
     refined_glb = tmp_root / "refined.glb"
     with_label_glb = tmp_root / "with_label.glb"
+    with_top_glb  = tmp_root / "with_top.glb"
     label_raw = tmp_root / "label_raw.png"
     label_upscaled = tmp_root / "label_upscaled.png"
 
+    top_image: Path | None = None
+    if args.top_image is not None:
+        top_image = Path(args.top_image).resolve()
+        if not top_image.exists():
+            log(f"AVISO: --top-image '{top_image}' nao encontrada, etapa de topo sera pulada")
+            top_image = None
+
     log(f"fotos = {fotos_dir}")
     log(f"usando {len(fotos)} foto(s): {[foto.name for foto in fotos]}")
+    if top_image:
+        log(f"foto do topo = {top_image.name}")
 
     with CronometroEtapa(f"(1/8) preprocessando {len(fotos)} fotos"):
         fotos_preprocessadas = await preprocessar_fotos(fotos, preprocessed_dir)
@@ -528,11 +580,22 @@ async def main_async(args: argparse.Namespace) -> int:
                 front_axis=args.front_axis,
             )
 
+    # Etapa opcional: projeta foto do topo na tampa
+    glb_final = with_label_glb
+    if top_image is not None:
+        with CronometroEtapa("(+) removendo fundo da foto do topo"):
+            top_image_seg = await segmentar_top(top_image, tmp_root)
+        with CronometroEtapa("(+) projetando textura do topo na tampa"):
+            await projetar_topo(with_label_glb, top_image_seg, with_top_glb, tmp_root)
+            glb_final = with_top_glb
+    else:
+        log("(+) projetando textura do topo: pulado (sem --top-image)")
+
     copiar_para_storage(
         raw_glb=raw_glb,
         cleaned_glb=cleaned_glb,
         refined_glb=refined_glb,
-        with_label_glb=with_label_glb,
+        with_label_glb=glb_final,
         preprocessed=fotos_preprocessadas,
         segmentadas=imagens_segmentadas,
         label_raw=label_extraida,
@@ -585,6 +648,12 @@ def parse_args() -> argparse.Namespace:
         help="pula extracao e projecao de label; entrega refined.glb como resultado final",
     )
     parser.add_argument("--front-axis", default="front_y_neg")
+    parser.add_argument(
+        "--top-image",
+        type=str,
+        default=None,
+        help="caminho para foto do topo do frasco; quando fornecida projeta a textura na tampa",
+    )
     parser.add_argument(
         "--min-island-ratio",
         type=float,
