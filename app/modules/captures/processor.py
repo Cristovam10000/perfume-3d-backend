@@ -9,6 +9,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
+from .template_fitting import TemplateFitAnalyzer, TemplateFittingError
+
 
 class ProcessingError(Exception):
     """Falha na execução do pipeline 3D pelo processor.
@@ -181,6 +183,7 @@ def _build_cube_glb() -> bytes:
 
 # Caminho default do script de customização (irmão do diretório deste módulo).
 _DEFAULT_SCRIPT_PATH = Path(__file__).resolve().parent / "blender_scripts" / "customize_template.py"
+_DEFAULT_FIT_SCRIPT_PATH = Path(__file__).resolve().parent / "blender_scripts" / "fit_template.py"
 
 
 class TemplateProcessor(Processor):
@@ -304,4 +307,125 @@ class TemplateProcessor(Processor):
             completed.returncode,
             completed.stdout or b"",
             completed.stderr or b"",
+        )
+
+
+class TemplateFittingProcessor(TemplateProcessor):
+    """Customiza e deforma um template GLB a partir da silhueta das fotos.
+
+    Este processor evolui o `TemplateProcessor` sem remover o caminho antigo.
+    Antes de chamar o Blender, ele:
+
+    1. segmenta a foto frontal por heuristica de fundo;
+    2. estima proporcoes da silhueta;
+    3. escolhe o template quando o classificador externo nao foi usado;
+    4. gera recortes candidatos para label/topo;
+    5. passa escalas de deformacao para `fit_template.py`.
+
+    Dependencias de visao (Pillow/Numpy/OpenCV) continuam opcionais e sao
+    carregadas apenas quando `PROCESSOR_TYPE=template_fitting`.
+    """
+
+    def __init__(
+        self,
+        blender_executable: Path,
+        templates_dir: Path,
+        *,
+        script_path: Path | None = None,
+        default_template_id: str = "rectangular_basic",
+        timeout_seconds: float = 240.0,
+        analyzer: TemplateFitAnalyzer | None = None,
+        prefer_input_template_id: bool = False,
+    ):
+        super().__init__(
+            blender_executable=blender_executable,
+            templates_dir=templates_dir,
+            script_path=script_path or _DEFAULT_FIT_SCRIPT_PATH,
+            default_template_id=default_template_id,
+            timeout_seconds=timeout_seconds,
+        )
+        self.analyzer = analyzer or TemplateFitAnalyzer(
+            default_template_id=default_template_id
+        )
+        self.prefer_input_template_id = prefer_input_template_id
+
+    async def process(self, input: ProcessingInput) -> ProcessingResult:
+        self._assert_runtime_assets()
+
+        available_template_ids = {
+            path.stem
+            for path in self.templates_dir.glob("*.glb")
+            if path.is_file()
+        }
+        if not available_template_ids:
+            raise ProcessingError(
+                f"Nenhum template GLB encontrado em {self.templates_dir}"
+            )
+
+        work_dir = input.output_path.parent / f"{input.job_id}_fit"
+        try:
+            plan = await self.analyzer.analyze(
+                input.image_paths,
+                work_dir,
+                available_template_ids=available_template_ids,
+                template_hint=(
+                    input.template_id if self.prefer_input_template_id else None
+                ),
+                explicit_label_image=input.label_image,
+            )
+        except TemplateFittingError as exc:
+            raise ProcessingError(str(exc)) from exc
+
+        template_id = plan.template_id or input.template_id or self.default_template_id
+        template_path = self.templates_dir / f"{template_id}.glb"
+        if not template_path.exists():
+            raise ProcessingError(
+                f"Template '{template_id}' nao existe em {template_path}"
+            )
+
+        plan.write_json(work_dir / "fit_plan.json")
+
+        args = [
+            str(self.blender_executable),
+            "--background",
+            "--python", str(self.script_path),
+            "--",
+            "--template", str(template_path),
+            "--output", str(input.output_path),
+            "--fit-plan", str(work_dir / "fit_plan.json"),
+            "--body-width-scale", f"{plan.body_width_scale:.6f}",
+            "--body-depth-scale", f"{plan.body_depth_scale:.6f}",
+            "--height-scale", f"{plan.height_scale:.6f}",
+            "--cap-width-scale", f"{plan.cap_width_scale:.6f}",
+            "--cap-height-ratio", f"{plan.cap_height_ratio:.6f}",
+        ]
+        if plan.label_image is not None and plan.label_image.exists():
+            args.extend(["--label-image", str(plan.label_image)])
+        if plan.top_image is not None and plan.top_image.exists():
+            args.extend(["--top-image", str(plan.top_image)])
+        if input.liquid_color is not None:
+            args.extend(["--liquid-color", input.liquid_color])
+
+        returncode, _stdout, stderr = await self._run_blender(args)
+
+        if returncode != 0:
+            tail = stderr.decode("utf-8", errors="replace")[-500:]
+            raise ProcessingError(
+                f"Blender retornou {returncode} ao ajustar template "
+                f"'{template_id}': {tail}"
+            )
+
+        if not input.output_path.exists():
+            raise ProcessingError(
+                "Blender concluiu sem erros mas o GLB ajustado nao foi criado: "
+                f"{input.output_path}"
+            )
+
+        return ProcessingResult(
+            output_path=input.output_path,
+            message=(
+                f"Modelo ajustado pelo template '{template_id}' "
+                f"(silhueta {plan.metrics.aspect_ratio:.2f}, "
+                f"confianca {plan.metrics.confidence:.0%})"
+            ),
         )

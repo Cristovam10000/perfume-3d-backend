@@ -28,7 +28,8 @@ class Settings(BaseSettings):
     # ---- Pipeline 3D (Blender / TemplateProcessor) ----
     # 'fake' = FakeProcessor (cubo sintetico, ~3s, sem deps externas).
     # 'template' = TemplateProcessor (Blender headless customiza GLB, ~5-15s).
-    processor_type: Literal["fake", "template"] = "fake"
+    # 'template_fitting' = segmenta silhueta, estima proporcoes e deforma template.
+    processor_type: Literal["fake", "template", "template_fitting"] = "fake"
 
     blender_executable: Path = Field(
         default=Path(r"C:\Program Files\Blender Foundation\Blender 5.1\blender.exe")
@@ -41,6 +42,7 @@ class Settings(BaseSettings):
     classifier_type: Literal["disabled", "clip"] = "disabled"
     clip_model: str = "openai/clip-vit-base-patch32"
     default_template_id: str = "rectangular_basic"
+    template_fitting_prefer_classifier: bool = False
 
     # ---- Detector de cor do liquido ----
     # 'disabled' = template usa sua cor default.

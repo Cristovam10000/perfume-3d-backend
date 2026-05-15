@@ -28,7 +28,11 @@ from app.modules.captures.color_detector import (
     AverageColorDetector,
     DisabledColorDetector,
 )
-from app.modules.captures.processor import FakeProcessor, TemplateProcessor
+from app.modules.captures.processor import (
+    FakeProcessor,
+    TemplateFittingProcessor,
+    TemplateProcessor,
+)
 from app.modules.captures.queue import ProcessingQueue
 from app.modules.captures.service import CaptureService
 from app.storage.local_storage import LocalStorage
@@ -142,8 +146,26 @@ class TestBuildProcessorFactory:
         assert processor.blender_executable == cfg.blender_executable
         assert processor.templates_dir == cfg.templates_dir
 
+    def test_returns_template_fitting_when_type_is_template_fitting(
+        self, tmp_path: Path
+    ):
+        cfg = Settings(
+            processor_type="template_fitting",
+            storage_root=tmp_path,
+            blender_executable=tmp_path / "blender.exe",
+            templates_dir=tmp_path / "templates",
+            default_template_id="cylindrical_basic",
+            template_fitting_prefer_classifier=True,
+        )
+        processor = build_processor(cfg)
+        assert isinstance(processor, TemplateFittingProcessor)
+        assert processor.blender_executable == cfg.blender_executable
+        assert processor.templates_dir == cfg.templates_dir
+        assert processor.default_template_id == "cylindrical_basic"
+        assert processor.prefer_input_template_id is True
+
     def test_invalid_processor_type_rejected_by_pydantic(self, tmp_path: Path):
-        # Literal["fake","template"] no Settings barra valores invalidos antes
+        # Literal no Settings barra valores invalidos antes
         # de chegar no factory. Garantia da camada de config, nao do main.
         with pytest.raises(Exception):  # pydantic.ValidationError
             Settings(processor_type="meshroom", storage_root=tmp_path)

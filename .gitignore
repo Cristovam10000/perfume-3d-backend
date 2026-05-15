@@ -28,8 +28,11 @@ ENV/
 # Armazenamento local gerado em runtime
 storage/uploads/
 storage/models/
+storage/exports/
+storage/smoke/
 storage/*.glb
 storage/*.gltf
+tmp/
 
 # Contexto bruto/local de conversa
 contexto.md

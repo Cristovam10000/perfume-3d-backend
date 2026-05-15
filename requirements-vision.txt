@@ -1,0 +1,13 @@
+# Dependencias opcionais do TemplateFittingProcessor.
+#
+# Necessario quando PROCESSOR_TYPE=template_fitting.
+# Instalacao:
+#   pip install -r requirements-vision.txt
+#
+# OpenCV e usado para limpeza morfologica da mascara quando disponivel. Sem
+# OpenCV, o fitting ainda tenta rodar com Pillow + Numpy, mas a segmentacao fica
+# menos robusta.
+
+numpy>=1.26
+pillow>=10.0
+opencv-python>=4.10

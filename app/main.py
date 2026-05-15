@@ -25,6 +25,7 @@ from .modules.captures.color_detector import (
 from .modules.captures.processor import (
     FakeProcessor,
     Processor,
+    TemplateFittingProcessor,
     TemplateProcessor,
 )
 from .modules.captures.queue import ProcessingQueue
@@ -48,7 +49,14 @@ def build_processor(config: Settings = settings) -> Processor:
             blender_executable=config.blender_executable,
             templates_dir=config.templates_dir,
         )
-    # Pydantic Literal já barra valores fora desses dois antes daqui chegar,
+    if config.processor_type == "template_fitting":
+        return TemplateFittingProcessor(
+            blender_executable=config.blender_executable,
+            templates_dir=config.templates_dir,
+            default_template_id=config.default_template_id,
+            prefer_input_template_id=config.template_fitting_prefer_classifier,
+        )
+    # Pydantic Literal ja barra valores fora desses tipos antes daqui chegar,
     # mas mantemos a guarda explícita para o caso de a Settings ser construída
     # programaticamente em algum teste.
     raise ValueError(f"processor_type inválido: {config.processor_type!r}")
