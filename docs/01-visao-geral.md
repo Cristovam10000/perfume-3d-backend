@@ -1,17 +1,21 @@
 # 01 — Visão geral
 
-## O que o backend é hoje
+## O que o backend é
 
 O `perfume-3d-backend` é um serviço HTTP em **FastAPI** que recebe um lote de fotos de um perfume, gera um modelo 3D `.glb` correspondente e devolve a URL do modelo pronto. É o servidor par do app Flutter em [`../../front`](../../front).
 
-O backend **não faz fotogrametria real** (apesar do diagrama original ter previsto Meshroom/AliceVision). Em vez disso, usa uma abordagem mais defensável academicamente para o MVP:
+A geração 3D usa um **pipeline integrado** baseado em IA generativa:
 
-1. um **classificador CLIP** decide qual template 3D pré-existente melhor representa a forma do frasco fotografado;
-2. um **detector de cor** extrai a cor do líquido a partir de um crop central das fotos;
-3. um **Processor** chama o **Blender headless** para customizar o template escolhido com a cor detectada;
-4. o GLB customizado é servido via `StaticFiles` em `/files/models/<job_id>.glb`.
+1. **Pré-processamento** clássico das fotos (EXIF, white balance, CLAHE, resize ≤2048).
+2. **Remoção de fundo** via `rembg` (modelo `isnet-general-use`).
+3. **Cache global por similaridade CLIP**: se as fotos baterem com um perfume já gerado **por qualquer usuário** (cross-tenant), devolve o GLB cacheado em segundos. Senão, segue para o Hunyuan.
+4. **Hunyuan3D-2mv** (em contêiner Docker dedicado com GPU) gera geometria + textura PBR.
+5. **Pós-processamento** no Blender headless: limpeza conservadora, shader de vidro PBR, extração da label real da foto e projeção como decal frontal.
+6. **Persistência** do GLB final + embedding + metadados na tabela `modelos_3d_universais` (cache global, compartilhado entre todos os usuários). Se o `POST /captures` veio com `productId` opcional, também faz UPSERT em `modelos_3d_produto` para vincular o produto comercial daquele tenant ao molde universal.
 
-Esse fluxo está documentado em detalhe em [09 - Pipeline 3D](09-pipeline-3d.md).
+O **`TemplateProcessor`** (caminho de templates Blender pré-existentes, usado em versões anteriores do MVP) continua disponível como **fallback** quando o Hunyuan está offline ou indisponível, e como *seed* opcional do cache.
+
+Esse fluxo está documentado em detalhe em [09f - Pipeline integrado](09f-pipeline-integrado.md) e [09g - Cache de similaridade CLIP](09g-cache-similaridade-clip.md).
 
 ## Fluxo ponta a ponta
 
@@ -34,15 +38,31 @@ Esse fluxo está documentado em detalhe em [09 - Pipeline 3D](09-pipeline-3d.md)
    ▼
 [CaptureService.process_job]
    │   • marca status=processing
-   │   • chama Classifier.classify(fotos) → template_id
-   │   • chama ColorDetector.detect(fotos) → "#RRGGBB"
-   │   • chama Processor.process(input) → gera <job_id>.glb
-   │   • marca status=completed e grava model_path
+   │   • delega para IntegratedPipeline.process(input)
+   │
+   ▼
+[IntegratedPipeline]
+   │   (1) ImagePreprocessor    → fotos_clean/
+   │   (2) BackgroundRemover    → fotos_mask/
+   │   (3) ModelCache.lookup    → embedding CLIP + cosine vs modelos_3d_universais
+   │
+   ├── HIT  → copia cache/<id>.glb → output_path → fim
+   │
+   └── MISS:
+       (4) Hunyuan3DProcessor   → raw.glb  (~3-5min, GPU)
+       (5) BlenderMeshCleaner   → cleaned.glb (no-op por default)
+       (6) BlenderMeshRefiner   → refined.glb (shader de vidro PBR)
+       (7) LabelExtractor + Upscaler + Projector
+                                → with_label.glb (degrade se não achou label)
+       (8) ModelCache.store     → persiste GLB + embedding + metadata
+   │
+   │  • marca status=completed + grava model_path
    │
    │  (concorrentemente, o app faz GET /captures/<id>/status a cada ~3s)
    ▼
 [GET /captures/<job_id>/status]
-   │   → { status: "completed", modelUrl: "http://.../files/models/<id>.glb" }
+   │   → { status: "completed", modelUrl: "http://.../files/models/<id>.glb",
+   │       origem: "cache" | "generated" }
    ▼
 [App baixa o GLB e renderiza com model_viewer_plus]
 ```
@@ -52,59 +72,78 @@ Esse fluxo está documentado em detalhe em [09 - Pipeline 3D](09-pipeline-3d.md)
 - Receber 1..N fotos via `multipart/form-data` em `POST /captures`.
 - Persistir job + imagens em PostgreSQL.
 - Enfileirar e processar **um job por vez** num worker `asyncio` in-process.
-- Classificar a forma do frasco entre **6 templates pré-existentes** com **OpenAI CLIP** (zero-shot por descrição em texto).
-- Detectar **uma única característica visual**: cor hex média do crop central das fotos.
-- Customizar o template escolhido no **Blender headless** aplicando a cor detectada e (opcionalmente) uma label PNG.
+- Pré-processar as fotos (EXIF, gray-world WB, CLAHE no canal L do LAB, sharpen condicional, resize ≤2048).
+- Remover o fundo via `rembg` (modelo `isnet-general-use`), entregando PNG RGBA com a silhueta do frasco.
+- **Buscar o GLB no cache** comparando o embedding CLIP das fotos com a tabela `modelos_3d_universais`. Hit ≈ 5 s; miss segue o pipeline IA.
+- Gerar geometria + textura via **Hunyuan3D-2mv** num contêiner Docker dedicado (GPU NVIDIA, ~3-5 min).
+- Limpar a malha (Blender headless, em modo conservador / no-op por default).
+- Refinar materiais aplicando shader de **vidro PBR** no corpo do frasco.
+- Extrair a **label real da foto** via OpenCV (`HomographyLabelExtractor`), fazer upscale Lanczos para 2048 px e projetar como **decal frontal** no GLB.
+- Persistir o GLB final + embedding + metadados (cor do líquido inferida, label) na tabela `modelos_3d_universais`.
 - Expor o GLB final via `StaticFiles` em `/files/models/<id>.glb`.
-- Responder `GET /captures/<id>/status` com URL absoluta do modelo (montada a partir de `request.base_url` para funcionar tanto em emulador quanto em device físico).
+- Responder `GET /captures/<id>/status` com URL absoluta do modelo (montada a partir de `request.base_url` para funcionar tanto em emulador Android quanto em device físico) e o campo `origem` (`cache`/`generated`).
 - Servir templates puros via `/templates/<id>.glb` para inspeção/debug.
-- Oferecer um **pipeline alternativo por IA generativa** (Hunyuan3D-2mv em contêiner Docker dedicado) com pré-processamento clássico de imagem, limpeza conservadora de malha, refinamento de shader de vidro PBR e projeção de label real extraída da foto. Esse caminho **não está integrado ao `CaptureService` ainda** (Fase 7); cada componente é exercitado standalone via smokes manuais (`scripts/smoke_phase3.py`, `smoke_phase4.py`, `smoke_phase5.py`). Ver [09b](09b-pipeline-ai-hunyuan.md), [09c](09c-refinamento-mesh.md), [09d](09d-preprocessamento-e-cleanup.md), [09e](09e-aplicacao-label.md).
 - Expor uma **API comercial mínima** (`/sales/*`) para o módulo do app que gerencia clientes, produtos, vendas parceladas, estoque e pagamentos — modelo monolítico modular: o módulo `app/modules/sales/` compartilha o mesmo banco do `captures` (ver [13](13-endpoints-http.md), [12](12-armazenamento-e-banco.md)).
 
 ## Fora do escopo (o que **não** existe)
 
 - Autenticação, multi-tenant, RBAC.
-- Pipeline de fotogrametria real (Meshroom/AliceVision/COLMAP) — está no [roadmap](#roadmap-curto).
-- Object storage (S3, Firebase, GCS) — armazenamento é local em disco.
+- Fotogrametria real (Meshroom/AliceVision/COLMAP) — descartada após validação em sessões anteriores; vidro e superfícies reflexivas quebram a correspondência de pontos.
+- Object storage (S3, Firebase, GCS) — armazenamento é local em disco (`storage/cache/`, `storage/uploads/`, `storage/models/`).
 - Observability (Prometheus, OpenTelemetry, Sentry).
-- Migrations com Alembic — hoje o schema é criado por `Base.metadata.create_all()` no startup.
+- Migrations com Alembic — hoje o schema é criado por `Base.metadata.create_all()` no startup (já cobre `modelos_3d_universais`).
 - Histórico de jobs (`GET /captures/history`) ou paginação.
 - Cache, rate limiting, fila distribuída (Celery/RQ/Arq), worker em outra máquina.
-- Renderização server-side dos modelos (PNG preview da banca foi gerado offline com Cycles, fora do request).
+- Pgvector / FAISS — busca de similaridade é linear sobre os embeddings na tabela `modelos_3d_universais`; cabe RAM até ~10k entradas. Acima disso troca-se o `ClipSimilarityCache` por uma implementação indexada mantendo a ABC `ModelCache`.
+- Autenticação / multi-tenant real — não existe ainda. O esquema do cache (`modelos_3d_universais` global + `modelos_3d_produto` por tenant) **já está pronto** para quando isso for adicionado: basta colocar `usuario_id` em `produtos`, e o cache continua funcionando cross-tenant sem refactor.
 
 ## Premissas e simplificações deliberadas
 
 - **Worker único in-process**: bom o bastante para MVP de TCC e demo local. Trocar por Celery/RQ é uma linha em `main.py` (substituir `ProcessingQueue` por outra implementação que respeite a mesma assinatura `submit/start/stop`).
-- **Processor é uma Strategy plugável**: `FakeProcessor` (cubo sintético, ~3s, zero deps) ou `TemplateProcessor` (Blender, ~5-15s). Configurado por `PROCESSOR_TYPE` no `.env`.
-- **Classifier também é Strategy**: `disabled` (sempre usa template default) ou `clip` (CLIP zero-shot, ~2GB de download da primeira vez). Configurado por `CLASSIFIER_TYPE`.
-- **ColorDetector também**: `disabled` (cor padrão do material) ou `average` (RGB médio do crop central, requer Pillow). Configurado por `COLOR_DETECTOR_TYPE`.
-- **Falha graciosa nas etapas opcionais**: se o classificador ou o detector de cor crasharem, o job não falha — cai no template/cor default e segue. Só falha de fato se o `Processor` em si crashar.
-- **Schema criado no startup**: `create_all()` no `production_lifespan` cria tabelas se faltarem. Adequado pro MVP, mas não substitui Alembic em produção.
+- **Pipeline como Strategy plugável**: `FakeProcessor` (cubo sintético, ~3s, zero deps), `TemplateProcessor` (Blender headless, ~5-15s) ou `IntegratedPipeline` (cache + Hunyuan + pós-proc). Configurado por `PIPELINE_MODE` no `.env`.
+- **Cada stage do pipeline também é Strategy**: `BackgroundRemover`, `ImagePreprocessor`, `MeshCleaner`, `MeshRefiner`, `LabelExtractor`, `LabelUpscaler`, `LabelProjector` — cada um com um `Disabled*` para teste e uma implementação real configurada por `.env`.
+- **CLIP repurposado**: o `CLIPClassifier` legado, que escolhia o `template_id` entre 6 frascos, vira `ImageEmbedder` que produz o embedding usado pelo `ModelCache`. Mesmo modelo (`CLIP_MODEL`), uso diferente.
+- **`ColorDetector`**: mantido no código como histórico mas **não usado** pelo pipeline integrado (o Hunyuan infere cor das fotos). Pode ser ativado para preencher `liquid_color` como metadado se você quiser usar essa informação no `/sales/*`.
+- **Falha graciosa em cada stage**:
+  - Pré-processamento falha → segue com a foto original.
+  - Remoção de fundo falha → segue com a foto preprocessada (qualidade do Hunyuan cai, mas o job termina).
+  - Cache lookup falha → comporta como miss.
+  - Label extraction falha → degrade, mantém `refined.glb` sem label.
+  - **Hunyuan offline ou timeout** → cai no `TemplateProcessor` (se configurado como fallback) ou marca o job como `error`.
+- **Schema criado no startup**: `create_all()` no `production_lifespan` cria as tabelas se faltarem, incluindo a `modelos_3d_universais`. Adequado para o MVP, mas não substitui Alembic em produção.
+- **Threshold de similaridade do cache** inicia em `0.92` (cosine); precisa ser calibrado com fotos reais antes da defesa.
 
 ## Roadmap curto
 
-O backend está estável no MVP atual. As evoluções planejadas/discutidas:
+O backend está em fase de **integração** do pipeline IA com cache. Evoluções planejadas:
 
-- **Fidelidade visual**: substituir o pipeline atual por **AI image-to-3D** (Hunyuan3D-2 ou TripoSR) ou **3D Gaussian Splatting**, mantendo `Processor` como Strategy. O ABC já comporta — basta adicionar `Hunyuan3DProcessor` e plugar via `PROCESSOR_TYPE=hunyuan3d`.
+- **Calibração do threshold do cache**: rodar dataset real, medir taxa de falso-positivo/falso-negativo, ajustar `CACHE_SIMILARITY_THRESHOLD`.
+- **Endpoint admin do cache**: `GET /captures/cache` e `DELETE /captures/cache/<id>` para invalidação manual.
 - **Histórico**: endpoint `GET /captures` paginado + tela de histórico no app.
+- **Vínculo com `/sales`**: passar `product_id` opcional no `POST /captures` para amarrar o cache ao catálogo comercial.
 - **Migrations**: introduzir Alembic quando o schema começar a evoluir.
 - **Object storage**: trocar `LocalStorage` por `S3Storage` mantendo a interface.
-
-Detalhes sobre evolução de fidelidade (fotogrametria, image-to-3D, splats) são decisões de produto/tese — ver conversas de planeamento e o roadmap do orientador, não estão rastreadas neste repositório como issue única.
+- **Busca indexada**: trocar busca linear de embeddings por pgvector/FAISS quando o cache passar de ~10k entradas.
 
 ## Decisões técnicas chave (TL;DR)
 
 | Decisão | Por quê |
 |---|---|
-| **Templates pré-existentes** em vez de fotogrametria | Vidro e superfícies reflexivas quebram fotogrametria; templates dão resultado determinístico em ~5s. |
-| **CLIP zero-shot** em vez de classificador treinado | Sem dataset rotulado de frascos. CLIP "entende" descrições em inglês ("a tall slim rectangular dark blue glass perfume bottle"). |
-| **Blender via subprocess + thread** em vez de API Python | `bpy` é difícil de subir como lib em servidor; subprocess é o jeito padrão e isolado. `subprocess.run` em `asyncio.to_thread` evita `NotImplementedError` no Windows com event loop não-Proactor. |
+| **Hunyuan3D-2mv** em vez de fotogrametria | Vidro e superfícies reflexivas quebram fotogrametria (Meshroom/COLMAP). Hunyuan3D-2mv aceita 1–6 vistas e infere geometria + textura. |
+| **Cache global (cross-tenant) por similaridade CLIP** | Hunyuan custa ~3-5 min e GPU. Quando o app virar multi-usuário, o mesmo perfume vai ser fotografado por gente diferente — o GLB precisa ser **reaproveitado entre usuários**. CLIP embedding compara foto-vs-foto, então o cache hita independente do `produto_id` (que é por tenant). |
+| **Tabela `modelos_3d_universais` separada da `modelos_3d_produto`** | `produtos.id` é por vendedor; o molde do frasco é universal. `modelos_3d_universais` guarda o cache global; `modelos_3d_produto` (que já existe) amarra produto comercial → molde via `modelo_universal_id`. Vários produtos de tenants diferentes podem apontar para o mesmo molde. |
+| **Cosine + threshold em vez de pgvector/FAISS** | Até ~10k entradas a busca linear é trivial. Trocar mantendo a ABC `ModelCache` quando virar gargalo. |
+| **`rembg` antes do Hunyuan** | Fotos com fundo não removido degradam significativamente o mesh gerado (modelo inclui partes do fundo como geometria). |
+| **Shader de vidro PBR no Blender** | O Hunyuan pinta vidro como superfície opaca azulada; o refiner substitui o material por `Principled BSDF` com IOR 1.45, transmission 1.0, roughness 0.05. |
+| **Label real extraída da foto** | O Hunyuan inventa texto/marca; perfumaria depende da legibilidade da label, então extraímos da foto via OpenCV (`HomographyLabelExtractor`) e projetamos como decal. |
+| **Blender via subprocess + thread** | `bpy` é difícil de subir como lib em servidor; subprocess é o jeito padrão e isolado. `subprocess.run` em `asyncio.to_thread` evita `NotImplementedError` no Windows. |
 | **Single async worker in-process** | Suficiente para 1 usuário fazendo 1 job por vez (cenário de demo de TCC). Trocar por Celery é local em 1 ponto. |
-| **Static files servindo o GLB** em vez de streaming | `StaticFiles` lida com Range requests e ETag de graça; o app só precisa fazer GET. |
-| **`request.base_url` para montar `modelUrl`** | Mesmo DB funciona em emulador (`10.0.2.2`) e device físico (IP da LAN) sem reconfig. |
+| **`request.base_url` para montar `modelUrl`** | Mesmo banco funciona em emulador (`10.0.2.2`) e device físico (IP da LAN) sem reconfig. |
+| **TemplateProcessor como fallback** | Hunyuan depende de container Docker + GPU; quando offline, o backend ainda devolve algo (template paramétrico) em vez de derrubar o job. |
 
 ## Próximas leituras
 
 - Como rodar: [03 - Inicialização do projeto](03-inicializacao-do-projeto.md).
 - Onde cada coisa mora: [04 - Estrutura de pastas](04-estrutura-de-pastas.md).
-- Como o pipeline funciona em detalhe: [09 - Pipeline 3D](09-pipeline-3d.md).
+- Como o pipeline integrado funciona em detalhe: [09f - Pipeline integrado](09f-pipeline-integrado.md).
+- Como o cache funciona: [09g - Cache de similaridade CLIP](09g-cache-similaridade-clip.md).

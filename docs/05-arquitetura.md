@@ -7,28 +7,34 @@ Este documento descreve a **arquitetura lógica** do backend: camadas, padrões 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  HTTP (FastAPI)                                              │
-│  routers: captures, health  →  dependências, exceções      │
+│  routers: captures, health, sales  →  deps, exceções        │
 └───────────────────────────┬─────────────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────────────┐
 │  Aplicação (use cases)                                       │
-│  CaptureService: orquestra job, classificador, cor, fila,    │
-│                  processor                                   │
+│  CaptureService: cria job, persiste, enfileira,             │
+│                  delega para Pipeline                        │
 └───────────────────────────┬─────────────────────────────────┘
-         │                  │                  │
-         ▼                  ▼                  ▼
-┌──────────────┐  ┌─────────────────┐  ┌──────────────────┐
-│ Infraestrutura│  │  Estratégias    │  │  Persistência   │
-│ LocalStorage  │  │  Processor,     │  │  CaptureRepository│
-│ (disco)       │  │  Classifier,    │  │  + SQLAlchemy   │
-│               │  │  ColorDetector  │  │  async (Postgres)│
-└──────────────┘  └─────────────────┘  └──────────────────┘
-         │
-         ▼
-┌──────────────────┐
-│ Processo externo │
-│ Blender (bpy)    │  invocado via subprocess, não importa o app
-└──────────────────┘
+                            │
+┌───────────────────────────▼─────────────────────────────────┐
+│  Pipeline 3D (composição de Strategies)                      │
+│  IntegratedPipeline = preprocess → rembg → cache.lookup →    │
+│                       hunyuan → cleaner → refiner → label →  │
+│                       cache.store                            │
+└─────┬────────────┬──────────────────┬──────────────┬─────────┘
+      │            │                  │              │
+      ▼            ▼                  ▼              ▼
+┌──────────┐ ┌──────────────┐ ┌─────────────┐ ┌─────────────┐
+│ Storage  │ │ Estratégias  │ │ ModelCache  │ │ Persistência│
+│ Local    │ │ por stage    │ │ (CLIP)      │ │ Postgres    │
+│ (disco)  │ │              │ │             │ │ (SQLAlchemy)│
+└──────────┘ └──────┬───────┘ └──────┬──────┘ └─────────────┘
+                    │                │
+                    ▼                ▼
+            ┌────────────────┐  ┌──────────────────┐
+            │ Hunyuan Docker │  │ Blender headless │
+            │ (HTTP/GPU)     │  │ (subprocess)     │
+            └────────────────┘  └──────────────────┘
 ```
 
 ## Padrão Strategy (pipeline 3D)
@@ -37,16 +43,22 @@ O backend isola trocas de implementação com **ABC** + fábricas em `main.py`:
 
 | Abstração | Implementações | Configuração (`.env`) |
 |-----------|----------------|----------------------|
-| `Processor` | `FakeProcessor`, `TemplateProcessor` | `PROCESSOR_TYPE` = `fake` \| `template` |
-| `Classifier` | `DisabledClassifier`, `CLIPClassifier` | `CLASSIFIER_TYPE` = `disabled` \| `clip` |
-| `ColorDetector` | `DisabledColorDetector`, `AverageColorDetector` | `COLOR_DETECTOR_TYPE` = `disabled` \| `average` |
+| `Processor` (raiz) | `FakeProcessor`, `TemplateProcessor`, `IntegratedPipeline` | `PIPELINE_MODE` = `fake` \| `template` \| `integrated` |
+| `ImagePreprocessor` | `DisabledImagePreprocessor`, `StandardImagePreprocessor` | `IMAGE_PREPROCESSOR_TYPE` = `disabled` \| `standard` |
+| `BackgroundRemover` | `DisabledBackgroundRemover`, `RembgBackgroundRemover` | `BACKGROUND_REMOVER_TYPE` = `disabled` \| `rembg` |
+| `MeshCleaner` | `DisabledMeshCleaner`, `BlenderMeshCleaner` | `MESH_CLEANER_TYPE` = `disabled` \| `blender` |
+| `MeshRefiner` | `DisabledMeshRefiner`, `BlenderMeshRefiner` | `MESH_REFINER_TYPE` = `disabled` \| `blender` |
+| `LabelExtractor` | `DisabledLabelExtractor`, `HomographyLabelExtractor` | `LABEL_EXTRACTOR_TYPE` = `disabled` \| `homography` |
+| `LabelUpscaler` | `DisabledLabelUpscaler`, `LanczosLabelUpscaler` | `LABEL_UPSCALER_TYPE` = `disabled` \| `lanczos` |
+| `LabelProjector` | `DisabledLabelProjector`, `BlenderLabelProjector` | `LABEL_PROJECTOR_TYPE` = `disabled` \| `blender` |
+| `ImageEmbedder` | `DisabledEmbedder`, `ClipImageEmbedder` | `CACHE_EMBEDDER_TYPE` = `disabled` \| `clip` |
+| `ModelCache` | `DisabledModelCache`, `ClipSimilarityCache` | `CACHE_ENABLED` = `true` \| `false` |
 
-- O **resto do código** (principalmente `CaptureService`) depende só das ABCs, não conhece CLIP nem Blender.
-- Trocar o pipeline 3D no futuro (ex.: Hunyuan3D) = nova classe `Processor` + uma linha na factory `build_processor()`.
+O **resto do código** (principalmente `CaptureService`) depende só das ABCs e do `Processor` raiz; não conhece CLIP, rembg nem Blender direto. O `IntegratedPipeline` orquestra os stages internamente e expõe a mesma interface `Processor.process(input)`.
 
 ## Injeção de dependência
 
-- **FastAPI**: `get_capture_service(request)` lê `request.app.state.capture_service` (ver [`dependencies.py`](../app/dependencies.py)). O `CaptureService` é montado no `production_lifespan` com as factories acima.
+- **FastAPI**: `get_capture_service(request)` lê `request.app.state.capture_service` (ver [`dependencies.py`](../app/dependencies.py)). O `CaptureService` é montado no `production_lifespan` com as factories.
 - **Testes**: `create_app(storage_dir=tmp, lifespan=None)` permite injetar serviço mock ou DB SQLite sem estado global compartilhado.
 
 ## Fluxo de um job (sequência)
@@ -58,9 +70,9 @@ sequenceDiagram
     participant S as CaptureService
     participant Q as ProcessingQueue
     participant W as process_job
-    participant Cl as Classifier
-    participant Co as ColorDetector
-    participant P as Processor
+    participant Pipe as IntegratedPipeline
+    participant Cache as ModelCache
+    participant Hun as Hunyuan Docker
     participant FS as storage + /files
 
     C->>R: POST /captures (multipart)
@@ -70,25 +82,36 @@ sequenceDiagram
     S-->>C: 201 { jobId }
     Q->>W: process_job (async)
     W->>S: _prepare_job → processing
-    W->>Cl: classify(paths)
-    W->>Co: detect(paths)
-    W->>P: process(template_id, liquid_color, …)
-    P->>FS: grava .glb
+    W->>Pipe: process(input)
+    Pipe->>Pipe: preprocess + rembg
+    Pipe->>Cache: lookup(embedding)
+    alt cache HIT
+        Cache-->>Pipe: cached_glb
+        Pipe->>FS: copia cache GLB → output_path
+    else cache MISS
+        Pipe->>Hun: POST /generate (multipart)
+        Hun-->>Pipe: raw.glb
+        Pipe->>Pipe: cleaner + refiner + label
+        Pipe->>Cache: store(embedding, glb, meta)
+    end
+    Pipe-->>W: ProcessingResult
     W->>S: completed + model_path
     C->>R: GET /captures/{id}/status
-    R-->>C: { status, modelUrl }
+    R-->>C: { status, modelUrl, origem }
 ```
 
 ## Concorrência e fila
 
 - `ProcessingQueue` é uma `asyncio.Queue` com **um worker** in-process (task `asyncio.create_task`), consumindo `job_id` e chamando `CaptureService.process_job`.
 - Não há fila distribuída (Redis/Celery); adequado a MVP e TCC. Escalar = trocar `ProcessingQueue` por outra implementação com a mesma interface (`submit` / `start` / `stop`).
+- O Hunyuan roda **em outro processo** (contêiner Docker) e é chamado via `httpx.AsyncClient`. O backend não importa `torch` nem nenhuma lib de ML pesada.
 
 ## Tratamento de erros
 
 - Erros de domínio: `AppError` e subclasses (`ValidationError` 422, `NotFoundError` 404) → JSON `{"error": "..."}`.
-- Falhas do **classificador** ou **detector de cor** durante `process_job`: logadas, job **não** falha; usam default (`rectangular_basic` e cor padrão do material).
-- Falha do **Processor** (Blender com exit ≠ 0, GLB ausente): job vai para `error` com mensagem.
+- Falhas **dentro de stages opcionais** do pipeline (preprocess, rembg, label extraction) são logadas, o stage cai para bypass e o job continua. Documentado em [09f](09f-pipeline-integrado.md).
+- Falha do **Hunyuan** (container offline, timeout, GLB inválido): se há `TemplateProcessor` configurado como fallback, o backend tenta gerar um template paramétrico; senão, o job vai para `error` com mensagem.
+- Falha do **refiner** ou **projeção de label**: pipeline degrada — devolve o último GLB válido (`refined.glb` ou `cleaned.glb`).
 
 ## Onde achar cada conceito
 
@@ -96,14 +119,18 @@ sequenceDiagram
 |----------|----------|
 | Fábricas e lifespan | `app/main.py` |
 | Orquestração do job | `app/modules/captures/service.py` |
+| Composição do pipeline | `app/modules/captures/pipeline.py` |
+| Cache de modelos (CLIP) | `app/modules/captures/cache.py`, `app/modules/captures/embeddings.py` |
+| Tabela persistente do cache | `app/modules/captures/modelos_3d_universais.py` |
 | Submissão e worker | `app/modules/captures/queue.py` |
 | HTTP captures | `app/modules/captures/router.py` |
 | DTOs e aliases camelCase | `app/modules/captures/schemas.py` |
-| Regras 3D (GLB) | `app/modules/captures/processor.py` |
-| Script Blender | `app/modules/captures/blender_scripts/customize_template.py` |
+| Cliente HTTP do Hunyuan | `app/modules/captures/processor.py` (`Hunyuan3DProcessor`) |
+| Scripts Blender | `app/modules/captures/blender_scripts/` |
 
 ## Leituras relacionadas
 
 - [06 — Bootstrap e lifespan](06-bootstrap-e-lifespan.md)
-- [09 — Pipeline 3D](09-pipeline-3d.md)
-- [10 — Classificador e cor](10-classificador-e-cor.md)
+- [09f — Pipeline integrado](09f-pipeline-integrado.md)
+- [09g — Cache de similaridade CLIP](09g-cache-similaridade-clip.md)
+- [10 — Embedder CLIP e detector de cor](10-classificador-e-cor.md)

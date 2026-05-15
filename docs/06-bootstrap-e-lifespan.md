@@ -16,13 +16,17 @@ O ponto de entrada da aplicação é `app/main.py`, que expõe `app = create_app
 Executado na subida do Uvicorn, **antes** de aceitar tráfego:
 
 1. `configure_logging()` — log em stdout.
-2. `await create_all()` — cria tabelas SQLAlchemy no Postgres (sem Alembic no MVP).
-3. `LocalStorage().ensure_dirs()` — `uploads/` e `models/`.
-4. `build_processor()` / `build_classifier()` / `build_color_detector()` — leem `Settings` (`.env`).
-5. `CaptureService(session_factory, storage, processor, queue, classifier, color_detector)`.
-6. `app.state.capture_service` e `app.state.queue = queue`.
-7. `queue.start(service.process_job)` — inicia o worker assíncrono.
-8. Log: `Backend pronto em <host>:<port> (processor=..., classifier=..., color=...)`.
+2. `await create_all()` — cria tabelas SQLAlchemy no Postgres (`capture_jobs`, `capture_images`, `modelos_3d_universais`). Sem Alembic no MVP.
+3. `await ensure_sales_schema(engine)` — `ALTER TABLE IF EXISTS` para campos do módulo `sales`.
+4. `LocalStorage().ensure_dirs()` — `uploads/`, `models/`, `cache/`.
+5. `build_pipeline()` — fabrica o `Processor` raiz conforme `PIPELINE_MODE` no `.env`:
+   - `fake` → `FakeProcessor()`
+   - `template` → `TemplateProcessor(blender_executable, templates_dir)`
+   - `integrated` → `IntegratedPipeline(...)` com todas as factories de stage (`build_image_preprocessor`, `build_background_remover`, `build_embedder`, `build_model_cache`, `build_hunyuan`, `build_mesh_cleaner`, `build_mesh_refiner`, `build_label_extractor`, `build_label_upscaler`, `build_label_projector`).
+6. `CaptureService(session_factory, storage, pipeline, queue)`.
+7. `app.state.capture_service` e `app.state.queue = queue`.
+8. `queue.start(service.process_job)` — inicia o worker assíncrono.
+9. Log: `Backend pronto em <host>:<port> (pipeline=<mode>, cache_enabled=<bool>, hunyuan_url=<url>)`.
 
 No **shutdown** (yield final do lifespan):
 

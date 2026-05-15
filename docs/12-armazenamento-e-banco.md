@@ -7,10 +7,12 @@ Raiz: `settings.storage_root` (default `./storage`), resolvida para caminho abso
 | Caminho | Conteúdo | Git |
 |---------|----------|-----|
 | `uploads/<job_id>/<filename>` | Fotos enviadas no `POST /captures` | ignorado (`.gitignore`) |
-| `models/<job_id>.glb` | Modelo 3D gerado pelo `Processor` | ignorado |
+| `models/<job_id>.glb` | Modelo 3D entregue para o job (cópia do cache em hit, ou GLB recém-gerado em miss) | ignorado |
+| `cache/<cache_id>.glb` | GLB cacheado, referenciado por `modelos_3d_universais.glb_path` no banco | ignorado |
 | `model_viewer.html` (na raiz de `storage/`) | Viewer HTML de debug | versionado (exceção) |
 
 - `model_public_path(job_id)` retorna a string `"/files/models/{job_id}.glb"`, usada no campo `model_path` persistido e depois exposta no status como URL absoluta.
+- `cache_path(cache_id)` (novo helper) retorna `storage/cache/<cache_id>.glb` — usado pelo `ClipSimilarityCache.store` para gravar e pelo `ClipSimilarityCache.lookup` para localizar o GLB cacheado antes de copiá-lo para o `output_path` do job.
 
 ## Servir ficheiros — `StaticFiles`
 
@@ -23,6 +25,7 @@ Raiz: `settings.storage_root` (default `./storage`), resolvida para caminho abso
 - Tabelas criadas com `Base.metadata.create_all` no startup (sem Alembic no MVP):
   - **`capture_jobs`**: `id` (PK string UUID), `status`, `message`, `model_path`, `error`, `created_at`, `updated_at`
   - **`capture_images`**: `id`, `job_id` (FK com cascade), `filename`, `path`
+  - **`modelos_3d_universais`** (planejado — cache global cross-tenant do `IntegratedPipeline`): `id` (PK varchar 36 uuid), `caminho_arquivo_modelo` (text), `embedding` (bytea com 512 floats float32 ≈ 2KB), `embedding_dim` (int), `source_job_id` (varchar 36, index), `liquid_color`, `label_path`, `hit_count`, `ultimo_hit_em`, `criado_em`. **Sem FK direto para `produtos`** — o vínculo entre produto comercial e molde universal acontece em `modelos_3d_produto.modelo_universal_id`. Permite que vários produtos de tenants diferentes apontem para o mesmo molde. Ver [09g — Cache de similaridade CLIP](09g-cache-similaridade-clip.md) §"DDL" para o SQL completo.
 - O status é guardado como string, alinhado com o enum `CaptureStatus` no código.
 
 ### Schema do módulo `sales`
@@ -34,7 +37,8 @@ Tabelas referenciadas pelo `SalesRepository` (todas em snake_case e em portuguê
 | Tabela | Conteúdo |
 |---|---|
 | `clientes` | Clientes ativos do app comercial. |
-| `produtos` | Catálogo de perfumes. Colunas garantidas pelo `ensure_sales_schema`: `custo numeric(10,2)`, `estoque_minimo integer`, `volume_ml integer`, `frasco_color_value bigint`. Possui flag `possui_modelo_3d boolean` para integração com captures. |
+| `produtos` | Catálogo de perfumes por tenant. Colunas garantidas pelo `ensure_sales_schema`: `custo numeric(10,2)`, `estoque_minimo integer`, `volume_ml integer`, `frasco_color_value bigint`. Possui flag `possui_modelo_3d boolean` para integração com captures. |
+| `modelos_3d_produto` | **Tabela existente** que amarra produto comercial → GLB. `produto_id bigint UNIQUE NOT NULL` (FK para `produtos` ON DELETE CASCADE), `caminho_arquivo_modelo text`, `caminho_imagem_preview text`, `status varchar(50)`, `capture_job_id varchar(36)` (FK para `capture_jobs` ON DELETE SET NULL), `criado_em`, `atualizado_em`. Ganha coluna nova **`modelo_universal_id varchar(36)` (FK para `modelos_3d_universais` ON DELETE SET NULL)** quando o pipeline integrado for ativado. UNIQUE em `produto_id` preservada (1 modelo por produto do tenant). Ver [09g](09g-cache-similaridade-clip.md). |
 | `vendas` | Cabeçalho da venda (cliente, data, total, parcelado). |
 | `itens_venda` | Linhas de cada venda (produto, quantidade, preço unitário). |
 | `parcelas` | Parcelas geradas para vendas a prazo. |

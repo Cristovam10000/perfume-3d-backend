@@ -6,8 +6,9 @@ A fonte canônica das dependências é [`requirements.txt`](../requirements.txt)
 
 ```
 Python 3.12+ (desenvolvido em 3.14, 3.12 e 3.13 também funcionam)
-Blender 5.1+ (necessário se PROCESSOR_TYPE=template)
+Blender 5.1+ (necessário em PIPELINE_MODE=integrated ou template)
 PostgreSQL 16 (container Docker `tcc-postgres`)
+NVIDIA GPU + Docker NVIDIA Container Toolkit (necessário em PIPELINE_MODE=integrated)
 ```
 
 ## Dependências runtime — [`requirements.txt`](../requirements.txt)
@@ -32,7 +33,7 @@ greenlet>=3.2
 ### Configuração e validação
 
 - **`pydantic` 2.10+** — modelos de request/response em [`app/modules/captures/schemas.py`](../app/modules/captures/schemas.py), com `serialization_alias` para camelCase (`jobId`, `modelUrl`).
-- **`pydantic-settings`** — `Settings` em [`app/config.py`](../app/config.py) lê `.env` automaticamente. Usa `Literal` para `PROCESSOR_TYPE` (`fake` \| `template`), `CLASSIFIER_TYPE` (`disabled` \| `clip`) e `COLOR_DETECTOR_TYPE` (`disabled` \| `average`).
+- **`pydantic-settings`** — `Settings` em [`app/config.py`](../app/config.py) lê `.env` automaticamente. Usa `Literal` para `PIPELINE_MODE` (`fake` \| `template` \| `integrated`), além das chaves de cada stage do pipeline integrado (`BACKGROUND_REMOVER_TYPE`, `IMAGE_PREPROCESSOR_TYPE`, `MESH_REFINER_TYPE`, `LABEL_EXTRACTOR_TYPE`, etc.). Compatibilidade preservada: `PROCESSOR_TYPE` antigo ainda é lido com aviso de deprecation.
 
 ### ORM e banco
 
@@ -55,7 +56,7 @@ aiosqlite>=0.20
 - **`httpx`** — cliente HTTP usado pelo `httpx.AsyncClient` em testes end-to-end de [`tests/test_main.py`](../tests/test_main.py).
 - **`aiosqlite`** — driver SQLite async usado pela fixture `session_factory` em [`tests/conftest.py`](../tests/conftest.py). **Os testes não precisam de Postgres rodando** — usam SQLite em arquivo temporário (`tmp_path`).
 
-## Dependências do classificador (opcionais) — [`requirements-classifier.txt`](../requirements-classifier.txt)
+## Dependências do CLIP (embedder do cache) — [`requirements-classifier.txt`](../requirements-classifier.txt)
 
 ```
 torch>=2.4
@@ -63,17 +64,32 @@ transformers>=4.45
 pillow>=10.0
 ```
 
-Instaladas só quando `CLASSIFIER_TYPE=clip` ou `COLOR_DETECTOR_TYPE=average` no `.env`. Custo de download: **~2GB** entre `torch` e os pesos do CLIP. Em CPU funciona, mas RTX 5050+ acelera ~10x.
+Instaladas quando `CACHE_EMBEDDER_TYPE=clip` (default no `PIPELINE_MODE=integrated`) ou `COLOR_DETECTOR_TYPE=average` no `.env`. Custo de download: **~2GB** entre `torch` e os pesos do CLIP. Em CPU funciona, mas RTX 5050+ acelera ~10x.
 
 - **`torch` 2.4+** — backend do CLIP.
-- **`transformers` 4.45+** — `CLIPModel`, `CLIPProcessor`. Imports são lazy em [`app/modules/captures/classifier.py`](../app/modules/captures/classifier.py): só carregam se `CLIPClassifier` for instanciado.
-- **`pillow` 10.0+** — usado pelo `AverageColorDetector` em [`app/modules/captures/color_detector.py`](../app/modules/captures/color_detector.py) para abrir imagens (`Image.open`, `ImageOps.exif_transpose`) e respeitar EXIF orientation.
+- **`transformers` 4.45+** — `CLIPModel`, `CLIPProcessor`. Imports são lazy em [`app/modules/captures/embeddings.py`](../app/modules/captures/embeddings.py): só carregam se `ClipImageEmbedder` for instanciado.
+- **`pillow` 10.0+** — usado pelo embedder para abrir imagens (`Image.open`, `ImageOps.exif_transpose`) e respeitar EXIF orientation, e pelo `AverageColorDetector` quando ativo.
+
+## Dependências de visão computacional — [`requirements-vision.txt`](../requirements-vision.txt)
+
+```
+rembg>=2.0.50
+opencv-python>=4.10
+numpy>=1.26
+pillow>=10.0
+```
+
+Instaladas quando o `IntegratedPipeline` está ativo. `rembg` baixa ~200MB de pesos ONNX na primeira execução; `opencv-python` (~50MB) é usado pelo `HomographyLabelExtractor` e pelo `StandardImagePreprocessor`. Ver [10b](10b-segmentacao-e-label.md) e [09d](09d-preprocessamento-e-cleanup.md).
+
+## Hunyuan3D (em contêiner Docker — não Python do backend)
+
+O contêiner `perfume-hunyuan` em [`C:\TCC\docker\hunyuan`](../../docker/hunyuan) tem suas próprias dependências (`torch`, `diffusers`, `Hunyuan3D-2GP`, `mmgp`, etc.) — o backend Python **não importa nada disso**. A comunicação é puramente HTTP multipart via `httpx.AsyncClient`. Ver [09b](09b-pipeline-ai-hunyuan.md).
 
 ## Ferramentas externas (não-Python)
 
-- **Blender 5.1+** — invocado como subprocess pelo `TemplateProcessor` ([`app/modules/captures/processor.py`](../app/modules/captures/processor.py)). Caminho default em Windows: `C:\Program Files\Blender Foundation\Blender 5.1\blender.exe`. Configurável via `BLENDER_EXECUTABLE` no `.env`.
-- **PostgreSQL 16** — container Docker oficial. Configurado em `DATABASE_URL`.
-- **Docker** — apenas para subir o Postgres em dev. O backend em si não é containerizado (ainda).
+- **Blender 5.1+** — invocado como subprocess pelo `TemplateProcessor`, `BlenderMeshCleaner`, `BlenderMeshRefiner` e `BlenderLabelProjector`. Caminho default em Windows: `C:\Program Files\Blender Foundation\Blender 5.1\blender.exe`. Configurável via `BLENDER_EXECUTABLE` no `.env`.
+- **PostgreSQL 16** — container Docker oficial (`tcc-postgres`). Configurado em `DATABASE_URL`.
+- **Docker + NVIDIA Container Toolkit** — usado para Postgres e para o serviço Hunyuan3D-2mv (contêiner `perfume-hunyuan`, GPU NVIDIA, ~6-8GB VRAM com profile mmgp 4). O backend em si não é containerizado.
 
 ## Stack por camada — visão consolidada
 
@@ -87,9 +103,15 @@ Instaladas só quando `CLASSIFIER_TYPE=clip` ou `COLOR_DETECTOR_TYPE=average` no
 | Driver DB | asyncpg 0.30+ | URL `postgresql+asyncpg://...` |
 | Banco | PostgreSQL 16 | container Docker `tcc-postgres` |
 | Worker | `asyncio.Queue` (stdlib) | [`app/modules/captures/queue.py`](../app/modules/captures/queue.py) |
-| Pipeline 3D | Blender 5.1 headless via subprocess | [`app/modules/captures/processor.py`](../app/modules/captures/processor.py) + [`app/modules/captures/blender_scripts/customize_template.py`](../app/modules/captures/blender_scripts/customize_template.py) |
-| Classificador | OpenAI CLIP via transformers (opt-in) | [`app/modules/captures/classifier.py`](../app/modules/captures/classifier.py) |
-| Detector de cor | Pillow + heurística RGB (opt-in) | [`app/modules/captures/color_detector.py`](../app/modules/captures/color_detector.py) |
+| Pipeline 3D (orquestração) | `IntegratedPipeline` (Python) | [`app/modules/captures/pipeline.py`](../app/modules/captures/pipeline.py) (planejado) |
+| Geração 3D (IA) | Hunyuan3D-2mv via container Docker + GPU | [`docker/hunyuan/server.py`](../../docker/hunyuan/server.py), cliente HTTP em [`app/modules/captures/processor.py`](../app/modules/captures/processor.py) |
+| Geração 3D (fallback) | Blender 5.1 headless via subprocess | [`app/modules/captures/processor.py`](../app/modules/captures/processor.py) (`TemplateProcessor`) + [`app/modules/captures/blender_scripts/customize_template.py`](../app/modules/captures/blender_scripts/customize_template.py) |
+| Embedder CLIP (cache) | OpenAI CLIP via transformers | [`app/modules/captures/embeddings.py`](../app/modules/captures/embeddings.py) (planejado), reutilizando o modelo em [`app/modules/captures/classifier.py`](../app/modules/captures/classifier.py) |
+| Cache de modelos | Cosine vs embedding 512-d | [`app/modules/captures/cache.py`](../app/modules/captures/cache.py) (planejado), [`app/modules/captures/modelos_3d_universais.py`](../app/modules/captures/modelos_3d_universais.py) (planejado) |
+| Remoção de fundo | `rembg` + ONNX | [`app/modules/captures/background_remover.py`](../app/modules/captures/background_remover.py) |
+| Extração de label | OpenCV (Canny + warpPerspective) | [`app/modules/captures/label_extractor.py`](../app/modules/captures/label_extractor.py) |
+| Refinamento de mesh | Blender 5.1 headless | [`app/modules/captures/mesh_refiner.py`](../app/modules/captures/mesh_refiner.py) + [`app/modules/captures/blender_scripts/refine_ai_mesh.py`](../app/modules/captures/blender_scripts/refine_ai_mesh.py) |
+| Detector de cor | Pillow + heurística RGB (legado/opcional) | [`app/modules/captures/color_detector.py`](../app/modules/captures/color_detector.py) |
 | Storage | filesystem local | [`app/storage/local_storage.py`](../app/storage/local_storage.py) |
 | Static serving | `fastapi.staticfiles.StaticFiles` | mount `/files` e `/templates` em [`app/main.py`](../app/main.py) |
 | Testes | pytest 8.3 + pytest-asyncio 0.24 | [`tests/`](../tests/), [`pytest.ini`](../pytest.ini) |

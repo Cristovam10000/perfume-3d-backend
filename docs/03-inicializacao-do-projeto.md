@@ -5,29 +5,33 @@ Como sair de um clone novo até o servidor respondendo `200` no `/health`. Coman
 ## Pré-requisitos
 
 - **Python 3.12+** (recomendado 3.14, mas 3.12 e 3.13 funcionam)
-- **Docker Desktop** (só para subir o Postgres)
+- **Docker Desktop** (necessário para Postgres e — no `PIPELINE_MODE=integrated` — para o serviço Hunyuan3D)
+- **NVIDIA Container Toolkit** (somente para `PIPELINE_MODE=integrated`: o Hunyuan exige GPU NVIDIA, ~6-8GB VRAM com `mmgp` profile 4)
 - **Git**
-- **Blender 5.1+** — apenas se quiser usar `PROCESSOR_TYPE=template` (pipeline 3D real). Para o `FakeProcessor` (cubo sintético) não precisa.
+- **Blender 5.1+** — necessário em `PIPELINE_MODE=integrated` (refiner, cleaner, label projector) ou `template` (TemplateProcessor). Para o `FakeProcessor` (cubo sintético) não precisa.
 
-## 1. Postgres em container
+## 1. Postgres + Hunyuan via docker-compose
 
-```powershell
-docker run -d `
-  --name tcc-postgres `
-  -e POSTGRES_USER=postgres `
-  -e POSTGRES_PASSWORD=postgres `
-  -e POSTGRES_DB=tcc `
-  -p 5433:5432 `
-  postgres:16
-```
-
-Se já criou e só está parado:
+A raiz do repositório (`C:\TCC`) tem um `docker-compose.yml` que sobe `postgres` (DB do backend) e `hunyuan` (serviço de geração 3D). Em uma instalação fresca:
 
 ```powershell
-docker start tcc-postgres
+cd C:\TCC
+docker compose up -d postgres   # rápido (~10s)
+docker compose up -d hunyuan    # primeira vez: build de 20-40min + download de ~5GB de pesos
 ```
 
-> **Por que porta 5433** e não a default 5432? Para não conflitar com instalações nativas de Postgres. Se já roda outro Postgres na 5432, o backend assume 5433 por convenção.
+Verificar:
+
+```powershell
+docker compose ps
+# postgres deve estar Up (healthy); hunyuan demora ~2min após start até ficar 'ready'.
+Invoke-RestMethod http://localhost:7860/health
+# → {"status":"loading"} ou {"status":"ready"}
+```
+
+Para desenvolvimento sem GPU, é possível subir só o postgres e usar `PIPELINE_MODE=fake` ou `PIPELINE_MODE=template` no backend.
+
+> **Por que porta 5433** no Postgres e não a default 5432? Para não conflitar com instalações nativas de Postgres. Se já roda outro Postgres na 5432, o backend assume 5433 por convenção. O Hunyuan fica na porta 7860 (default do gradio_app upstream, mantido).
 
 ## 2. Ambiente Python
 
@@ -43,15 +47,25 @@ pip install -r requirements-dev.txt
 
 `requirements-dev.txt` herda `requirements.txt`, então uma instalação só puxa runtime + ferramentas de teste.
 
-### (Opcional) Classificador CLIP
+### Embedder CLIP (cache do pipeline integrado)
 
-Se for usar `CLASSIFIER_TYPE=clip` ou `COLOR_DETECTOR_TYPE=average`:
+Necessário se `CACHE_EMBEDDER_TYPE=clip` (default em `PIPELINE_MODE=integrated`) ou se for usar `COLOR_DETECTOR_TYPE=average`:
 
 ```powershell
 pip install -r requirements-classifier.txt
 ```
 
-Custo: ~2GB de download (`torch` + pesos do CLIP). Para CPU-only, funciona; com RTX 5050+ é ~10x mais rápido.
+Custo: ~2GB de download (`torch` + pesos do CLIP). Para CPU-only, funciona; com RTX 5050+ é ~10x mais rápido. O CLIP é usado pelo `ClipImageEmbedder` para gerar embeddings das fotos durante o cache lookup.
+
+### Visão computacional (rembg, OpenCV)
+
+Necessário em `PIPELINE_MODE=integrated`:
+
+```powershell
+pip install -r requirements-vision.txt
+```
+
+Custo: ~200MB de pesos ONNX do `rembg` na primeira execução (cacheado em `~/.u2net/`). O backend importa `rembg`, `opencv-python` e `numpy` apenas quando os stages reais estão ativos — os bypasses `Disabled*` funcionam sem essas libs.
 
 ## 3. Variáveis de ambiente
 
@@ -63,13 +77,19 @@ O `.env.example` já vem com defaults sãs para dev local. Pontos que talvez voc
 
 | Variável | Default | Quando mudar |
 |---|---|---|
-| `PROCESSOR_TYPE` | `fake` | Mude para `template` quando tiver Blender instalado e quiser modelos reais. |
+| `PIPELINE_MODE` | `integrated` | Use `fake` para dev sem Blender/GPU; `template` para demo offline com templates pré-existentes. |
+| `HUNYUAN_URL` | `http://localhost:7860` | Mude se o container estiver em outra máquina ou porta. |
 | `BLENDER_EXECUTABLE` | path Windows | Ajuste se Blender estiver em outro path ou outro SO. |
-| `CLASSIFIER_TYPE` | `disabled` | Mude para `clip` se instalou `requirements-classifier.txt`. |
-| `COLOR_DETECTOR_TYPE` | `disabled` | Mude para `average` se quer cor real do líquido (precisa de Pillow). |
+| `CACHE_ENABLED` | `true` | Desligue (`false`) para forçar todos os jobs a passarem pelo Hunyuan; útil para coletar embeddings de calibração. |
+| `CACHE_SIMILARITY_THRESHOLD` | `0.92` | Calibre com dataset real — mais alto = mais cache miss (conservador); mais baixo = mais hits mas risco de falso positivo. |
+| `CACHE_EMBEDDER_TYPE` | `clip` | Mude para `disabled` em ambientes sem `torch`/transformers; o cache opera apenas com cold-store. |
+| `COLOR_DETECTOR_TYPE` | `disabled` | Mude para `average` se quer persistir cor do líquido como metadado (Hunyuan já infere; opcional). |
+| `PIPELINE_FALLBACK_TO_TEMPLATE` | `false` | Ative se quer que o backend gere via `TemplateProcessor` quando o Hunyuan estiver offline. |
 | `DATABASE_URL` | aponta para `tcc-postgres` na 5433 | Mude se seu Postgres está em outro host/porta. |
 
-Detalhes de cada chave em [07 — Camada `core` → secção *Settings*](07-camada-core.md#settings).
+Detalhes de cada chave em [07 — Camada `core` → secção *Settings*](07-camada-core.md#settings) e [09f](09f-pipeline-integrado.md) §"Configuração".
+
+> **Compat:** se o seu `.env` ainda usar `PROCESSOR_TYPE`, o backend lê como `PIPELINE_MODE` com aviso de deprecation. Valores aceitos: `fake`, `template`, `integrated`. Qualquer outra coisa (ex.: `template_fitting`, que apareceu por engano em ambientes antigos) faz o Pydantic falhar no startup.
 
 ## 4. Subir o servidor
 
@@ -84,11 +104,12 @@ O `--reload` reinicia automaticamente quando você edita `.py`. Com `--host 0.0.
 O `production_lifespan` em [`app/main.py`](../app/main.py) executa, em ordem:
 
 1. `configure_logging()` — handler em stdout com timestamp.
-2. `create_all()` — cria as tabelas (`capture_jobs`, `capture_images`) se faltarem.
-3. `LocalStorage().ensure_dirs()` — garante `storage/uploads/` e `storage/models/`.
-4. `build_processor()` / `build_classifier()` / `build_color_detector()` — instancia conforme o `.env`.
-5. `ProcessingQueue().start(handler=service.process_job)` — sobe o worker async.
-6. Loga `Backend pronto em 0.0.0.0:8000 (processor=..., classifier=..., color=...)`.
+2. `create_all()` — cria as tabelas (`capture_jobs`, `capture_images`, `modelos_3d_universais`) se faltarem.
+3. `ensure_sales_schema(engine)` — `ALTER TABLE IF EXISTS` no schema do módulo `sales`.
+4. `LocalStorage().ensure_dirs()` — garante `storage/uploads/`, `storage/models/` e `storage/cache/`.
+5. `build_pipeline()` — instancia `FakeProcessor`, `TemplateProcessor` ou `IntegratedPipeline` (com cada stage configurado via factories internas), conforme `PIPELINE_MODE`.
+6. `ProcessingQueue().start(handler=service.process_job)` — sobe o worker async.
+7. Loga `Backend pronto em 0.0.0.0:8000 (pipeline=<mode>, cache_enabled=<bool>, hunyuan_url=<url>)`.
 
 ## 5. Sanity check
 
@@ -191,11 +212,32 @@ docker start tcc-postgres
 
 ### `BLENDER_EXECUTABLE` não existe
 
-Em `.env`, ajuste o path. Em Linux geralmente é `/usr/bin/blender`; no macOS, `/Applications/Blender.app/Contents/MacOS/Blender`. Sem Blender, troque para `PROCESSOR_TYPE=fake`.
+Em `.env`, ajuste o path. Em Linux geralmente é `/usr/bin/blender`; no macOS, `/Applications/Blender.app/Contents/MacOS/Blender`. Sem Blender, troque para `PIPELINE_MODE=fake`.
 
 ### CLIP travando ou OOM
 
 Em CPU, a primeira inferência leva ~5-10s (carrega pesos). Se travar, é provavelmente download de pesos do HuggingFace — confira a rede. Para offline, defina `HF_HUB_OFFLINE=1` depois do primeiro download.
+
+### Hunyuan demora muito a ficar `ready`
+
+O `GET /health` do container retorna `loading` enquanto os ~5GB de pesos sobem para a VRAM. Esperar 2-3 minutos é normal. Se passar disso:
+
+```powershell
+docker compose logs -f --tail=120 hunyuan
+```
+
+Procure por erros de CUDA (`no kernel image`, `out of memory`) ou de carregamento de checkpoint. Detalhes em [`../../docker/hunyuan/README.md`](../../docker/hunyuan/README.md) e [09b](09b-pipeline-ai-hunyuan.md).
+
+### Hunyuan responde 503 / timeout durante `/generate`
+
+O contêiner pode estar fazendo fallback de `dmc` para `mc`, retentando octree menor, ou simplesmente sobrecarregado. Confirme com:
+
+```powershell
+docker compose exec hunyuan python -c "import server; print(server.DEFAULT_MC_ALGO)"
+# → mc
+```
+
+Se a inferência continuar inviável, mantenha `PIPELINE_FALLBACK_TO_TEMPLATE=true` no `.env` para que o backend caia no `TemplateProcessor` quando o Hunyuan falhar.
 
 ## Próximas leituras
 

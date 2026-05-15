@@ -9,23 +9,74 @@ Referência de variáveis de ambiente (ficheiro de código: [`app/config.py`](..
 - Baseado em **pydantic-settings**; lê `.env` com encoding UTF-8.
 - Propriedades principais (nomes em **snake_case** no env; o Pydantic mapeia `DATABASE_URL` → `database_url` automaticamente):
 
+### Núcleo (infra e CORS)
+
 | Campo (Python) | Variável env típica | Papel |
 |----------------|--------------------|--------|
 | `app_name` | `APP_NAME` | Título no OpenAPI |
 | `app_host` / `app_port` | `APP_HOST`, `APP_PORT` | Bind Uvicorn |
 | `database_url` | `DATABASE_URL` | `postgresql+asyncpg://...` |
-| `storage_root` | `STORAGE_ROOT` | Raiz de uploads e models |
+| `storage_root` | `STORAGE_ROOT` | Raiz de uploads, models e cache |
 | `cors_origins` | `CORS_ORIGINS` | `*` ou lista separada por vírgula |
-| `processor_type` | `PROCESSOR_TYPE` | `fake` \| `template` |
+
+### Pipeline 3D
+
+| Campo (Python) | Variável env típica | Papel |
+|----------------|--------------------|--------|
+| `pipeline_mode` | `PIPELINE_MODE` | `fake` \| `template` \| `integrated` (default) |
+| `pipeline_fallback_to_template` | `PIPELINE_FALLBACK_TO_TEMPLATE` | Se `true`, cai no `TemplateProcessor` quando o Hunyuan falha |
 | `blender_executable` | `BLENDER_EXECUTABLE` | Caminho do `blender.exe` / binário |
-| `templates_dir` | `TEMPLATES_DIR` | Pasta dos GLBs normalizados |
-| `classifier_type` | `CLASSIFIER_TYPE` | `disabled` \| `clip` |
-| `clip_model` | `CLIP_MODEL` | ID HuggingFace do CLIP |
-| `default_template_id` | `DEFAULT_TEMPLATE_ID` | Template quando classifier desligado |
-| `color_detector_type` | `COLOR_DETECTOR_TYPE` | `disabled` \| `average` |
+| `templates_dir` | `TEMPLATES_DIR` | Pasta dos GLBs normalizados (fallback + seed) |
+| `default_template_id` | `DEFAULT_TEMPLATE_ID` | Template do fallback |
+
+### Hunyuan (cliente HTTP)
+
+| Campo (Python) | Variável env típica | Papel |
+|----------------|--------------------|--------|
+| `hunyuan_url` | `HUNYUAN_URL` | URL base do contêiner Hunyuan (default `http://localhost:7860`) |
+| `hunyuan_timeout_seconds` | `HUNYUAN_TIMEOUT_SECONDS` | Timeout do cliente em segundos (default 1200) |
+| `hunyuan_octree_resolution` | `HUNYUAN_OCTREE_RESOLUTION` | Default 384 |
+| `hunyuan_num_inference_steps` | `HUNYUAN_NUM_INFERENCE_STEPS` | Default 75 |
+| `hunyuan_guidance_scale` | `HUNYUAN_GUIDANCE_SCALE` | Default 7.5 |
+| `hunyuan_mc_algo` | `HUNYUAN_MC_ALGO` | `mc` (default) ou `dmc` |
+| `hunyuan_texture_resolution` | `HUNYUAN_TEXTURE_RESOLUTION` | Default 2048 |
+
+### Cache de modelos
+
+| Campo (Python) | Variável env típica | Papel |
+|----------------|--------------------|--------|
+| `cache_enabled` | `CACHE_ENABLED` | Liga/desliga o cache inteiro (default `true`) |
+| `cache_similarity_threshold` | `CACHE_SIMILARITY_THRESHOLD` | Cosine acima do qual um lookup vira hit (default 0.92) |
+| `cache_embedder_type` | `CACHE_EMBEDDER_TYPE` | `disabled` \| `clip` |
+| `cache_embedding_model` | `CACHE_EMBEDDING_MODEL` | ID HuggingFace do CLIP (default `openai/clip-vit-base-patch32`) |
+
+### Stages do pipeline IA
+
+| Campo (Python) | Variável env típica | Papel |
+|----------------|--------------------|--------|
+| `image_preprocessor_type` | `IMAGE_PREPROCESSOR_TYPE` | `disabled` \| `standard` |
+| `background_remover_type` | `BACKGROUND_REMOVER_TYPE` | `disabled` \| `rembg` |
+| `mesh_cleaner_type` | `MESH_CLEANER_TYPE` | `disabled` \| `blender` (default `disabled`/no-op) |
+| `mesh_min_island_ratio` | `MESH_MIN_ISLAND_RATIO` | Limiar de ilhas; 0.0 desliga o cleanup mesmo com Blender ativo |
+| `mesh_refiner_type` | `MESH_REFINER_TYPE` | `disabled` \| `blender` |
+| `label_extractor_type` | `LABEL_EXTRACTOR_TYPE` | `disabled` \| `homography` |
+| `label_upscaler_type` | `LABEL_UPSCALER_TYPE` | `disabled` \| `lanczos` |
+| `label_projector_type` | `LABEL_PROJECTOR_TYPE` | `disabled` \| `blender` |
+| `label_front_axis` | `LABEL_FRONT_AXIS` | `front_y_neg` (default), etc. |
+| `label_min_confidence` | `LABEL_MIN_CONFIDENCE` | 0.0–1.0 (default 0.3) |
+| `label_target_size` | `LABEL_TARGET_SIZE` | Pixels do Lanczos (default 2048) |
+
+### Legado / opcional
+
+| Campo (Python) | Variável env típica | Papel |
+|----------------|--------------------|--------|
+| `color_detector_type` | `COLOR_DETECTOR_TYPE` | `disabled` (default) \| `average`. Não usado pelo `IntegratedPipeline`; usado pelo `TemplateProcessor`. |
+| `clip_model` | `CLIP_MODEL` | Mantido por compatibilidade. Equivalente a `CACHE_EMBEDDING_MODEL` quando `cache_embedder_type=clip`. |
+| `classifier_type` | `CLASSIFIER_TYPE` | Legado. Lido com aviso de deprecation; substituído por `cache_embedder_type`. |
+| `processor_type` | `PROCESSOR_TYPE` | Legado. Lido com aviso de deprecation; substituído por `pipeline_mode`. |
 
 - `cors_origin_list` — propriedade que expande `*` em lista usada pelo `CORSMiddleware`.
-- `uploads_dir` / `models_dir` — derivados de `storage_root`.
+- `uploads_dir` / `models_dir` / `cache_dir` — derivados de `storage_root`.
 
 > **Segredo**: o arquivo **`.env` real** não entra no Git (ver `.gitignore`). Use [`.env.example`](../.env.example) como modelo; ajuste senhas e caminhos localmente.
 
@@ -34,7 +85,7 @@ Referência de variáveis de ambiente (ficheiro de código: [`app/config.py`](..
 - `create_async_engine(settings.database_url, pool_pre_ping=True)`.
 - `SessionFactory` = `async_sessionmaker` com `expire_on_commit=False`.
 - `Base` = `DeclarativeBase` (SQLAlchemy 2.0).
-- `create_all()`: em transação, `Base.metadata.create_all` — usado no lifespan; importa `modules.captures.models` para registrar tabelas.
+- `create_all()`: em transação, `Base.metadata.create_all` — usado no lifespan; importa `modules.captures.models` e `modules.captures.modelos_3d_universais` para registrar todas as tabelas (`capture_jobs`, `capture_images`, `modelos_3d_universais`).
 
 ## `app/dependencies.py`
 

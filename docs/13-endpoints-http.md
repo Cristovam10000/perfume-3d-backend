@@ -10,7 +10,9 @@ Base URL: `http://<host>:<porta>/` (ex.: `http://127.0.0.1:8000` ou `http://10.0
 ## `POST /captures`
 
 - **Content-Type:** `multipart/form-data`
-- **Campo:** `images` — um ou mais ficheiros (nome do campo **images**, repetido para N ficheiros).
+- **Campos:**
+  - `images` — um ou mais ficheiros (nome do campo **images**, repetido para N ficheiros).
+  - `productId` (opcional, parte do form-data, planejado para a integração do pipeline integrado) — `integer`. Quando enviado, o backend amarra o GLB ao produto correspondente em `modelos_3d_produto` ao final do pipeline (cache miss → INSERT; cache hit → UPSERT do vínculo). Se omitido, o GLB é entregue ao job e (em miss) populado em `modelos_3d_universais`, **sem** vincular a nenhum produto comercial.
 - **201 Created** com corpo JSON (camelCase por alias Pydantic):
 
 ```json
@@ -20,6 +22,8 @@ Base URL: `http://<host>:<porta>/` (ex.: `http://127.0.0.1:8000` ou `http://10.0
 - **422** se não houver imagens (`{"error": "Nenhuma imagem recebida"}`) ou validação de domínio semelhante.
 - Não exige `Authorization` (não há autenticação no MVP).
 
+> **Quando passar `productId`:** quando a captura partir de dentro de uma tela de produto no app (botão "Atualizar modelo 3D" em `product_3d_page.dart`, por exemplo). Quando o usuário inicia uma captura "solta" no fluxo principal sem ter escolhido um produto, omite o campo e o backend trata como captura sem vínculo. Em ambos os casos o cache global ainda funciona — o que muda é apenas a amarração `modelos_3d_produto`.
+
 ## `GET /captures/{job_id}/status`
 
 - **200** com corpo (campos `null` omitidos em alguns clientes, mas o schema Pydantic serializa `null` explícito quando aplicável):
@@ -27,13 +31,15 @@ Base URL: `http://<host>:<porta>/` (ex.: `http://127.0.0.1:8000` ou `http://10.0
 | Campo (JSON) | Tipo | Descrição |
 |---------------|------|-----------|
 | `status` | string | `waiting` \| `processing` \| `completed` \| `error` |
-| `message` | string ou null | mensagem informativa (ex.: "Reconstruindo modelo 3D") |
+| `message` | string ou null | mensagem informativa (ex.: "Reconstruindo modelo 3D", "Modelo entregue pelo cache (similaridade=0.95)") |
 | `modelUrl` | string ou null | URL **absoluta** do GLB, só quando concluído; montada com `request.base_url` + `model_path` do job |
 | `error` | string ou null | detalhe se `status=error` |
 
 - **404** se o `job_id` não existir: `{"error": "Job <id> não encontrado"}`.
 
 O front deve fazer *polling* (ex. a cada 2–3 s) até `status` ser `completed` ou `error`.
+
+> **Cache hit vs. miss**: o backend não devolve um campo dedicado `origem` ainda. O sinal vem pelo `message` ("Modelo entregue pelo cache (similaridade=0.95)" vs "Modelo gerado via Hunyuan3D-2mv") e pelo tempo: hits respondem em segundos, misses em minutos. Um campo explícito `origem: "cache" | "generated"` está no roadmap mas não foi implementado ainda. Ver [09g - Cache de similaridade CLIP](09g-cache-similaridade-clip.md).
 
 ## Ficheiros estáticos
 
@@ -129,8 +135,22 @@ API CRUD do módulo `sales/`. Todos retornam JSON com aliases camelCase (Pydanti
 
 - Campos de resposta usam **camelCase** (`jobId`, `modelUrl`, `precoBase`, `tem3D`, ...) — ver `serialization_alias` em `schemas.py` de cada módulo. Manter o contrato alinhado com `processing_repository.dart` (captures) e `sales_repository.dart` (sales) no front.
 
+## Endpoints administrativos de cache (planejado, não MVP)
+
+Em uma sessão futura, o backend exporá rotas para curadoria manual do cache de modelos:
+
+```
+GET    /captures/cache          → lista de entradas (id, glb_url, created_at, hit_count, product_id)
+GET    /captures/cache/{cache_id} → detalhe + (opcional) top-5 vizinhos similares
+DELETE /captures/cache/{cache_id} → remove entrada da tabela modelos_3d_universais e o GLB do disco
+```
+
+Documentado em [09g - Cache de similaridade CLIP](09g-cache-similaridade-clip.md). Útil quando o threshold der falsos positivos ou quando você precisar regenerar um produto específico após melhorar fotos/parâmetros.
+
 ## Leituras relacionadas
 
 - [08 — Módulo `captures`](08-modulo-captures.md)
-- [12 — Armazenamento e banco](12-armazenamento-e-banco.md) (tabelas referenciadas pelos endpoints `/sales/*`)
+- [09f — Pipeline integrado](09f-pipeline-integrado.md) (sequência interna do `POST /captures`)
+- [09g — Cache de similaridade CLIP](09g-cache-similaridade-clip.md) (endpoints admin futuros)
+- [12 — Armazenamento e banco](12-armazenamento-e-banco.md) (tabelas referenciadas pelos endpoints `/sales/*` e a nova `modelos_3d_universais`)
 - Front: [`16 - Contrato do backend`](../../front/docs/16-contrato-backend.md), [`18 - Feature sales`](../../front/docs/18-feature-sales.md)

@@ -1,18 +1,18 @@
 # Documentação técnica — backend `perfume-3d-backend`
 
-Esta pasta descreve o estado **atual** do backend FastAPI na raiz `back/`. O backend é o serviço HTTP que recebe lotes de fotos do app Flutter, gera um modelo 3D `.glb` por meio de um pipeline baseado em templates customizados no Blender headless e devolve a URL do modelo pronto.
+Esta pasta descreve o estado **planejado** do backend FastAPI na raiz `back/`. O backend é o serviço HTTP que recebe lotes de fotos do app Flutter, gera um modelo 3D `.glb` por meio de um **pipeline integrado de IA (Hunyuan3D + pós-processamento)** e devolve a URL do modelo pronto. Modelos já gerados de perfumes equivalentes são reaproveitados via **cache por similaridade visual (CLIP)** para evitar regerar o mesmo frasco.
 
-**Conjunto de documentos:** `01-` a `15-` (todos versionados em `docs/`), alinhados ao código. Se algo divergir, **o código manda** — atualize o Markdown após alterações reais.
+**Conjunto de documentos:** `01-` a `15-` (todos versionados em `docs/`). Quando código e doc divergem, **o código manda** — atualize o Markdown após alterações reais. Os docs marcados como *planejado* descrevem o desenho aprovado para a integração; a implementação acontece em commits subsequentes.
 
-> **Importante**: a versão antiga deste docs (`arquiteturamTecnica.md`) descrevia um pipeline de fotogrametria com Meshroom/AliceVision e um sistema comercial/financeiro completo (clientes, vendas, parcelas, pagamentos). **Nada disso existe no backend hoje** — só o pipeline 3D baseado em templates. A doc foi reescrita para refletir só o que está em código.
+> **Histórico:** versões anteriores deste docs descreveram (a) um pipeline de fotogrametria com Meshroom/AliceVision e (b) um pipeline baseado em **templates Blender** com classificação CLIP. O caminho de templates **continua existindo no código** e é usado como *seed* inicial do cache e como *fallback* quando o Hunyuan está offline; mas o caminho **principal** é o pipeline IA. O sistema comercial (`/sales/*`) é independente do pipeline 3D — ver [13 - Endpoints HTTP](13-endpoints-http.md).
 
 ## Ordem sugerida de leitura
 
-1. [01 - Visão geral](01-visao-geral.md): o que o backend faz, fluxo ponta a ponta.
-2. [03 - Inicialização do projeto](03-inicializacao-do-projeto.md): como rodar localmente.
-3. [04 - Estrutura de pastas](04-estrutura-de-pastas.md): mapa dos arquivos.
-4. [05 - Arquitetura](05-arquitetura.md): camadas, Strategy pattern e factories.
-5. [09 - Pipeline 3D](09-pipeline-3d.md): coração do sistema (Processor + Blender).
+1. [01 - Visão geral](01-visao-geral.md): o que o backend faz, fluxo ponta a ponta com cache.
+2. [03 - Inicialização do projeto](03-inicializacao-do-projeto.md): como rodar localmente (Postgres + Hunyuan Docker + venv).
+3. [05 - Arquitetura](05-arquitetura.md): camadas, Strategy pattern, factories, fluxo do `IntegratedPipeline`.
+4. [09f - Pipeline integrado](09f-pipeline-integrado.md): coração do sistema (composição de stages).
+5. [09g - Cache de similaridade CLIP](09g-cache-similaridade-clip.md): como o backend evita regerar o mesmo perfume.
 6. [13 - Endpoints HTTP](13-endpoints-http.md): contrato com o app Flutter.
 
 ## Índice completo
@@ -21,25 +21,32 @@ Esta pasta descreve o estado **atual** do backend FastAPI na raiz `back/`. O bac
 |---|---|---|
 | 01 | [Visão geral](01-visao-geral.md) | O que o backend faz, fluxo, escopo, premissas. |
 | 02 | [Stack tecnológico](02-stack-tecnologico.md) | Dependências, versões e papel de cada lib. |
-| 03 | [Inicialização do projeto](03-inicializacao-do-projeto.md) | Postgres, venv, `.env`, subir o servidor, smoke test. |
+| 03 | [Inicialização do projeto](03-inicializacao-do-projeto.md) | Postgres, venv, `.env`, container Hunyuan, smoke test. |
 | 04 | [Estrutura de pastas](04-estrutura-de-pastas.md) | Árvore atual de `app/`, `tests/`, `scripts/`, `assets/`. |
 | 05 | [Arquitetura](05-arquitetura.md) | Camadas, Strategy pattern, factories, DI. |
 | 06 | [Bootstrap e lifespan](06-bootstrap-e-lifespan.md) | `create_app`, `production_lifespan`, mounts estáticos. |
 | 07 | [Camada `core`](07-camada-core.md) | `config`, `database`, `core/exceptions`, `core/logging`, `dependencies`. |
-| 08 | [Módulo `captures`](08-modulo-captures.md) | Service, repository, router, models, schemas, queue, status. |
-| 09 | [Pipeline 3D](09-pipeline-3d.md) | `Processor` ABC, `FakeProcessor`, `TemplateProcessor`, `customize_template.py`. |
-| 10 | [Classificador e detector de cor](10-classificador-e-cor.md) | CLIP zero-shot e detector de cor do líquido. |
+| 08 | [Módulo `captures`](08-modulo-captures.md) | Service, repository, router, models, schemas, queue, pipeline. |
+| 09 | [Pipeline 3D — templates (fallback)](09-pipeline-3d.md) | `Processor` ABC, `FakeProcessor`, `TemplateProcessor`, `customize_template.py`. |
+| 09b | [Pipeline IA — Hunyuan3D](09b-pipeline-ai-hunyuan.md) | Cliente HTTP para o serviço Docker, parâmetros, limites. |
+| 09c | [Refinamento de malha](09c-refinamento-mesh.md) | Shader de vidro PBR aplicado ao GLB do Hunyuan. |
+| 09d | [Pré-processamento e cleanup](09d-preprocessamento-e-cleanup.md) | EXIF/WB/CLAHE/resize e limpeza conservadora da malha. |
+| 09e | [Aplicação de label](09e-aplicacao-label.md) | Extração + upscale + projeção da label real da foto. |
+| 09f | [Pipeline integrado](09f-pipeline-integrado.md) | `IntegratedPipeline`: composição dos stages, falhas degradadas, configs. |
+| 09g | [Cache de similaridade CLIP](09g-cache-similaridade-clip.md) | `ModelCache`, embeddings, threshold, persistência. |
+| 10 | [Embedder CLIP e detector de cor](10-classificador-e-cor.md) | CLIP como embedder do cache; detector de cor (histórico). |
+| 10b | [Segmentação e extração de label](10b-segmentacao-e-label.md) | `RembgBackgroundRemover` e `HomographyLabelExtractor`. |
 | 11 | [Templates 3D](11-templates-3d.md) | Catálogo, normalização, geração procedural, atribuições Sketchfab. |
 | 12 | [Armazenamento e banco](12-armazenamento-e-banco.md) | `LocalStorage`, schema do Postgres, modelos SQLAlchemy. |
 | 13 | [Endpoints HTTP](13-endpoints-http.md) | Contrato HTTP completo (request, response, erros). |
 | 14 | [Testes](14-testes.md) | Suíte pytest, fixtures, estratégia de mocks. |
-| 15 | [Glossário](15-glossario.md) | Termos do domínio: GLB, template, classifier, etc. |
+| 15 | [Glossário](15-glossario.md) | Termos do domínio: GLB, template, embedding, cache hit, etc. |
 
 ## Convenções
 
 - Todos os caminhos são relativos à raiz `back/`.
 - O código Python é a fonte canônica. Quando houver divergência, **atualize os docs** (estão errados, não o código).
-- A documentação evita prometer comportamento que ainda não existe — fotogrametria real, autenticação, persistência multi-tenant, observability não estão no escopo atual.
+- Docs marcados como *planejado* descrevem o design aprovado; código pode estar parcialmente implementado.
 - Exemplos de comando assumem PowerShell em Windows. Para bash/zsh, traduza os paths e os ativadores de venv.
 
 ## Como manter
@@ -55,3 +62,5 @@ Ao modificar uma rota, configuração, módulo ou processo, atualize **pelo meno
 ## Relação com o front
 
 O contrato HTTP entre back e front está em [13 - Endpoints HTTP](13-endpoints-http.md) (`jobId`, `modelUrl` em camelCase, valores de `status`). Se o repositório Flutter tiver um documento de contrato partilhado (ex. em `front/docs/`), mantenha-o alinhado com a secção 13.
+
+Importante: o front **não pré-processa** as fotos. Ele faz só compressão JPEG (`imageQuality: 90`) e feedback de qualidade ao vivo (`FrameAnalyzer` em `front/lib/core/utils/frame_analyzer.dart`). EXIF, white-balance, remoção de fundo e segmentação ficam todos no backend.

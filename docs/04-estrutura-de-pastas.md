@@ -48,15 +48,20 @@ app/
     │   ├── models.py          # CaptureJob + CaptureImage (SQLAlchemy 2.0)
     │   ├── schemas.py         # CreateCaptureResponse, CaptureStatusResponse (DTOs camelCase)
     │   ├── repository.py      # CaptureRepository (queries encapsuladas)
-    │   ├── service.py         # CaptureService (orquestração das use cases)
+    │   ├── service.py         # CaptureService (cria job, persiste, delega ao pipeline)
     │   ├── router.py          # POST /captures, GET /captures/{id}/status
     │   ├── queue.py           # ProcessingQueue (asyncio.Queue + worker)
-    │   ├── processor.py       # ABC Processor + FakeProcessor + TemplateProcessor + Hunyuan3DProcessor
-    │   ├── classifier.py      # ABC Classifier + DisabledClassifier + CLIPClassifier
-    │   ├── color_detector.py  # ABC ColorDetector + Disabled + AverageColorDetector
-    │   ├── templates_catalog.py  # template_id → descrição em inglês para CLIP
     │   │
-    │   │   # ── Pipeline IA standalone (Fases 1–5; ainda não plugado no service) ──
+    │   │   # ── Pipeline raiz + IA ──
+    │   ├── pipeline.py        # IntegratedPipeline (planejado) — composição de stages
+    │   ├── processor.py       # ABC Processor + FakeProcessor + TemplateProcessor + Hunyuan3DProcessor
+    │   │
+    │   │   # ── Cache de modelos por similaridade CLIP ──
+    │   ├── embeddings.py      # ImageEmbedder ABC + ClipImageEmbedder (planejado)
+    │   ├── cache.py           # ModelCache ABC + ClipSimilarityCache (planejado)
+    │   ├── modelos_universais.py # ModeloUniversal SQLAlchemy (tabela modelos_3d_universais — cache global, planejado)
+    │   │
+    │   │   # ── Stages do pipeline IA ──
     │   ├── background_remover.py # ABC + DisabledBackgroundRemover + RembgBackgroundRemover
     │   ├── label_extractor.py    # ABC + DisabledLabelExtractor + HomographyLabelExtractor
     │   ├── image_preprocessor.py # ABC + DisabledImagePreprocessor + StandardImagePreprocessor
@@ -64,13 +69,20 @@ app/
     │   ├── mesh_refiner.py       # ABC + DisabledMeshRefiner + BlenderMeshRefiner
     │   ├── label_upscaler.py     # ABC + DisabledLabelUpscaler + LanczosLabelUpscaler
     │   ├── label_projector.py    # ABC + DisabledLabelProjector + BlenderLabelProjector
+    │   ├── top_projector.py      # ABC + DisabledTopProjector + BlenderTopProjector (opcional)
+    │   │
+    │   │   # ── Legado / fallback ──
+    │   ├── classifier.py      # ABC Classifier + CLIPClassifier (depreciado — substituído por embeddings.py)
+    │   ├── color_detector.py  # ABC ColorDetector + AverageColorDetector (depreciado do fluxo principal)
+    │   ├── templates_catalog.py  # template_id → descrição em inglês (usado no fallback do TemplateProcessor)
     │   │
     │   └── blender_scripts/
     │       ├── __init__.py
-    │       ├── customize_template.py   # template paramétrico (Fase 2)
-    │       ├── refine_ai_mesh.py       # shader de vidro PBR (Fase 3)
-    │       ├── cleanup_mesh.py         # ilhas + furos + normais (Fase 4)
-    │       └── project_label.py        # decal frontal de label (Fase 5)
+    │       ├── customize_template.py    # template paramétrico (fallback)
+    │       ├── refine_ai_mesh.py        # shader de vidro PBR
+    │       ├── cleanup_mesh.py          # ilhas + furos + normais
+    │       ├── project_label.py         # decal frontal de label
+    │       └── project_top_texture.py   # textura da tampa (opcional)
     │
     ├── sales/                 # API comercial — clientes, produtos, vendas, pagamentos
     │   ├── __init__.py
@@ -85,8 +97,9 @@ app/
 
 ### Pontos-chave da árvore
 
-- **`main.py` é o único lugar onde tudo se encontra**. As factories `build_processor()`, `build_classifier()`, `build_color_detector()` são triviais e ficam aqui — sem container DI, sem mágica.
-- **`modules/captures/` é o módulo principal de domínio 3D**. Reúne pipeline de templates (Fase 2) + pipeline IA generativa standalone (Fases 1–5, ainda não plugado no service). O módulo `sales/` é o segundo módulo de domínio (comercial); `health/` é só `/health`.
+- **`main.py` é o único lugar onde tudo se encontra**. As factories `build_pipeline()` (que escolhe entre `FakeProcessor`, `TemplateProcessor` e `IntegratedPipeline` conforme `PIPELINE_MODE`) e os helpers de cada stage (`build_image_preprocessor`, `build_background_remover`, `build_mesh_refiner`, `build_embedder`, `build_model_cache`, etc.) ficam aqui — sem container DI, sem mágica.
+- **`modules/captures/` é o módulo principal de domínio 3D**. Reúne o pipeline integrado (`pipeline.py`), o cliente do Hunyuan, os stages auxiliares (preprocess, rembg, refiner, label extractor/upscaler/projector), o cache CLIP e a tabela `modelos_3d_universais` (cache global, cross-tenant — separada da `modelos_3d_produto` que já existe e amarra produto comercial a um molde). O caminho de templates (`TemplateProcessor` + `templates_catalog`) continua presente como **fallback**.
+- **`modules/sales/` é o segundo módulo de domínio** (comercial); `health/` é só `/health`.
 - **Tudo abaixo de `modules/` segue o padrão Feature-First**: cada módulo carrega seu próprio router, service/repository, schemas. `sales/` é mais enxuto (sem `service.py` separado — a lógica fica no `repository.py` por ser CRUD direto sobre Postgres).
 - **`blender_scripts/` é especial**: rodam **dentro** do Blender via `--python`. Não importam nada do `app/` (não conseguiriam — Blender tem o próprio Python isolado). A convenção Blender↔wrapper usa uma única linha estruturada `STATS:...` em stdout para passar contagens (ilhas removidas, faces, índice da face frontal).
 
@@ -185,13 +198,18 @@ storage/
 │   └── <job_id>/
 │       ├── img1.jpg
 │       └── ...
-└── models/                        # gitignored
-    ├── <job_id>.glb
-    └── candidates/                # GLBs intermediários para debug (gitignored)
-        └── <job_id>/
+├── models/                        # gitignored
+│   ├── <job_id>.glb               # GLB entregue (cópia do cache em hit, ou recém-gerado em miss)
+│   └── candidates/                # GLBs intermediários para debug (gitignored)
+│       └── <job_id>/
+├── cache/                         # gitignored — GLBs cacheados, referenciados por modelos_3d_universais.caminho_arquivo_modelo
+│   └── <cache_id>.glb
+└── smoke/                         # gitignored — outputs dos smokes manuais
+    ├── raw.glb, cleaned.glb, refined.glb, with_label.glb
+    └── preprocessed/, masked/, label_raw.png, label_upscaled.png
 ```
 
-A pasta `storage/uploads/` e `storage/models/` são criadas no startup pelo `LocalStorage.ensure_dirs()` ([`app/storage/local_storage.py`](../app/storage/local_storage.py)). O `.gitignore` bloqueia `storage/uploads/`, `storage/models/`, `storage/*.glb`, `storage/*.gltf` — só o HTML do viewer é versionado.
+A pasta `storage/uploads/`, `storage/models/` e `storage/cache/` são criadas no startup pelo `LocalStorage.ensure_dirs()` ([`app/storage/local_storage.py`](../app/storage/local_storage.py)). O `.gitignore` bloqueia `storage/uploads/`, `storage/models/`, `storage/cache/`, `storage/smoke/`, `storage/*.glb`, `storage/*.gltf` — só o HTML do viewer é versionado.
 
 ## `docs/` — esta pasta
 
@@ -208,13 +226,15 @@ docs/
 ├── 06-bootstrap-e-lifespan.md
 ├── 07-camada-core.md
 ├── 08-modulo-captures.md
-├── 09-pipeline-3d.md            # template paramétrico (Fase 2)
-├── 09b-pipeline-ai-hunyuan.md   # cliente HTTP do contêiner Hunyuan
-├── 09c-refinamento-mesh.md      # shader de vidro PBR
-├── 09d-preprocessamento-e-cleanup.md  # ImagePreprocessor + MeshCleaner
-├── 09e-aplicacao-label.md       # LabelUpscaler + LabelProjector
-├── 10-classificador-e-cor.md
-├── 10b-segmentacao-e-label.md   # BackgroundRemover + LabelExtractor
+├── 09-pipeline-3d.md                   # TemplateProcessor (fallback)
+├── 09b-pipeline-ai-hunyuan.md          # cliente HTTP do contêiner Hunyuan
+├── 09c-refinamento-mesh.md             # shader de vidro PBR
+├── 09d-preprocessamento-e-cleanup.md   # ImagePreprocessor + MeshCleaner
+├── 09e-aplicacao-label.md              # LabelUpscaler + LabelProjector
+├── 09f-pipeline-integrado.md           # IntegratedPipeline (composição)
+├── 09g-cache-similaridade-clip.md      # ModelCache + modelos_3d_universais (cross-tenant)
+├── 10-classificador-e-cor.md           # ImageEmbedder + ColorDetector (legado)
+├── 10b-segmentacao-e-label.md          # BackgroundRemover + LabelExtractor
 ├── 11-templates-3d.md
 ├── 12-armazenamento-e-banco.md
 ├── 13-endpoints-http.md
