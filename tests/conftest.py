@@ -23,7 +23,8 @@ if str(_BACK_ROOT) not in sys.path:
 async def session_factory(tmp_path: Path) -> AsyncIterator[async_sessionmaker]:
     """Engine SQLite em arquivo (compatível com múltiplas conexões async)."""
     from app.database import Base
-    from app.modules.captures import models  # noqa: F401 — registra tabelas
+    from app.modules.captures import models  # noqa: F401 — registra capture_jobs/images
+    from app.modules.captures import modelos_universais  # noqa: F401 — registra modelos_3d_universais
 
     db_path = tmp_path / "test.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}", future=True)

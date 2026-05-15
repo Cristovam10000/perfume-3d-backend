@@ -34,7 +34,8 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
 
 async def create_all() -> None:
-    from .modules.captures import models  # noqa: F401 — registra tabelas
+    from .modules.captures import models  # noqa: F401 — registra capture_jobs/capture_images
+    from .modules.captures import modelos_universais  # noqa: F401 — registra modelos_3d_universais
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
