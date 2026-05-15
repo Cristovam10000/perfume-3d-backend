@@ -31,17 +31,25 @@ class ProcessingInput:
     job_id: str
     image_paths: list[Path]
     output_path: Path
-    # Opcionais — usados por processors que precisam (TemplateProcessor).
+    # Opcionais — usados por processors que precisam (TemplateProcessor / pipeline).
     # FakeProcessor ignora.
     template_id: str | None = None
     liquid_color: str | None = None
     label_image: Path | None = None
+    # product_id veio do POST /captures (form-data). Quando presente, o
+    # IntegratedPipeline amarra o GLB ao produto comercial via modelos_3d_produto
+    # ao final do stage de cache. Quando None, o cache popula apenas a
+    # modelos_3d_universais sem vinculo de tenant.
+    product_id: int | None = None
 
 
 @dataclass(frozen=True)
 class ProcessingResult:
     output_path: Path
     message: str
+    # Diagnostico para o service repassar ao status do job.
+    origem: str = "generated"  # "generated" | "cache" | "template-fallback" | "fake"
+    similarity: float | None = None  # preenchido em cache hits
 
 
 class Processor(ABC):

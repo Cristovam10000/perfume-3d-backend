@@ -4,13 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ...core.exceptions import ValidationError
 from ...core.logging import get_logger
 from ...storage.local_storage import LocalStorage
-from .classifier import Classifier, DisabledClassifier
-from .color_detector import ColorDetector, DisabledColorDetector
 from .models import CaptureJob
 from .processor import Processor, ProcessingInput
 from .queue import ProcessingQueue
@@ -18,7 +16,6 @@ from .repository import CaptureRepository
 from .status import CaptureStatus
 
 _log = get_logger("captures.service")
-_FALLBACK_TEMPLATE_ID = "rectangular_basic"
 
 
 @dataclass(frozen=True)
@@ -28,11 +25,11 @@ class IncomingImage:
 
 
 class CaptureService:
-    """Orquestra as use cases do módulo captures.
+    """Orquestra as use cases do modulo captures.
 
-    Mantém a camada HTTP (router) magra: receber/validar input, chamar service,
-    traduzir resultado. Toda a coreografia (criar job → salvar imagens → filar
-    processamento → atualizar status) vive aqui.
+    Camada HTTP (router) fica magra: receber/validar input, chamar service,
+    traduzir resultado. A geracao 3D em si e responsabilidade do `Processor`
+    injetado (FakeProcessor, TemplateProcessor ou IntegratedPipeline).
     """
 
     def __init__(
@@ -41,35 +38,32 @@ class CaptureService:
         storage: LocalStorage,
         processor: Processor,
         queue: ProcessingQueue,
-        classifier: Classifier | None = None,
-        color_detector: ColorDetector | None = None,
     ):
         self._session_factory = session_factory
         self._storage = storage
         self._processor = processor
         self._queue = queue
-        # Sem classificador / detector, usamos os bypasses. Mantem compat
-        # com construcoes legadas (testes que nao injetam dependencias).
-        self._classifier = classifier or DisabledClassifier(_FALLBACK_TEMPLATE_ID)
-        self._color_detector = color_detector or DisabledColorDetector()
 
     # ------------------------------------------------------------------ HTTP
 
-    async def create_job(self, images: list[IncomingImage]) -> str:
+    async def create_job(
+        self,
+        images: list[IncomingImage],
+        *,
+        product_id: int | None = None,
+    ) -> str:
         """Cria job, persiste imagens em disco + DB, e enfileira processamento."""
         if not images:
             raise ValidationError("Nenhuma imagem recebida")
 
         job_id = str(uuid4())
-        saved_paths: list[tuple[str, Path]] = []
 
         async with self._session_factory() as session:
             repo = CaptureRepository(session)
-            await repo.create_job(job_id)
+            await repo.create_job(job_id, product_id=product_id)
 
             for image in images:
                 path = self._storage.save_upload(job_id, image.filename, image.content)
-                saved_paths.append((image.filename, path))
                 await repo.add_image(job_id, image.filename, str(path))
 
             await session.commit()
@@ -86,37 +80,11 @@ class CaptureService:
 
     async def process_job(self, job_id: str) -> None:
         """Executa um job completo. Registrado como handler da fila no bootstrap."""
-        image_paths, output_path = await self._prepare_job(job_id)
-        if image_paths is None:
+        prep = await self._prepare_job(job_id)
+        if prep is None:
             return  # job sumiu entre o submit e o pop — tolerante.
 
-        # Classifica forma do frasco (CLIP ou disabled) — falha graciosa cai
-        # no template default. Erro de classificador NAO falha o job.
-        template_id: str | None = None
-        try:
-            classification = await self._classifier.classify(image_paths)
-            template_id = classification.template_id
-            _log.info(
-                "Job %s classificado como '%s' (%.0f%%)",
-                job_id,
-                template_id,
-                classification.confidence * 100,
-            )
-        except Exception as exc:
-            _log.warning(
-                "Classificador falhou para job %s, usando default: %s", job_id, exc
-            )
-
-        # Detecta cor do liquido — tambem grasciosa: erro nao derruba o job.
-        liquid_color: str | None = None
-        try:
-            liquid_color = await self._color_detector.detect(image_paths)
-            if liquid_color:
-                _log.info("Job %s cor do liquido detectada: %s", job_id, liquid_color)
-        except Exception as exc:
-            _log.warning(
-                "Detector de cor falhou para job %s, usando default: %s", job_id, exc
-            )
+        image_paths, output_path, product_id = prep
 
         try:
             result = await self._processor.process(
@@ -124,8 +92,7 @@ class CaptureService:
                     job_id=job_id,
                     image_paths=image_paths,
                     output_path=output_path,
-                    template_id=template_id,
-                    liquid_color=liquid_color,
+                    product_id=product_id,
                 )
             )
         except Exception as exc:
@@ -136,15 +103,16 @@ class CaptureService:
 
     async def _prepare_job(
         self, job_id: str
-    ) -> tuple[list[Path], Path] | tuple[None, None]:
+    ) -> tuple[list[Path], Path, int | None] | None:
         async with self._session_factory() as session:
             repo = CaptureRepository(session)
             job = await repo.get(job_id)
             if job is None:
-                return (None, None)
+                return None
 
             image_paths = [Path(img.path) for img in job.images]
             output_path = self._storage.model_path(job_id)
+            product_id = job.product_id
 
             await repo.update_status(
                 job_id,
@@ -153,7 +121,7 @@ class CaptureService:
             )
             await session.commit()
 
-        return image_paths, output_path
+        return image_paths, output_path, product_id
 
     async def _mark_completed(self, job_id: str, message: str) -> None:
         async with self._session_factory() as session:

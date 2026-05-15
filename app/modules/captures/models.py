@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ...database import Base
@@ -21,6 +21,10 @@ class CaptureJob(Base):
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     model_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # product_id opcional: quando o POST /captures vem amarrado a um produto
+    # do tenant (em /sales). Usado pelo IntegratedPipeline para fazer UPSERT
+    # em modelos_3d_produto ao final do pipeline.
+    product_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

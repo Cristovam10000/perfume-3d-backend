@@ -12,126 +12,229 @@ from .config import Settings, settings
 from .core.exceptions import register_exception_handlers
 from .core.logging import configure_logging, get_logger
 from .database import SessionFactory, create_all, engine
-from .modules.captures.classifier import (
-    Classifier,
-    CLIPClassifier,
-    DisabledClassifier,
+from .modules.captures.background_remover import (
+    BackgroundRemover,
+    DisabledBackgroundRemover,
+    RembgBackgroundRemover,
 )
-from .modules.captures.color_detector import (
-    AverageColorDetector,
-    ColorDetector,
-    DisabledColorDetector,
+from .modules.captures.cache import (
+    ClipSimilarityCache,
+    DisabledModelCache,
+    ModelCache,
 )
+from .modules.captures.embeddings import (
+    ClipImageEmbedder,
+    DisabledEmbedder,
+    ImageEmbedder,
+)
+from .modules.captures.image_preprocessor import (
+    DisabledImagePreprocessor,
+    ImagePreprocessor,
+    StandardImagePreprocessor,
+)
+from .modules.captures.label_extractor import (
+    DisabledLabelExtractor,
+    HomographyLabelExtractor,
+    LabelExtractor,
+)
+from .modules.captures.label_projector import (
+    BlenderLabelProjector,
+    DisabledLabelProjector,
+    LabelProjector,
+)
+from .modules.captures.label_upscaler import (
+    DisabledLabelUpscaler,
+    LabelUpscaler,
+    LanczosLabelUpscaler,
+)
+from .modules.captures.mesh_cleaner import (
+    BlenderMeshCleaner,
+    DisabledMeshCleaner,
+    MeshCleaner,
+)
+from .modules.captures.mesh_refiner import (
+    BlenderMeshRefiner,
+    DisabledMeshRefiner,
+    MeshRefiner,
+)
+from .modules.captures.modelos_universais import ensure_captures_schema
+from .modules.captures.pipeline import IntegratedPipeline
 from .modules.captures.processor import (
     FakeProcessor,
+    Hunyuan3DProcessor,
     Processor,
     TemplateProcessor,
 )
 from .modules.captures.queue import ProcessingQueue
 from .modules.captures.router import router as captures_router
 from .modules.captures.service import CaptureService
-from .modules.captures.templates_catalog import TEMPLATE_DESCRIPTIONS
 from .modules.health.router import router as health_router
 from .modules.sales.repository import ensure_sales_schema
 from .modules.sales.router import router as sales_router
 from .storage.local_storage import LocalStorage
 
 
-def build_processor(config: Settings = settings) -> Processor:
-    """Factory que materializa o Processor conforme `PROCESSOR_TYPE` do `.env`.
-
-    Centraliza o conhecimento de "qual processor usar" num só lugar — o resto
-    do sistema continua programando contra a ABC `Processor`.
-    """
-    if config.processor_type == "fake":
-        return FakeProcessor()
-    if config.processor_type == "template":
-        return TemplateProcessor(
-            blender_executable=config.blender_executable,
-            templates_dir=config.templates_dir,
-        )
-    # Pydantic Literal já barra valores fora desses dois antes daqui chegar,
-    # mas mantemos a guarda explícita para o caso de a Settings ser construída
-    # programaticamente em algum teste.
-    raise ValueError(f"processor_type inválido: {config.processor_type!r}")
+# --------------------------------------------------------------- stage builders
 
 
-def build_classifier(config: Settings = settings) -> Classifier:
-    """Factory do Classifier conforme `CLASSIFIER_TYPE` do `.env`.
-
-    Para o modo `clip`, filtra `TEMPLATE_DESCRIPTIONS` mantendo apenas os
-    templates que de fato têm GLB normalizado em disco — assim o CLIP nunca
-    devolve um `template_id` que o `TemplateProcessor` não consegue usar.
-    """
-    if config.classifier_type == "disabled":
-        return DisabledClassifier(default_template_id=config.default_template_id)
-
-    if config.classifier_type == "clip":
-        available = {
-            tid: desc
-            for tid, desc in TEMPLATE_DESCRIPTIONS.items()
-            if (config.templates_dir / f"{tid}.glb").exists()
-        }
-        if not available:
-            raise ValueError(
-                f"Nenhum template GLB normalizado em {config.templates_dir} — "
-                "rode os scripts de normalização antes de ativar CLASSIFIER_TYPE=clip."
-            )
-        return CLIPClassifier(
-            model_name=config.clip_model,
-            templates=available,
-        )
-
-    raise ValueError(f"classifier_type inválido: {config.classifier_type!r}")
+def build_image_preprocessor(config: Settings = settings) -> ImagePreprocessor:
+    if config.image_preprocessor_type == "disabled":
+        return DisabledImagePreprocessor()
+    return StandardImagePreprocessor()
 
 
-def build_color_detector(config: Settings = settings) -> ColorDetector:
-    """Factory do detector de cor conforme `COLOR_DETECTOR_TYPE` do `.env`."""
-    if config.color_detector_type == "disabled":
-        return DisabledColorDetector()
-    if config.color_detector_type == "average":
-        return AverageColorDetector()
-    raise ValueError(
-        f"color_detector_type inválido: {config.color_detector_type!r}"
+def build_background_remover(config: Settings = settings) -> BackgroundRemover:
+    if config.background_remover_type == "disabled":
+        return DisabledBackgroundRemover()
+    return RembgBackgroundRemover()
+
+
+def build_mesh_cleaner(config: Settings = settings) -> MeshCleaner:
+    if config.mesh_cleaner_type == "disabled":
+        return DisabledMeshCleaner()
+    return BlenderMeshCleaner(blender_executable=config.blender_executable)
+
+
+def build_mesh_refiner(config: Settings = settings) -> MeshRefiner:
+    if config.mesh_refiner_type == "disabled":
+        return DisabledMeshRefiner()
+    return BlenderMeshRefiner(blender_executable=config.blender_executable)
+
+
+def build_label_extractor(config: Settings = settings) -> LabelExtractor:
+    if config.label_extractor_type == "disabled":
+        return DisabledLabelExtractor()
+    return HomographyLabelExtractor()
+
+
+def build_label_upscaler(config: Settings = settings) -> LabelUpscaler:
+    if config.label_upscaler_type == "disabled":
+        return DisabledLabelUpscaler()
+    return LanczosLabelUpscaler(target_size=config.label_target_size)
+
+
+def build_label_projector(config: Settings = settings) -> LabelProjector:
+    if config.label_projector_type == "disabled":
+        return DisabledLabelProjector()
+    return BlenderLabelProjector(blender_executable=config.blender_executable)
+
+
+def build_embedder(config: Settings = settings) -> ImageEmbedder:
+    if not config.cache_enabled or config.cache_embedder_type == "disabled":
+        return DisabledEmbedder()
+    return ClipImageEmbedder(model_name=config.cache_embedding_model)
+
+
+def build_model_cache(
+    config: Settings = settings, storage: LocalStorage | None = None
+) -> ModelCache:
+    if not config.cache_enabled:
+        return DisabledModelCache()
+    return ClipSimilarityCache(
+        session_factory=SessionFactory,
+        storage=storage or LocalStorage(),
+        similarity_threshold=config.cache_similarity_threshold,
     )
+
+
+def build_hunyuan(config: Settings = settings) -> Hunyuan3DProcessor:
+    return Hunyuan3DProcessor(
+        service_url=config.hunyuan_url,
+        timeout_seconds=config.hunyuan_timeout_seconds,
+        octree_resolution=config.hunyuan_octree_resolution,
+        num_inference_steps=config.hunyuan_num_inference_steps,
+        guidance_scale=config.hunyuan_guidance_scale,
+        mc_algo=config.hunyuan_mc_algo,
+        texture_resolution=config.hunyuan_texture_resolution,
+    )
+
+
+def build_template_processor(config: Settings = settings) -> TemplateProcessor:
+    return TemplateProcessor(
+        blender_executable=config.blender_executable,
+        templates_dir=config.templates_dir,
+        default_template_id=config.default_template_id,
+    )
+
+
+# --------------------------------------------------------------- root factory
+
+
+def build_pipeline(
+    config: Settings = settings,
+    storage: LocalStorage | None = None,
+) -> Processor:
+    """Materializa o `Processor` raiz conforme `PIPELINE_MODE`.
+
+    `fake`       -> FakeProcessor (sintetico, sem deps)
+    `template`   -> TemplateProcessor (Blender + template paramétrico)
+    `integrated` -> IntegratedPipeline (preprocess + rembg + cache CLIP + Hunyuan + pos-proc)
+    """
+    storage = storage or LocalStorage()
+
+    if config.pipeline_mode == "fake":
+        return FakeProcessor()
+
+    if config.pipeline_mode == "template":
+        return build_template_processor(config)
+
+    fallback = (
+        build_template_processor(config)
+        if config.pipeline_fallback_to_template
+        else None
+    )
+
+    return IntegratedPipeline(
+        preprocessor=build_image_preprocessor(config),
+        background_remover=build_background_remover(config),
+        embedder=build_embedder(config),
+        cache=build_model_cache(config, storage),
+        hunyuan=build_hunyuan(config),
+        mesh_cleaner=build_mesh_cleaner(config),
+        mesh_refiner=build_mesh_refiner(config),
+        label_extractor=build_label_extractor(config),
+        label_upscaler=build_label_upscaler(config),
+        label_projector=build_label_projector(config),
+        storage=storage,
+        fallback_processor=fallback,
+        front_axis=config.label_front_axis,
+        min_island_ratio=config.mesh_min_island_ratio,
+        label_min_confidence=config.label_min_confidence,
+        label_target_size=config.label_target_size,
+    )
+
+
+# ------------------------------------------------------------------- lifespan
 
 
 @asynccontextmanager
 async def production_lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Bootstrap de produção: tabelas, storage, worker da fila."""
+    """Bootstrap de producao: tabelas, storage, worker da fila."""
     configure_logging()
     log = get_logger("app.lifespan")
 
     await create_all()
     await ensure_sales_schema(engine)
+    await ensure_captures_schema(engine)
 
     storage = LocalStorage()
     storage.ensure_dirs()
 
-    processor = build_processor()
-    classifier = build_classifier()
-    color_detector = build_color_detector()
+    pipeline = build_pipeline(settings, storage)
     queue = ProcessingQueue()
-    service = CaptureService(
-        SessionFactory,
-        storage,
-        processor,
-        queue,
-        classifier=classifier,
-        color_detector=color_detector,
-    )
+    service = CaptureService(SessionFactory, storage, pipeline, queue)
 
     app.state.capture_service = service
     app.state.queue = queue
 
     queue.start(service.process_job)
     log.info(
-        "Backend pronto em %s:%s (processor=%s, classifier=%s, color=%s)",
+        "Backend pronto em %s:%s (pipeline=%s, cache_enabled=%s, hunyuan_url=%s)",
         settings.app_host,
         settings.app_port,
-        settings.processor_type,
-        settings.classifier_type,
-        settings.color_detector_type,
+        settings.pipeline_mode,
+        settings.cache_enabled,
+        settings.hunyuan_url,
     )
 
     try:
@@ -141,12 +244,15 @@ async def production_lifespan(app: FastAPI) -> AsyncIterator[None]:
         await engine.dispose()
 
 
+# ------------------------------------------------------------------- app
+
+
 def create_app(
     *,
     storage_dir: Path | None = None,
     lifespan=production_lifespan,
 ) -> FastAPI:
-    """Factory da aplicação FastAPI.
+    """Factory da aplicacao FastAPI.
 
     Parametrizado para permitir montar uma app de teste sem Postgres/worker:
     basta passar `storage_dir=<tmp>` e `lifespan=None`, populando o
@@ -155,6 +261,7 @@ def create_app(
     static_root = Path(storage_dir or settings.storage_root)
     (static_root / "uploads").mkdir(parents=True, exist_ok=True)
     (static_root / "models").mkdir(parents=True, exist_ok=True)
+    (static_root / "cache").mkdir(parents=True, exist_ok=True)
 
     app = FastAPI(
         title=settings.app_name,
@@ -182,8 +289,8 @@ def create_app(
     )
 
     # Templates normalizados expostos para o viewer local poder visualizar
-    # cada template "puro" (sem customização do líquido/label do job). Útil
-    # pra inspecionar a saída do `generate_*_template.py` sem precisar
+    # cada template "puro" (sem customizacao do liquido/label do job). Util
+    # para inspecionar a saida do `generate_*_template.py` sem precisar
     # disparar uma captura nova pelo app.
     if settings.templates_dir.exists():
         app.mount(
