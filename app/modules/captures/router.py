@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 
-from ...core.exceptions import NotFoundError
+from ...core.exceptions import NotFoundError, ValidationError
 from ...dependencies import get_capture_service
 from .schemas import CaptureStatusResponse, CreateCaptureResponse
 from .service import CaptureService, IncomingImage
+from .view_router import VALID_VIEW_LABELS
 
 router = APIRouter(prefix="/captures", tags=["captures"])
 
@@ -18,6 +19,14 @@ router = APIRouter(prefix="/captures", tags=["captures"])
 )
 async def create_capture(
     images: list[UploadFile] = File(..., description="Lote de imagens (JPEG)"),
+    views: list[str] = Form(
+        default=[],
+        description=(
+            "Rótulos de vista paralelos a `images` (mesmo índice). Valores válidos: "
+            "front, left, back, right, extra. Se omitido ou vazio, o backend "
+            "usa CLIPViewRouter para decidir."
+        ),
+    ),
     product_id: int | None = Form(
         default=None,
         alias="productId",
@@ -31,15 +40,51 @@ async def create_capture(
     service: CaptureService = Depends(get_capture_service),
 ) -> CreateCaptureResponse:
     """Recebe o lote de imagens e cria um job de reconstrucao 3D."""
+    normalized_views: list[str | None] = _normalize_views(views, len(images))
+
     incoming = [
         IncomingImage(
             filename=f.filename or "image.jpg",
             content=await f.read(),
+            view=normalized_views[i],
         )
-        for f in images
+        for i, f in enumerate(images)
     ]
     job_id = await service.create_job(incoming, product_id=product_id)
     return CreateCaptureResponse(job_id=job_id)
+
+
+def _normalize_views(views: list[str], image_count: int) -> list[str | None]:
+    """Valida e normaliza a lista de views vinda do multipart.
+
+    - Lista vazia => todos None (cliente legado, dispara CLIPViewRouter).
+    - Lista com tamanho diferente de `image_count` => 422.
+    - Valores fora de VALID_VIEW_LABELS => 422 (preserva contrato).
+    - Case-insensitive: 'FRONT' vira 'front'.
+    - Strings vazias viram None (cliente envia "" para extras sem rótulo).
+    """
+    if not views:
+        return [None] * image_count
+
+    if len(views) != image_count:
+        raise ValidationError(
+            f"Quantidade de views ({len(views)}) não bate com a de imagens "
+            f"({image_count}); envie um view por imagem ou omita o campo."
+        )
+
+    normalized: list[str | None] = []
+    for raw in views:
+        cleaned = (raw or "").strip().lower()
+        if cleaned == "":
+            normalized.append(None)
+            continue
+        if cleaned not in VALID_VIEW_LABELS:
+            raise ValidationError(
+                f"View inválido: {raw!r}. Esperado um de: "
+                f"{sorted(VALID_VIEW_LABELS)} ou vazio."
+            )
+        normalized.append(cleaned)
+    return normalized
 
 
 @router.get(

@@ -57,9 +57,21 @@ class Settings(BaseSettings):
     cache_embedder_type: Literal["disabled", "clip"] = "clip"
     cache_embedding_model: str = "openai/clip-vit-base-patch32"
 
+    # ---- View router (rotulagem de vistas pro Hunyuan3D-2mv) ----
+    # positional = ordem do upload vira front/left/back/right (legado).
+    # clip       = CLIPViewRouter zero-shot (front/back) + embeddings (left/right).
+    # Em ambos os modos, se o cliente enviar labels via campo `views` do POST
+    # /captures, eles têm prioridade (LabeledViewRouter).
+    view_router_type: Literal["positional", "clip"] = "clip"
+
     # ---- Stages auxiliares do pipeline IA ----
     image_preprocessor_type: Literal["disabled", "standard"] = "standard"
     background_remover_type: Literal["disabled", "rembg"] = "rembg"
+    # Modelo do rembg. `birefnet-general` é estado-da-arte para objetos
+    # gerais (vidro/transparência) — baixa ~885MB no primeiro uso.
+    # `isnet-general-use` é mais leve (~178MB) e suficiente pra fotos
+    # comuns. `u2net` é o default histórico do rembg (qualidade menor).
+    background_remover_model: str = "isnet-general-use"
     mesh_cleaner_type: Literal["disabled", "blender"] = "disabled"
     mesh_min_island_ratio: float = 0.0
     mesh_refiner_type: Literal["disabled", "blender"] = "blender"

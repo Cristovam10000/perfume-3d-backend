@@ -48,6 +48,7 @@ from .processor import (
     ProcessingInput,
     ProcessingResult,
 )
+from .view_router import PositionalViewRouter, ViewRouter
 
 _log = get_logger("captures.pipeline")
 
@@ -73,6 +74,7 @@ class IntegratedPipeline(Processor):
         label_projector: LabelProjector,
         storage: LocalStorage,
         *,
+        view_router: ViewRouter | None = None,
         fallback_processor: Processor | None = None,
         front_axis: str = "front_y_neg",
         min_island_ratio: float = 0.0,
@@ -90,6 +92,7 @@ class IntegratedPipeline(Processor):
         self.label_upscaler = label_upscaler
         self.label_projector = label_projector
         self.storage = storage
+        self.view_router = view_router or PositionalViewRouter()
         self.fallback_processor = fallback_processor
         self.front_axis = front_axis
         self.min_island_ratio = min_island_ratio
@@ -110,13 +113,24 @@ class IntegratedPipeline(Processor):
         if hit is not None:
             return await self._serve_cache_hit(hit, input)
 
+        # (3.5) view router — reordena masked para [front, left, back, right, *extras]
+        # antes do Hunyuan. Os hints vêm de `input.views` (app guiado); se vazios,
+        # o CLIPViewRouter decide. PositionalViewRouter mantém comportamento legado.
+        routing = await self._safe_route_views(masked, input.views)
+        ordered_for_hunyuan = routing.ordered
+        _log.info(
+            "View router (%s) reordenou %d imagens para o Hunyuan",
+            routing.source,
+            len(ordered_for_hunyuan),
+        )
+
         # (4) Hunyuan ou fallback
         raw_glb = workspace / "raw.glb"
         try:
             await self.hunyuan.process(
                 ProcessingInput(
                     job_id=input.job_id,
-                    image_paths=masked,
+                    image_paths=ordered_for_hunyuan,
                     output_path=raw_glb,
                 )
             )
@@ -216,6 +230,25 @@ class IntegratedPipeline(Processor):
         except Exception as exc:
             _log.warning("Cache lookup falhou (%s); tratando como miss", exc)
             return None
+
+    async def _safe_route_views(
+        self,
+        masked: list[Path],
+        hints: list[str | None] | None,
+    ):
+        """Roteia vistas com tolerância a falhas — sempre devolve algo utilizável.
+
+        Falha no router (ex: CLIP estourou) cai para PositionalViewRouter
+        para preservar o comportamento legado em vez de matar o job.
+        """
+        try:
+            return await self.view_router.route(masked, hints=hints)
+        except Exception as exc:
+            _log.warning(
+                "ViewRouter falhou (%s); usando ordem original do upload",
+                exc,
+            )
+            return await PositionalViewRouter().route(masked)
 
     async def _serve_cache_hit(
         self, hit: CacheHit, input: ProcessingInput

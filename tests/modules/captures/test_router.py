@@ -94,6 +94,84 @@ class TestCreateCaptureEndpoint:
         # FastAPI valida o campo obrigatório antes de chegar no service.
         assert response.status_code == 422
 
+    @pytest.mark.asyncio
+    async def test_accepts_views_field_paralelo_a_images(
+        self, harness: _Harness
+    ):
+        files = [
+            ("images", ("01.jpg", b"\xff\xd8\xff\x00a", "image/jpeg")),
+            ("images", ("02.jpg", b"\xff\xd8\xff\x00b", "image/jpeg")),
+            ("images", ("03.jpg", b"\xff\xd8\xff\x00c", "image/jpeg")),
+            ("images", ("04.jpg", b"\xff\xd8\xff\x00d", "image/jpeg")),
+        ]
+        data = {"views": ["front", "left", "back", "right"]}
+        response = await harness.client.post("/captures", files=files, data=data)
+
+        assert response.status_code == 201
+        job_id = response.json()["jobId"]
+        # As views devem ter sido persistidas em capture_images.
+        job = await harness.service.get_job(job_id)
+        assert job is not None
+        assert [img.view for img in job.images] == ["front", "left", "back", "right"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_views_with_wrong_count(self, harness: _Harness):
+        files = [
+            ("images", ("01.jpg", b"a", "image/jpeg")),
+            ("images", ("02.jpg", b"b", "image/jpeg")),
+        ]
+        # 3 views para 2 imagens — quantidade não bate.
+        data = {"views": ["front", "left", "back"]}
+        response = await harness.client.post("/captures", files=files, data=data)
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_rejects_unknown_view_label(self, harness: _Harness):
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        data = {"views": ["top"]}  # 'top' não é cardinal nem 'extra'.
+        response = await harness.client.post("/captures", files=files, data=data)
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_views_omitted_falls_back_to_null(self, harness: _Harness):
+        files = [
+            ("images", ("01.jpg", b"a", "image/jpeg")),
+            ("images", ("02.jpg", b"b", "image/jpeg")),
+        ]
+        response = await harness.client.post("/captures", files=files)
+        assert response.status_code == 201
+        job_id = response.json()["jobId"]
+        job = await harness.service.get_job(job_id)
+        assert job is not None
+        assert all(img.view is None for img in job.images)
+
+    @pytest.mark.asyncio
+    async def test_views_empty_string_normalizes_to_null(
+        self, harness: _Harness
+    ):
+        files = [
+            ("images", ("01.jpg", b"a", "image/jpeg")),
+            ("images", ("02.jpg", b"b", "image/jpeg")),
+        ]
+        # App pode mandar "" para extras sem rótulo.
+        data = {"views": ["front", ""]}
+        response = await harness.client.post("/captures", files=files, data=data)
+        assert response.status_code == 201
+        job_id = response.json()["jobId"]
+        job = await harness.service.get_job(job_id)
+        assert job is not None
+        assert [img.view for img in job.images] == ["front", None]
+
+    @pytest.mark.asyncio
+    async def test_views_case_insensitive(self, harness: _Harness):
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        data = {"views": ["FRONT"]}
+        response = await harness.client.post("/captures", files=files, data=data)
+        assert response.status_code == 201
+        job_id = response.json()["jobId"]
+        job = await harness.service.get_job(job_id)
+        assert job.images[0].view == "front"
+
 
 class TestStatusEndpoint:
     @pytest.mark.asyncio

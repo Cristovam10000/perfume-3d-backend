@@ -26,8 +26,20 @@ class CaptureRepository:
         await self.session.flush()
         return job
 
-    async def add_image(self, job_id: str, filename: str, path: str) -> CaptureImage:
-        image = CaptureImage(job_id=job_id, filename=filename, path=path)
+    async def add_image(
+        self,
+        job_id: str,
+        filename: str,
+        path: str,
+        *,
+        view: str | None = None,
+    ) -> CaptureImage:
+        image = CaptureImage(
+            job_id=job_id,
+            filename=filename,
+            path=path,
+            view=view,
+        )
         self.session.add(image)
         await self.session.flush()
         return image

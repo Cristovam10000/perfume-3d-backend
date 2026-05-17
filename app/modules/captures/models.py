@@ -55,5 +55,9 @@ class CaptureImage(Base):
     )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     path: Mapped[str] = mapped_column(String(512), nullable=False)
+    # Rótulo de vista enviado pelo cliente quando o app captura em modo
+    # guiado (front/left/back/right/extra). Quando NULL, o pipeline recorre
+    # ao CLIPViewRouter para decidir a vista por similaridade.
+    view: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     job: Mapped[CaptureJob] = relationship(back_populates="images")

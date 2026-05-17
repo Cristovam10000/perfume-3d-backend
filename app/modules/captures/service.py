@@ -22,6 +22,10 @@ _log = get_logger("captures.service")
 class IncomingImage:
     filename: str
     content: bytes
+    # Rótulo opcional da vista enviada pelo app guiado.
+    # Valores válidos: front/left/back/right/extra (case-insensitive).
+    # None = cliente legado; CLIPViewRouter decide no pipeline.
+    view: str | None = None
 
 
 class CaptureService:
@@ -64,7 +68,12 @@ class CaptureService:
 
             for image in images:
                 path = self._storage.save_upload(job_id, image.filename, image.content)
-                await repo.add_image(job_id, image.filename, str(path))
+                await repo.add_image(
+                    job_id,
+                    image.filename,
+                    str(path),
+                    view=image.view,
+                )
 
             await session.commit()
 
@@ -84,7 +93,7 @@ class CaptureService:
         if prep is None:
             return  # job sumiu entre o submit e o pop — tolerante.
 
-        image_paths, output_path, product_id = prep
+        image_paths, output_path, product_id, views = prep
 
         try:
             result = await self._processor.process(
@@ -93,6 +102,7 @@ class CaptureService:
                     image_paths=image_paths,
                     output_path=output_path,
                     product_id=product_id,
+                    views=views,
                 )
             )
         except Exception as exc:
@@ -103,7 +113,7 @@ class CaptureService:
 
     async def _prepare_job(
         self, job_id: str
-    ) -> tuple[list[Path], Path, int | None] | None:
+    ) -> tuple[list[Path], Path, int | None, list[str | None]] | None:
         async with self._session_factory() as session:
             repo = CaptureRepository(session)
             job = await repo.get(job_id)
@@ -111,6 +121,7 @@ class CaptureService:
                 return None
 
             image_paths = [Path(img.path) for img in job.images]
+            views = [img.view for img in job.images]
             output_path = self._storage.model_path(job_id)
             product_id = job.product_id
 
@@ -121,7 +132,7 @@ class CaptureService:
             )
             await session.commit()
 
-        return image_paths, output_path, product_id
+        return image_paths, output_path, product_id, views
 
     async def _mark_completed(self, job_id: str, message: str) -> None:
         async with self._session_factory() as session:

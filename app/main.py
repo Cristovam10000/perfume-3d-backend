@@ -68,6 +68,12 @@ from .modules.captures.processor import (
 from .modules.captures.queue import ProcessingQueue
 from .modules.captures.router import router as captures_router
 from .modules.captures.service import CaptureService
+from .modules.captures.view_router import (
+    CLIPViewRouter,
+    LabeledViewRouter,
+    PositionalViewRouter,
+    ViewRouter,
+)
 from .modules.health.router import router as health_router
 from .modules.sales.repository import ensure_sales_schema
 from .modules.sales.router import router as sales_router
@@ -86,7 +92,7 @@ def build_image_preprocessor(config: Settings = settings) -> ImagePreprocessor:
 def build_background_remover(config: Settings = settings) -> BackgroundRemover:
     if config.background_remover_type == "disabled":
         return DisabledBackgroundRemover()
-    return RembgBackgroundRemover()
+    return RembgBackgroundRemover(model_name=config.background_remover_model)
 
 
 def build_mesh_cleaner(config: Settings = settings) -> MeshCleaner:
@@ -135,6 +141,23 @@ def build_model_cache(
         storage=storage or LocalStorage(),
         similarity_threshold=config.cache_similarity_threshold,
     )
+
+
+def build_view_router(config: Settings = settings) -> ViewRouter:
+    """Cria o ViewRouter conforme `VIEW_ROUTER_TYPE`.
+
+    Sempre embrulhamos no LabeledViewRouter: se o cliente enviar `views`
+    no upload, ele usa esses labels diretamente; se não, delega para o
+    router configurado (CLIP ou positional).
+    """
+    if config.view_router_type == "positional":
+        fallback: ViewRouter = PositionalViewRouter()
+    else:
+        fallback = CLIPViewRouter(
+            model_name=config.cache_embedding_model,
+            fallback=PositionalViewRouter(),
+        )
+    return LabeledViewRouter(fallback=fallback)
 
 
 def build_hunyuan(config: Settings = settings) -> Hunyuan3DProcessor:
@@ -196,6 +219,7 @@ def build_pipeline(
         label_upscaler=build_label_upscaler(config),
         label_projector=build_label_projector(config),
         storage=storage,
+        view_router=build_view_router(config),
         fallback_processor=fallback,
         front_axis=config.label_front_axis,
         min_island_ratio=config.mesh_min_island_ratio,

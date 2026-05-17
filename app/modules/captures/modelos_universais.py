@@ -90,6 +90,10 @@ async def ensure_captures_schema(engine: AsyncEngine) -> None:
         "ADD COLUMN IF NOT EXISTS product_id bigint",
         "CREATE INDEX IF NOT EXISTS idx_capture_jobs_product_id "
         "ON capture_jobs(product_id)",
+        # view do app guiado em capture_images (front/left/back/right/extra).
+        # NULL = cliente legado, dispara CLIPViewRouter no pipeline.
+        "ALTER TABLE IF EXISTS capture_images "
+        "ADD COLUMN IF NOT EXISTS view varchar(16)",
     ]
 
     # A constraint de FK e adicionada separadamente porque Postgres nao tem

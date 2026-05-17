@@ -41,6 +41,11 @@ class ProcessingInput:
     # ao final do stage de cache. Quando None, o cache popula apenas a
     # modelos_3d_universais sem vinculo de tenant.
     product_id: int | None = None
+    # Rótulos de vista enviados pelo app guiado, paralelos a image_paths.
+    # Cada item é None (sem rótulo) ou um dos valores de CARDINAL_VIEWS / "extra".
+    # O IntegratedPipeline usa esses rótulos via LabeledViewRouter; quando todos
+    # são None, recorre ao CLIPViewRouter.
+    views: list[str | None] | None = None
 
 
 @dataclass(frozen=True)
