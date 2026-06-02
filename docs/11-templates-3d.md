@@ -1,5 +1,13 @@
 # 11 — Templates 3D (catálogo, normalização, procedural)
 
+> **O que você vai aprender neste doc**
+> - O que são os GLBs "template" e onde moram (`assets/templates/`), com a distinção raw × normalized.
+> - O processo **offline** de normalização (Blender) que padroniza nós e escala.
+> - Como esses templates servem hoje: **fallback** do `TemplateProcessor` e debug via `/templates`.
+>
+> **Pré-requisitos:** [09 - Pipeline 3D (fallback)](09-pipeline-3d.md). Estrutura: [04](04-estrutura-de-pastas.md).
+> Lembre: no caminho principal (IA), o Hunyuan gera a geometria — templates são fallback.
+
 ## Catálogo textual (CLIP)
 
 O ficheiro [`app/modules/captures/templates_catalog.py`](../app/modules/captures/templates_catalog.py) define `TEMPLATE_DESCRIPTIONS`: mapa `template_id` → descrição curta em **inglês** (requisito do CLIP base). Exemplos de chaves hoje:

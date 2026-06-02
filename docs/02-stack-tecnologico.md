@@ -1,5 +1,13 @@
 # 02 — Stack tecnológico
 
+> **O que você vai aprender neste doc**
+> - Quais bibliotecas o backend usa e **o papel de cada uma** (não só o nome).
+> - A diferença entre deps de runtime, de dev (testes) e **opcionais** (visão/CLIP).
+> - Por que o Hunyuan3D **não** é dependência Python do backend (roda em container à parte).
+>
+> **Pré-requisitos:** [01 - Visão geral](01-visao-geral.md). Para instalar tudo, siga
+> [03 - Inicialização](03-inicializacao-do-projeto.md).
+
 A fonte canônica das dependências é [`requirements.txt`](../requirements.txt) (runtime), [`requirements-dev.txt`](../requirements-dev.txt) (testes) e [`requirements-classifier.txt`](../requirements-classifier.txt) (CLIP, opcional).
 
 ## Versões e SDK
@@ -74,22 +82,23 @@ Instaladas quando `CACHE_EMBEDDER_TYPE=clip` (default no `PIPELINE_MODE=integrat
 
 ```
 rembg>=2.0.50
+onnxruntime>=1.23
 opencv-python>=4.10
 numpy>=1.26
 pillow>=10.0
 ```
 
-Instaladas quando o `IntegratedPipeline` está ativo. `rembg` baixa ~200MB de pesos ONNX na primeira execução; `opencv-python` (~50MB) é usado pelo `HomographyLabelExtractor` e pelo `StandardImagePreprocessor`. Ver [10b](10b-segmentacao-e-label.md) e [09d](09d-preprocessamento-e-cleanup.md).
+Instaladas quando o `IntegratedPipeline` está ativo. `rembg` baixa ~200MB de pesos ONNX na primeira execução (cacheados em `~/.u2net/`); `onnxruntime` é o runtime que executa esses modelos (em placas RTX, trocar por `onnxruntime-gpu` dá ~5x na remoção de fundo); `opencv-python` (~50MB) é usado pelo `HomographyLabelExtractor` e pelo `StandardImagePreprocessor`. Ver [10b](10b-segmentacao-e-label.md) e [09d](09d-preprocessamento-e-cleanup.md).
 
 ## Hunyuan3D (em contêiner Docker — não Python do backend)
 
-O contêiner `perfume-hunyuan` em [`C:\TCC\docker\hunyuan`](../../docker/hunyuan) tem suas próprias dependências (`torch`, `diffusers`, `Hunyuan3D-2GP`, `mmgp`, etc.) — o backend Python **não importa nada disso**. A comunicação é puramente HTTP multipart via `httpx.AsyncClient`. Ver [09b](09b-pipeline-ai-hunyuan.md).
+O serviço `hunyuan` do Compose (build em [`C:\TCC\docker\hunyuan`](../../docker/hunyuan)) tem suas próprias dependências (`torch`, `diffusers`, `Hunyuan3D-2GP`, `mmgp`, etc.) — o backend Python **não importa nada disso**. A comunicação é puramente HTTP multipart via `httpx.AsyncClient`. Ver [09b](09b-pipeline-ai-hunyuan.md).
 
 ## Ferramentas externas (não-Python)
 
 - **Blender 5.1+** — invocado como subprocess pelo `TemplateProcessor`, `BlenderMeshCleaner`, `BlenderMeshRefiner` e `BlenderLabelProjector`. Caminho default em Windows: `C:\Program Files\Blender Foundation\Blender 5.1\blender.exe`. Configurável via `BLENDER_EXECUTABLE` no `.env`.
 - **PostgreSQL 16** — container Docker oficial (`tcc-postgres`). Configurado em `DATABASE_URL`.
-- **Docker + NVIDIA Container Toolkit** — usado para Postgres e para o serviço Hunyuan3D-2mv (contêiner `perfume-hunyuan`, GPU NVIDIA, ~6-8GB VRAM com profile mmgp 4). O backend em si não é containerizado.
+- **Docker + NVIDIA Container Toolkit** — usado para Postgres e para o serviço Hunyuan3D-2mv (serviço `hunyuan` do Compose, GPU NVIDIA, ~6-8GB VRAM com profile mmgp 4). O backend em si não é containerizado.
 
 ## Stack por camada — visão consolidada
 
@@ -103,11 +112,11 @@ O contêiner `perfume-hunyuan` em [`C:\TCC\docker\hunyuan`](../../docker/hunyuan
 | Driver DB | asyncpg 0.30+ | URL `postgresql+asyncpg://...` |
 | Banco | PostgreSQL 16 | container Docker `tcc-postgres` |
 | Worker | `asyncio.Queue` (stdlib) | [`app/modules/captures/queue.py`](../app/modules/captures/queue.py) |
-| Pipeline 3D (orquestração) | `IntegratedPipeline` (Python) | [`app/modules/captures/pipeline.py`](../app/modules/captures/pipeline.py) (planejado) |
+| Pipeline 3D (orquestração) | `IntegratedPipeline` (Python) | [`app/modules/captures/pipeline.py`](../app/modules/captures/pipeline.py) |
 | Geração 3D (IA) | Hunyuan3D-2mv via container Docker + GPU | [`docker/hunyuan/server.py`](../../docker/hunyuan/server.py), cliente HTTP em [`app/modules/captures/processor.py`](../app/modules/captures/processor.py) |
 | Geração 3D (fallback) | Blender 5.1 headless via subprocess | [`app/modules/captures/processor.py`](../app/modules/captures/processor.py) (`TemplateProcessor`) + [`app/modules/captures/blender_scripts/customize_template.py`](../app/modules/captures/blender_scripts/customize_template.py) |
-| Embedder CLIP (cache) | OpenAI CLIP via transformers | [`app/modules/captures/embeddings.py`](../app/modules/captures/embeddings.py) (planejado), reutilizando o modelo em [`app/modules/captures/classifier.py`](../app/modules/captures/classifier.py) |
-| Cache de modelos | Cosine vs embedding 512-d | [`app/modules/captures/cache.py`](../app/modules/captures/cache.py) (planejado), [`app/modules/captures/modelos_3d_universais.py`](../app/modules/captures/modelos_3d_universais.py) (planejado) |
+| Embedder CLIP (cache) | OpenAI CLIP via transformers | [`app/modules/captures/embeddings.py`](../app/modules/captures/embeddings.py), reutilizando o modelo do legado [`app/modules/captures/classifier.py`](../app/modules/captures/classifier.py) |
+| Cache de modelos | Cosine vs embedding CLIP | [`app/modules/captures/cache.py`](../app/modules/captures/cache.py), [`app/modules/captures/modelos_universais.py`](../app/modules/captures/modelos_universais.py) |
 | Remoção de fundo | `rembg` + ONNX | [`app/modules/captures/background_remover.py`](../app/modules/captures/background_remover.py) |
 | Extração de label | OpenCV (Canny + warpPerspective) | [`app/modules/captures/label_extractor.py`](../app/modules/captures/label_extractor.py) |
 | Refinamento de mesh | Blender 5.1 headless | [`app/modules/captures/mesh_refiner.py`](../app/modules/captures/mesh_refiner.py) + [`app/modules/captures/blender_scripts/refine_ai_mesh.py`](../app/modules/captures/blender_scripts/refine_ai_mesh.py) |

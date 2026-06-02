@@ -1,5 +1,13 @@
 # 09c — Refinamento de Malha: Shader de Vidro PBR
 
+> **O que você vai aprender neste doc**
+> - Por que o Hunyuan pinta vidro como superfície opaca — e como o refiner conserta isso.
+> - Como o script Blender **identifica o corpo do frasco** por heurística (maior mesh sem textura).
+> - Os parâmetros do shader de vidro PBR (`IOR`, `Transmission`, `Roughness`) e o porquê de cada valor.
+>
+> **Pré-requisitos:** [09f - Pipeline integrado](09f-pipeline-integrado.md). É o stage (6) do pipeline.
+> **Glossário:** PBR, shader, IOR — ver [15](15-glossario.md).
+
 Pós-processador do `IntegratedPipeline` que melhora visualmente os GLBs gerados pelo `Hunyuan3DProcessor`, substituindo o shader opaco do corpo do frasco por **vidro fisicamente correto**. Funciona como stage `(6)` na cadeia integrada (ver [09f](09f-pipeline-integrado.md)).
 
 ## O problema visual

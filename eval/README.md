@@ -1,5 +1,14 @@
 # Validação Experimental Quantitativa
 
+> **O que você vai aprender neste doc**
+> - Por que avaliação visual ("ficou bom") não basta para uma banca — e quais métricas usar.
+> - Por que existem **dois datasets** (in-distribution × held-out) e o viés que isso evita.
+> - Os dois modos de render (`matte` × `realistic`) e a pergunta que cada um responde.
+> - O que já está implementado na suíte e o que ainda falta.
+>
+> **Pré-requisitos:** ter lido [09f - Pipeline integrado](../docs/09f-pipeline-integrado.md)
+> (o método "IA" sob avaliação) ajuda. Caminhos de dados em [WORKTREE_SETUP.md](./WORKTREE_SETUP.md).
+
 Suite de avaliação que compara as três abordagens de reconstrução 3D do
 projeto em métricas reprodutíveis:
 
@@ -77,7 +86,8 @@ datasets** e reportamos métricas independentes:
 #### Dataset B — Held-out (comparação justa)
 
 - **O que é**: ~8-10 GLBs **não vistos por nenhum método**, em
-  `back/eval_assets/held_out/`.
+  `C:\TCC\TCC_eval_data\held_out\` (fora do repo git — ver o callout acima e
+  o default `_DEFAULT_EVAL_DATA_ROOT` em `eval/held_out_dataset.py`).
 - **Critério de seleção**:
   1. Não pode estar em `assets/templates/` (raw ou normalized).
   2. Frasco de perfume (escopo do projeto).
@@ -93,6 +103,93 @@ datasets** e reportamos métricas independentes:
 
 Na monografia, isso vira capítulo distinto: **Tabela in-distribution** +
 **Tabela held-out** + análise do gap entre os dois.
+
+### Metodologia dual de renderização (matte + realistic)
+
+A partir da iteração 2026-05-23, a suite roda em **dois modos de render**
+sequencialmente, controlados por `--render-mode matte realistic` no
+[benchmark.py](./benchmark.py). Cada modo responde uma pergunta distinta:
+
+#### Modo `matte` — geometria pura
+
+- **Materiais originais substituídos** por BSDF difuso cinza escuro (0.25
+  RGB, roughness 0.8). Vidro, transmissão e metais reflexivos são
+  eliminados.
+- **3-point lighting** suave (energias ~200) + fundo branco puro (com
+  `view_transform=Standard` pra evitar tone mapping do Filmic).
+- **Silhueta sempre visível** independente do material do GLB original.
+- **Convenção da literatura**: Pix2Vox, DISN, GET3D fazem isso.
+- **Pergunta que responde**: "ignorando aparência, qual método reconstrói
+  a forma melhor?"
+
+#### Modo `realistic` — condição de app real
+
+- **Materiais originais preservados** (vidro com transmissão, metal,
+  texturas).
+- **HDRI** (`studio_small_08_1k.hdr`, CC0 Poly Haven) fornece iluminação
+  baseada em imagem com reflexos plausíveis.
+- **Backlight de área** (1500 energia) atrás do frasco — técnica clássica
+  de fotografia de produto pra criar halo nas bordas, garantindo silhueta
+  mesmo em vidro transparente.
+- **Tone mapping padrão** do Blender (AgX/Filmic), preservando detalhe em
+  highlights.
+- **Pergunta que responde**: "quando o método encontra um frasco de vidro
+  real, ele aguenta?"
+
+#### Onde os arquivos ficam
+
+```
+C:\TCC\TCC_eval_data\
+├── synthetic_views\
+│   └── <model_id>\
+│       ├── matte\       ← renders modo matte (28 PNGs)
+│       └── realistic\   ← renders modo realistic (28 PNGs)
+├── outputs\
+│   ├── ia\<model_id>__matte.glb
+│   ├── ia\<model_id>__realistic.glb
+│   ├── blander\<model_id>__matte.glb
+│   ├── blander\<model_id>__realistic.glb
+│   ├── meshroom\<model_id>__matte.glb
+│   └── meshroom\<model_id>__realistic.glb
+└── results.csv   ← 1 linha por (model, branch, render_mode)
+```
+
+#### CSV final
+
+Cada modelo agora gera **2 linhas por branch** (uma por modo):
+
+```
+canary_games_dior_addict,rectangular,IA,matte,ok,...
+canary_games_dior_addict,rectangular,IA,realistic,ok,...
+canary_games_dior_addict,rectangular,Blander,matte,ok,...
+canary_games_dior_addict,rectangular,Blander,realistic,ok,...
+canary_games_dior_addict,rectangular,Meshroom,matte,error,...
+canary_games_dior_addict,rectangular,Meshroom,realistic,ok,...
+```
+
+A análise compara o **mesmo método entre modos** (queda de qualidade ao
+sair do laboratório pra realidade) e **métodos no mesmo modo** (ranking
+em condição controlada). Ver discussão em
+[RUN_BENCHMARK_CONTRACT.md](./RUN_BENCHMARK_CONTRACT.md).
+
+#### Justificativa de manter os dois
+
+| Argumento | Modo |
+|---|---|
+| Padrão da literatura, reprodutível, isola geometria | matte |
+| Simula uso real do app, expõe falhas em vidro/reflexão | realistic |
+| Mostra **gap entre laboratório e mundo real** | os dois juntos |
+
+A monografia tem 2 tabelas (uma por modo) + uma discussão final sobre o
+gap. Isso é academicamente mais forte que qualquer modo isolado.
+
+#### Como rodar só um modo
+
+```powershell
+python -m eval.benchmark --render-mode matte                 # só matte
+python -m eval.benchmark --render-mode realistic             # só realistic
+python -m eval.benchmark --render-mode matte realistic       # os dois (default)
+```
 
 ### Métricas
 
@@ -131,10 +228,10 @@ from eval.synthetic_dataset import render_synthetic_views
 from eval.metrics.geometric import compute_all
 
 # 1. Renderiza vistas sintéticas a partir de um GLB held-out
-gt_glb = Path("eval_assets/held_out/perfume_001_rectangular.glb")
+gt_glb = Path(r"C:\TCC\TCC_eval_data\held_out\perfume_001_rectangular.glb")
 rendered = render_synthetic_views(
     glb_path=gt_glb,
-    output_dir=Path("eval_outputs/held_out/perfume_001/"),
+    output_dir=Path(r"C:\TCC\TCC_eval_data\synthetic_views\perfume_001"),
 )
 # rendered.views = {"front": ..., "left": ..., "back": ..., "right": ...}
 
@@ -154,8 +251,10 @@ print(f"F-Score @ 5%: {result.f_score_005:.3f}")
 
 1. **Runners por branch** — `runners/{blender,meshroom,hunyuan}.py` que
    automatizam: receber 4 PNGs → executar o pipeline → entregar GLB.
-2. **Benchmark orchestrator** — `benchmark.py` que itera
-   `dataset × runners`, coleta tempo/VRAM/métricas, gera CSV.
+2. **Plugar os runners reais no `benchmark.py`** — o orquestrador **já existe
+   como esqueleto** (`eval/benchmark.py`: render das vistas, cálculo de
+   métricas e escrita do CSV prontos), mas a execução fim-a-fim depende dos
+   `run_benchmark.py` das worktrees `Blander`/`Meshroom` (item 1).
 3. **Métricas visuais** — `metrics/visual.py` com SSIM/LPIPS/CLIP-sim
    comparando render do pred contra render do GT (ou fotos reais).
 4. **ICP alignment** — antes do `compute_all`, alinhar a malha predita ao
@@ -187,5 +286,7 @@ cd c:\TCC\back
 pytest tests/eval/ -v
 ```
 
-25 testes cobrem amostragem, normalização, comparações com cubo/esfera
-sintéticos e mock do subprocess Blender.
+A suíte `tests/eval/` tem **52 testes** (`pytest tests/eval/ --collect-only`):
+métricas geométricas em cubo/esfera sintéticos (`test_geometric.py`), loader e
+validador do `manifest.json` do held-out (`test_held_out_dataset.py`) e o wrapper
+de render Blender com subprocess mockado (`test_synthetic_dataset.py`).

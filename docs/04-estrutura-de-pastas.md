@@ -1,5 +1,13 @@
 # 04 — Estrutura de pastas
 
+> **O que você vai aprender neste doc**
+> - O mapa de diretórios do backend e a regra de "onde mora cada coisa".
+> - Por que `main.py` é o único ponto onde tudo se conecta (factories + DI).
+> - A convenção *Feature-First* dos módulos (`captures`, `sales`, `health`).
+>
+> **Pré-requisitos:** [01 - Visão geral](01-visao-geral.md). Para entender *como* as
+> camadas conversam, leia depois [05 - Arquitetura](05-arquitetura.md).
+
 Mapa atual de `c:\TCC\back`. Use este doc como ponto de partida para "onde mora X".
 
 ## Árvore raiz
@@ -53,13 +61,14 @@ app/
     │   ├── queue.py           # ProcessingQueue (asyncio.Queue + worker)
     │   │
     │   │   # ── Pipeline raiz + IA ──
-    │   ├── pipeline.py        # IntegratedPipeline (planejado) — composição de stages
+    │   ├── pipeline.py        # IntegratedPipeline — composição de stages (default: PIPELINE_MODE=integrated)
     │   ├── processor.py       # ABC Processor + FakeProcessor + TemplateProcessor + Hunyuan3DProcessor
+    │   ├── view_router.py     # ViewRouter ABC + Labeled/CLIP/Positional (rotula vistas pro Hunyuan)
     │   │
     │   │   # ── Cache de modelos por similaridade CLIP ──
-    │   ├── embeddings.py      # ImageEmbedder ABC + ClipImageEmbedder (planejado)
-    │   ├── cache.py           # ModelCache ABC + ClipSimilarityCache (planejado)
-    │   ├── modelos_universais.py # ModeloUniversal SQLAlchemy (tabela modelos_3d_universais — cache global, planejado)
+    │   ├── embeddings.py      # ImageEmbedder ABC + ClipImageEmbedder
+    │   ├── cache.py           # ModelCache ABC + ClipSimilarityCache
+    │   ├── modelos_universais.py # ModeloUniversal SQLAlchemy (tabela modelos_3d_universais — cache global)
     │   │
     │   │   # ── Stages do pipeline IA ──
     │   ├── background_remover.py # ABC + DisabledBackgroundRemover + RembgBackgroundRemover
@@ -69,7 +78,7 @@ app/
     │   ├── mesh_refiner.py       # ABC + DisabledMeshRefiner + BlenderMeshRefiner
     │   ├── label_upscaler.py     # ABC + DisabledLabelUpscaler + LanczosLabelUpscaler
     │   ├── label_projector.py    # ABC + DisabledLabelProjector + BlenderLabelProjector
-    │   ├── top_projector.py      # ABC + DisabledTopProjector + BlenderTopProjector (opcional)
+    │   ├── top_projector.py      # ABC + DisabledTopProjector + BlenderTopProjector (presente, NÃO plugado no pipeline default)
     │   │
     │   │   # ── Legado / fallback ──
     │   ├── classifier.py      # ABC Classifier + CLIPClassifier (depreciado — substituído por embeddings.py)
@@ -109,38 +118,47 @@ app/
 tests/
 ├── __init__.py
 ├── conftest.py                # fixture session_factory (SQLite em tmp_path)
-├── test_main.py               # 13 testes end-to-end via httpx.AsyncClient
+├── test_main.py               # 11 — end-to-end via httpx.AsyncClient
 │
 ├── assets/
 │   ├── __init__.py
-│   └── test_normalized_templates.py   # 25 testes — valida estrutura dos GLBs
+│   └── test_normalized_templates.py   # 25 — valida estrutura dos GLBs normalizados
 │
 ├── integration/
 │   ├── __init__.py
-│   └── test_hunyuan_real.py       # exercita /generate de verdade — pulado se contêiner offline
+│   └── test_hunyuan_real.py       # 1 — exercita /generate de verdade (pulado se contêiner offline)
+│
+├── eval/                         # testes da suíte de benchmark (ver back/eval/)
+│   ├── test_geometric.py          # 16 — Chamfer/Hausdorff/F-Score em cubo/esfera sintéticos
+│   ├── test_held_out_dataset.py   # 24 — loader/validador do manifest held-out
+│   └── test_synthetic_dataset.py  # 12 — wrapper Blender de renderização (subprocess mockado)
 │
 └── modules/
     ├── __init__.py
     └── captures/
         ├── __init__.py
-        ├── test_classifier.py         # DisabledClassifier + CLIPClassifier mockado
-        ├── test_color_detector.py     # AverageColorDetector + edge cases
-        ├── test_customize_template.py # script Blender invocado com Blender real
-        ├── test_processor.py          # FakeProcessor + TemplateProcessor + Hunyuan3DProcessor (FakeTransport)
-        ├── test_queue.py              # ProcessingQueue assíncrona
-        ├── test_router.py             # POST/GET via TestClient
-        ├── test_service.py            # CaptureService (caminho feliz e erros)
-        ├── test_template_processor.py # TemplateProcessor (mocks + integração)
-        ├── test_background_remover.py # DisabledBackgroundRemover + RembgBackgroundRemover (importorskip rembg)
-        ├── test_label_extractor.py    # HomographyLabelExtractor + _ordenar_cantos
-        ├── test_image_preprocessor.py # StandardImagePreprocessor (EXIF, WB, CLAHE, sharpen, resize)
-        ├── test_mesh_cleaner.py       # BlenderMeshCleaner mocked + integração Blender
-        ├── test_mesh_refiner.py       # BlenderMeshRefiner mocked + integração Blender
-        ├── test_label_upscaler.py     # LanczosLabelUpscaler
-        └── test_label_projector.py    # BlenderLabelProjector mocked + integração Blender
+        ├── test_classifier.py         # 11 — DisabledClassifier + CLIPClassifier mockado (legado)
+        ├── test_color_detector.py     # 12 — AverageColorDetector + edge cases (legado)
+        ├── test_customize_template.py # 6  — script Blender invocado com Blender real
+        ├── test_processor.py          # 16 — Fake/Template/Hunyuan3DProcessor (FakeTransport)
+        ├── test_queue.py              # 5  — ProcessingQueue assíncrona
+        ├── test_router.py             # 11 — POST/GET via TestClient
+        ├── test_service.py            # 7  — CaptureService (caminho feliz e erros)
+        ├── test_template_processor.py # 12 — TemplateProcessor (mocks + integração)
+        ├── test_background_remover.py # 10 — Disabled/RembgBackgroundRemover (importorskip rembg)
+        ├── test_label_extractor.py    # 12 — HomographyLabelExtractor + _ordenar_cantos
+        ├── test_image_preprocessor.py # 15 — StandardImagePreprocessor (EXIF, WB, CLAHE, sharpen, resize)
+        ├── test_mesh_cleaner.py       # 13 — BlenderMeshCleaner mocked + integração Blender
+        ├── test_mesh_refiner.py       # 9  — BlenderMeshRefiner mocked + integração Blender
+        ├── test_label_upscaler.py     # 8  — LanczosLabelUpscaler
+        ├── test_label_projector.py    # 9  — BlenderLabelProjector mocked + integração Blender
+        ├── test_embeddings.py         # 5  — ImageEmbedder / ClipImageEmbedder (cache)
+        ├── test_cache.py              # 8  — ClipSimilarityCache (lookup/store, threshold)
+        ├── test_pipeline.py           # 6  — IntegratedPipeline (composição, degradação)
+        └── test_view_router.py        # 21 — Labeled/CLIP/PositionalViewRouter
 ```
 
-**Total atual: 173 testes** (`pytest --collect-only` no estado em 2026-05-09). Nenhum teste exige Postgres rodando. Vários componentes do pipeline IA pulam quando dependências (`rembg`, `cv2`, Blender 5.1+, contêiner Hunyuan) estão ausentes — convenção `pytest.importorskip` ou guard `if not blender.exists(): pytest.skip(...)`. Detalhes em [14 - Testes](14-testes.md).
+**Total atual: 285 testes** (`pytest --collect-only`, 2026-05-28). Nenhum teste exige Postgres rodando. Vários componentes do pipeline IA pulam quando dependências (`rembg`, `cv2`, `torch`/`transformers`, Blender 5.1+, contêiner Hunyuan) estão ausentes — convenção `pytest.importorskip` ou guard `if not blender.exists(): pytest.skip(...)`. Detalhes em [14 - Testes](14-testes.md).
 
 ## `scripts/` — utilitários offline
 
@@ -213,7 +231,13 @@ A pasta `storage/uploads/`, `storage/models/` e `storage/cache/` são criadas no
 
 ## `docs/` — esta pasta
 
-Conjunto **01–15** (Markdown) descrevendo o backend, mais quatro docs técnicos do pipeline IA (`09b/c/d/e`) e um doc de segmentação (`10b`). O [README](README.md) desta pasta indica a ordem de leitura.
+Conjunto **canônico 01–15** (Markdown) descrevendo o backend, mais seis docs técnicos do pipeline IA (`09b`–`09g`) e um doc de segmentação (`10b`). O [README](README.md) desta pasta indica a ordem de leitura.
+
+> **Há também um conjunto avulso** (`backend.md`, `arquitetura.md`, `docker.md`,
+> `como-rodar.md`, `build.md`, `frontend.md`) que é uma visão consolidada
+> back+front+infra, mais o relatório histórico `reconciliacao-docs-antigos.md`.
+> Quando houver divergência, **o conjunto numerado 01–15 é a fonte canônica do
+> backend**; os avulsos servem de visão panorâmica.
 
 ```
 docs/

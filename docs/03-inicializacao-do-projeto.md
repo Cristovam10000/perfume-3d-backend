@@ -1,5 +1,13 @@
 # 03 — Inicialização do projeto
 
+> **O que você vai aprender neste doc**
+> - Sair de um clone novo até o `/health` respondendo `200`, passo a passo.
+> - Qual modo de pipeline escolher conforme sua máquina (`fake`/`template`/`integrated`).
+> - O que o backend faz no *startup* (a sequência do `production_lifespan`).
+> - Como diagnosticar os erros mais comuns (venv errado, Postgres parado, Hunyuan lento).
+>
+> **Pré-requisitos:** [02 - Stack tecnológico](02-stack-tecnologico.md) (o que instalar).
+
 Como sair de um clone novo até o servidor respondendo `200` no `/health`. Comandos em **PowerShell**; em bash/zsh ajuste só os ativadores de venv e os paths.
 
 ## Pré-requisitos
@@ -106,10 +114,11 @@ O `production_lifespan` em [`app/main.py`](../app/main.py) executa, em ordem:
 1. `configure_logging()` — handler em stdout com timestamp.
 2. `create_all()` — cria as tabelas (`capture_jobs`, `capture_images`, `modelos_3d_universais`) se faltarem.
 3. `ensure_sales_schema(engine)` — `ALTER TABLE IF EXISTS` no schema do módulo `sales`.
-4. `LocalStorage().ensure_dirs()` — garante `storage/uploads/`, `storage/models/` e `storage/cache/`.
-5. `build_pipeline()` — instancia `FakeProcessor`, `TemplateProcessor` ou `IntegratedPipeline` (com cada stage configurado via factories internas), conforme `PIPELINE_MODE`.
-6. `ProcessingQueue().start(handler=service.process_job)` — sobe o worker async.
-7. Loga `Backend pronto em 0.0.0.0:8000 (pipeline=<mode>, cache_enabled=<bool>, hunyuan_url=<url>)`.
+4. `ensure_captures_schema(engine)` — migração incremental do captures: adiciona `modelo_universal_id` (+FK) em `modelos_3d_produto`, `product_id` em `capture_jobs` e `view` em `capture_images`. Idempotente (não faz nada se as colunas já existem).
+5. `LocalStorage().ensure_dirs()` — garante `storage/uploads/`, `storage/models/` e `storage/cache/`.
+6. `build_pipeline()` — instancia `FakeProcessor`, `TemplateProcessor` ou `IntegratedPipeline` (com cada stage configurado via factories internas), conforme `PIPELINE_MODE`.
+7. `ProcessingQueue().start(handler=service.process_job)` — sobe o worker async.
+8. Loga `Backend pronto em 0.0.0.0:8000 (pipeline=<mode>, cache_enabled=<bool>, hunyuan_url=<url>)`.
 
 ## 5. Sanity check
 
@@ -168,7 +177,7 @@ curl -o cubo.glb http://localhost:8000/files/models/<uuid>.glb
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-A suíte completa tem ~106 testes em 10 arquivos. Os testes **não precisam** de Postgres rodando — usam SQLite em arquivo temporário (fixture `session_factory` em [`tests/conftest.py`](../tests/conftest.py)).
+A suíte completa tem **285 testes** em 24 arquivos (`pytest --collect-only`). Os testes **não precisam** de Postgres rodando — usam SQLite em arquivo temporário (fixture `session_factory` em [`tests/conftest.py`](../tests/conftest.py)). Componentes que dependem de Blender/rembg/CLIP/Hunyuan são pulados quando essas dependências faltam.
 
 Detalhes em [14 - Testes](14-testes.md).
 

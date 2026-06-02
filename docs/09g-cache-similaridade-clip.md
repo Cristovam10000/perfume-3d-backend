@@ -1,6 +1,13 @@
 # 09g — Cache de similaridade CLIP (multi-tenant)
 
-> **Status:** planejado. O `Hunyuan3DProcessor` e o CLIP (a ser repurposado como `ClipImageEmbedder`) já existem; falta o módulo `cache.py`, a tabela `modelos_3d_universais`, a coluna nova em `modelos_3d_produto` e a integração no `IntegratedPipeline`.
+> **O que você vai aprender neste doc**
+> - Por que regerar o mesmo frasco no Hunyuan é desperdício — e como o **cache CLIP** evita isso.
+> - Por que a similaridade usa **embedding CLIP + cosine** (e não `product_id` nem hash perceptual).
+> - O modelo de **duas tabelas**: `modelos_3d_universais` (global) × `modelos_3d_produto` (por tenant).
+> - Como calibrar o `CACHE_SIMILARITY_THRESHOLD` com dados reais.
+>
+> **Pré-requisitos:** [09f - Pipeline integrado](09f-pipeline-integrado.md) (quem consome o cache)
+> e [12 - Armazenamento e banco](12-armazenamento-e-banco.md) (as tabelas).
 
 ## Motivação
 
@@ -90,12 +97,17 @@ Quando autenticação multi-tenant chegar (com `usuario_id` em `produtos`), **na
 3. O GLB é entregue ao job; o cache continua reutilizável por capturas futuras.
 4. Em hit, idem: serve o GLB cacheado, atualiza hit_count, não toca em `modelos_3d_produto`.
 
-## DDL — alterações no banco
+## DDL — como o schema é criado
 
-Adicionado via `ensure_captures_schema(engine)` no startup (mesmo padrão de `ensure_sales_schema`):
+Há **duas fontes** de schema, deliberadamente:
+
+1. A tabela **`modelos_3d_universais` é criada pelo ORM** — `Base.metadata.create_all()` no startup, a partir do mapeamento `ModeloUniversal` em [`modelos_universais.py`](../app/modules/captures/modelos_universais.py).
+2. A função **`ensure_captures_schema(engine)`** cuida do que o `create_all()` não toca: a coluna `modelo_universal_id` (+FK) em `modelos_3d_produto` (tabela pré-existente), além de `product_id` em `capture_jobs` e `view` em `capture_images`. Mesmo padrão do `ensure_sales_schema`. É idempotente.
+
+Equivalente DDL (a tabela, gerada pelo ORM; os ALTER, por `ensure_captures_schema`):
 
 ```sql
--- Cache global de moldes
+-- (1) Cache global de moldes — gerado pelo ORM (create_all)
 CREATE TABLE IF NOT EXISTS modelos_3d_universais (
     id                     varchar(36)  PRIMARY KEY,
     caminho_arquivo_modelo text         NOT NULL,
@@ -105,28 +117,35 @@ CREATE TABLE IF NOT EXISTS modelos_3d_universais (
     liquid_color           varchar(7),
     label_path             text,
     hit_count              int          NOT NULL DEFAULT 0,
-    ultimo_hit_em          timestamp,
-    criado_em              timestamp    NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ultimo_hit_em          timestamptz,
+    criado_em              timestamptz  NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_modelos_3d_universais_source_job
-    ON modelos_3d_universais(source_job_id);
-
--- Coluna nova em modelos_3d_produto (tabela já existente)
-ALTER TABLE modelos_3d_produto
+-- (2) Coluna nova em modelos_3d_produto (tabela já existente) — via ensure_captures_schema
+ALTER TABLE IF EXISTS modelos_3d_produto
     ADD COLUMN IF NOT EXISTS modelo_universal_id varchar(36);
 
-ALTER TABLE modelos_3d_produto
-    ADD CONSTRAINT IF NOT EXISTS fk_modelos_3d_produto_universal
-    FOREIGN KEY (modelo_universal_id)
-    REFERENCES modelos_3d_universais(id)
-    ON DELETE SET NULL;
+-- FK adicionada com guarda: Postgres NÃO tem "ADD CONSTRAINT IF NOT EXISTS",
+-- então o código checa information_schema antes (bloco DO $$).
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'modelos_3d_produto'
+          AND constraint_name = 'fk_modelos_3d_produto_universal'
+    ) THEN
+        ALTER TABLE modelos_3d_produto
+            ADD CONSTRAINT fk_modelos_3d_produto_universal
+            FOREIGN KEY (modelo_universal_id)
+            REFERENCES modelos_3d_universais(id) ON DELETE SET NULL;
+    END IF;
+END$$;
 
 CREATE INDEX IF NOT EXISTS idx_modelos_3d_produto_universal
     ON modelos_3d_produto(modelo_universal_id);
 ```
 
-Nota: a tabela `modelos_3d_produto` continua sem alteração de constraint (UNIQUE em `produto_id` preservada). O `ON DELETE SET NULL` garante que excluir um molde do cache não derruba o vínculo do produto comercial — só zera a referência.
+Nota: a UNIQUE em `produto_id` de `modelos_3d_produto` é preservada. O `ON DELETE SET NULL` garante que excluir um molde do cache não derruba o vínculo do produto comercial — só zera a referência.
 
 ## Embeddings
 
@@ -237,7 +256,7 @@ Bypass: `lookup` sempre retorna `None`; `store` é no-op. Útil para testes e pa
 |---|---|
 | 0.99 | Hit só quando as fotos são quase idênticas (mesmo ângulo, mesma iluminação). Quase sempre miss; cache praticamente inútil. |
 | 0.95 | Conservador: mesmo perfume com fotos similares casa. Diferentes perfumes do mesmo formato (Empire Sport vs Empire Gold) provavelmente missam. |
-| 0.92 | **Default proposto.** Equilíbrio entre hit rate e falso-positivo. |
+| 0.92 | **Default atual** (`config.py`). Equilíbrio entre hit rate e falso-positivo. |
 | 0.85 | Permissivo: pode confundir frascos retangulares parecidos. Não recomendado sem calibração. |
 
 CLIP zero-shot não foi treinado para distinguir entre perfumes específicos; é treinado em descrições gerais. Frascos retangulares com labels diferentes podem ter cosine similarity > 0.95 mesmo sendo perfumes distintos. **O threshold inicial 0.92 precisa de calibração com dataset real** antes da defesa do TCC.
@@ -304,10 +323,10 @@ Acima de 10.000 entradas, a alternativa é trocar `ClipSimilarityCache` por uma 
 | Captura iniciada de dentro de um produto do `/sales` | Sim | Gera + popula `modelos_3d_universais` + UPSERT em `modelos_3d_produto` | Serve do cache + UPSERT em `modelos_3d_produto` (vincula o produto deste tenant ao molde) |
 | Captura "solta" (sem produto associado) | Não | Gera + popula `modelos_3d_universais` apenas | Serve do cache; sem vínculo com produto |
 
-## Testes (planejado)
+## Testes
 
-- `tests/modules/captures/test_embeddings.py`: valida shape, dimensão, L2 norm; bypass `DisabledEmbedder`.
-- `tests/modules/captures/test_cache.py`:
+- [`tests/modules/captures/test_embeddings.py`](../tests/modules/captures/test_embeddings.py) (5 testes): valida shape, dimensão, L2 norm; bypass `DisabledEmbedder`.
+- [`tests/modules/captures/test_cache.py`](../tests/modules/captures/test_cache.py) (8 testes):
   - `lookup` em tabela vazia → `None`.
   - `store` + `lookup` com mesmo embedding → hit (sim ≈ 1.0).
   - `store` + `lookup` com embedding diferente abaixo do threshold → miss.

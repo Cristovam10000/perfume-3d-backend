@@ -27,12 +27,28 @@ python run_benchmark.py \
 
 ## Comportamento esperado
 
-1. **Lê** as 4 PNGs em `--views-dir`:
-   - `front.png`, `left.png`, `back.png`, `right.png` (exatamente esses nomes).
-   - Se algum estiver faltando, falhar com exit code != 0 e mensagem em stderr.
+1. **Lê** as imagens em `--views-dir`. Cada branch escolhe quais usar:
+   - **IA / Blander**: leem só as 4 cardeais (`front.png`, `left.png`,
+     `back.png`, `right.png`). Se alguma faltar, falham com exit != 0.
+   - **Meshroom**: lê **todas** as imagens disponíveis (cardeais + qualquer
+     `orbit_*.png` que o orquestrador tenha gerado). Fotogrametria precisa
+     de cobertura densa; o orquestrador renderiza 4 cardeais + 24 orbit por
+     default = 28 vistas pro Meshroom contra 4 pras outras.
 2. **Roda** o pipeline daquela branch (Blender / Meshroom / Hunyuan).
 3. **Escreve** o GLB em `--output-glb` (cria diretórios pais se preciso).
 4. **Sai com exit code 0** em sucesso, != 0 em falha.
+
+### Justificativa da assimetria de input
+
+A pergunta natural é: "não é injusto Meshroom ter 28 vistas e os outros 4?".
+A resposta: **cada método é avaliado no input que ele foi projetado para
+receber**. Hunyuan3D-2mv foi treinado em 4 vistas cardeais; alimentá-lo
+com 28 não ajuda (o checkpoint só aceita 4). Meshroom precisa de cobertura
+fotogramétrica para SfM funcionar; alimentá-lo com 4 vistas o garante a
+falhar — não é teste de qualidade, é teste de incompatibilidade. Comparar
+"melhor desempenho de cada um" é mais honesto que "pior desempenho de
+Meshroom". A monografia deve explicitar essa assimetria no capítulo de
+metodologia.
 
 ## Output em stdout (JSON, uma linha)
 

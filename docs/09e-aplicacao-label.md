@@ -1,5 +1,13 @@
 # 09e - Aplicação de Label Real
 
+> **O que você vai aprender neste doc**
+> - Por que a label vem **da foto do usuário**, não da textura inventada pelo Hunyuan.
+> - O mini-pipeline da label: extrair (homografia) → upscale (Lanczos) → projetar (decal no Blender).
+> - Como o stage **degrada com segurança** quando não acha uma label (o job nunca quebra por isso).
+>
+> **Pré-requisitos:** [09f - Pipeline integrado](09f-pipeline-integrado.md) (stage 7) e
+> [10b - Segmentação e label](10b-segmentacao-e-label.md) (o algoritmo do extractor).
+
 Stage final (7) do `IntegratedPipeline`. Recupera a parte visual mais importante do produto — a **label** — diretamente da foto do usuário, em vez de confiar na textura inventada pelo Hunyuan. A label extraída é upscalada e aplicada como decal frontal no GLB refinado.
 
 ## Por que não usar a textura do Hunyuan

@@ -1,5 +1,14 @@
 # 01 — Visão geral
 
+> **O que você vai aprender neste doc**
+> - O que o backend faz, em uma frase, e qual problema ele resolve.
+> - O caminho completo de uma foto até virar um `.glb` (o "fluxo ponta a ponta").
+> - O que está **dentro** e **fora** do escopo, e o porquê de cada simplificação.
+>
+> **Pré-requisitos:** nenhum. Este é o ponto de partida. Depois dele, siga para
+> [03 - Inicialização](03-inicializacao-do-projeto.md) (rodar) e
+> [05 - Arquitetura](05-arquitetura.md) (entender as camadas).
+
 ## O que o backend é
 
 O `perfume-3d-backend` é um serviço HTTP em **FastAPI** que recebe um lote de fotos de um perfume, gera um modelo 3D `.glb` correspondente e devolve a URL do modelo pronto. É o servidor par do app Flutter em [`../../front`](../../front).
@@ -61,8 +70,9 @@ Esse fluxo está documentado em detalhe em [09f - Pipeline integrado](09f-pipeli
    │  (concorrentemente, o app faz GET /captures/<id>/status a cada ~3s)
    ▼
 [GET /captures/<job_id>/status]
-   │   → { status: "completed", modelUrl: "http://.../files/models/<id>.glb",
-   │       origem: "cache" | "generated" }
+   │   → { status: "completed",
+   │       message: "Modelo entregue pelo cache (...)" | "Modelo gerado via Hunyuan...",
+   │       modelUrl: "http://.../files/models/<id>.glb", error: null }
    ▼
 [App baixa o GLB e renderiza com model_viewer_plus]
 ```
@@ -81,7 +91,7 @@ Esse fluxo está documentado em detalhe em [09f - Pipeline integrado](09f-pipeli
 - Extrair a **label real da foto** via OpenCV (`HomographyLabelExtractor`), fazer upscale Lanczos para 2048 px e projetar como **decal frontal** no GLB.
 - Persistir o GLB final + embedding + metadados (cor do líquido inferida, label) na tabela `modelos_3d_universais`.
 - Expor o GLB final via `StaticFiles` em `/files/models/<id>.glb`.
-- Responder `GET /captures/<id>/status` com URL absoluta do modelo (montada a partir de `request.base_url` para funcionar tanto em emulador Android quanto em device físico) e o campo `origem` (`cache`/`generated`).
+- Responder `GET /captures/<id>/status` com URL absoluta do modelo (montada a partir de `request.base_url` para funcionar tanto em emulador Android quanto em device físico). Cache hit vs. geração se distinguem pelo campo `message` e pelo tempo de resposta — **não** há um campo `origem` dedicado (ver [13](13-endpoints-http.md)).
 - Servir templates puros via `/templates/<id>.glb` para inspeção/debug.
 - Expor uma **API comercial mínima** (`/sales/*`) para o módulo do app que gerencia clientes, produtos, vendas parceladas, estoque e pagamentos — modelo monolítico modular: o módulo `app/modules/sales/` compartilha o mesmo banco do `captures` (ver [13](13-endpoints-http.md), [12](12-armazenamento-e-banco.md)).
 
@@ -120,7 +130,6 @@ O backend está em fase de **integração** do pipeline IA com cache. Evoluçõe
 - **Calibração do threshold do cache**: rodar dataset real, medir taxa de falso-positivo/falso-negativo, ajustar `CACHE_SIMILARITY_THRESHOLD`.
 - **Endpoint admin do cache**: `GET /captures/cache` e `DELETE /captures/cache/<id>` para invalidação manual.
 - **Histórico**: endpoint `GET /captures` paginado + tela de histórico no app.
-- **Vínculo com `/sales`**: passar `product_id` opcional no `POST /captures` para amarrar o cache ao catálogo comercial.
 - **Migrations**: introduzir Alembic quando o schema começar a evoluir.
 - **Object storage**: trocar `LocalStorage` por `S3Storage` mantendo a interface.
 - **Busca indexada**: trocar busca linear de embeddings por pgvector/FAISS quando o cache passar de ~10k entradas.

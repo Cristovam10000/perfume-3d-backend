@@ -12,16 +12,20 @@ depois busca o modelo `.glb` gerado para renderizar no visualizador 3D.
 | ORM | SQLAlchemy async 2.0 + asyncpg |
 | Banco | PostgreSQL 16 (container Docker `tcc-postgres`) |
 | Worker 3D | Fila `asyncio.Queue` in-process |
-| Pipeline 3D (fase 1) | `FakeProcessor` — gera cubo `.glb` sintético |
-| Pipeline 3D (fase 2) | `MeshroomProcessor` com AliceVision + Blender (planejado) |
-| Armazenamento | Disco local (`storage/uploads/`, `storage/models/`) |
+| Pipeline 3D (default) | `IntegratedPipeline` — preprocess + rembg + cache CLIP + Hunyuan3D + refiner + label |
+| Geração 3D (IA) | Hunyuan3D-2mv (container Docker + GPU) via cliente `httpx` |
+| Cache de modelos | similaridade CLIP (cosine) sobre `modelos_3d_universais` |
+| Pós-processamento | Blender 5.1 headless (vidro PBR, limpeza, decal da label) |
+| Modos alternativos | `FakeProcessor` (cubo, p/ testes) · `TemplateProcessor` (Blender + GLB pronto) |
+| Armazenamento | Disco local (`storage/uploads/`, `storage/models/`, `storage/cache/`) |
+| Módulo comercial | `/sales/*` (clientes, produtos, vendas) sobre o mesmo Postgres |
 | Testes | pytest, pytest-asyncio, httpx, aiosqlite |
 
 ## Arquitetura (resumo)
 
 ```
 app/
-  main.py                 # create_app() + production_lifespan
+  main.py                 # create_app() + production_lifespan + factories (build_pipeline)
   config.py               # pydantic-settings (lê .env)
   database.py             # engine + SessionFactory async
   dependencies.py         # get_capture_service
@@ -32,19 +36,24 @@ app/
       models.py           # CaptureJob, CaptureImage (SQLAlchemy)
       schemas.py          # DTOs (pydantic) com alias camelCase
       repository.py       # queries encapsuladas
-      service.py          # orquestração das use cases
+      service.py          # orquestração (magra) das use cases
       router.py           # endpoints HTTP
       queue.py            # ProcessingQueue + worker
-      processor.py        # ABC Processor + FakeProcessor
+      processor.py        # ABC Processor + Fake/Template/Hunyuan3DProcessor
+      pipeline.py         # IntegratedPipeline (composição dos stages — default)
+      cache.py            # ClipSimilarityCache + embeddings.py / modelos_universais.py
+      *_remover/refiner/extractor/projector.py  # stages do pipeline IA
       status.py           # enum de estados
+    sales/                # módulo comercial (/sales/*)
     health/router.py      # /health
 storage/                  # gerado em runtime (git-ignorado)
 tests/                    # pytest suite
 ```
 
-**Separação de camadas:** `router → service → repository → database`. O
-`processor` é uma ABC plugável: trocar `FakeProcessor` por `MeshroomProcessor`
-é uma linha em `main.py`.
+**Separação de camadas:** `router → service → pipeline → storage/DB`. O `Processor`
+é uma ABC plugável: `PIPELINE_MODE` (`fake` | `template` | `integrated`) escolhe a
+implementação raiz em `build_pipeline()`, e **cada stage** do pipeline IA também é uma
+Strategy ligada/desligada pelo `.env`. Documentação detalhada e didática em [`docs/`](docs/README.md).
 
 ## Pré-requisitos
 
@@ -124,9 +133,11 @@ e libere a porta 8000 no firewall do Windows.
 Cria um job de reconstrução 3D a partir de um lote de imagens.
 
 - **Content-Type:** `multipart/form-data`
-- **Campo:** `images` (1..N arquivos binários JPEG)
+- **Campos:** `images` (1..N arquivos binários JPEG); `views` (opcional, rótulos de vista paralelos); `productId` (opcional, amarra o GLB a um produto de `/sales`)
 - **Resposta 201:** `{ "jobId": "<uuid>" }`
 - **Erros:** `422` se nenhuma imagem for enviada.
+
+> Contrato HTTP completo (incl. `/sales/*`) em [docs/13 — Endpoints HTTP](docs/13-endpoints-http.md).
 
 ### `GET /captures/{jobId}/status`
 
@@ -163,16 +174,14 @@ o `.glb` via este path. Não precisa ser chamado diretamente pelo app.
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Cobertura atual (24 testes):
+Cobertura atual: **285 testes** (`pytest --collect-only`), distribuídos entre o módulo
+`captures` (pipeline, cache, stages, router, service, fila — ~196), a suíte de avaliação
+`tests/eval/` (métricas geométricas — 52), os templates normalizados (25) e os testes
+end-to-end (`test_main.py` — 11).
 
-- `test_processor.py` — geração válida de GLB (6)
-- `test_queue.py` — worker assíncrono, cancelamento, resiliência (5)
-- `test_service.py` — `create_job`, `process_job`, caminhos felizes e de erro (5)
-- `test_router.py` — `POST /captures`, `GET .../status`, 404, camelCase (5)
-- `test_main.py` — end-to-end via `httpx.AsyncClient` (3)
-
-Os testes usam SQLite (`aiosqlite`) em arquivo temporário, sem exigir
-Postgres rodando.
+Os testes usam SQLite (`aiosqlite`) em arquivo temporário, sem exigir Postgres rodando;
+componentes que dependem de Blender/rembg/CLIP/Hunyuan são **pulados** quando essas
+dependências faltam. Detalhes em [docs/14 — Testes](docs/14-testes.md).
 
 ## Smoke test (servidor real)
 
@@ -215,15 +224,20 @@ Os nomes são **idênticos** ao que o parser do Flutter reconhece em
 
 ## Roadmap
 
-- [x] Fase 1 — MVP funcional ponta a ponta com `FakeProcessor` (cubo sintético)
-- [ ] Fase 2 — Integração com **Meshroom/AliceVision** (reconstrução real)
-  - [ ] `MeshroomProcessor` chamando `meshroom_batch` via subprocess
-  - [ ] Conversão `.obj` → `.glb` via Blender headless
-  - [ ] Feature flag `PROCESSOR_TYPE=fake|meshroom` no `.env`
-  - [ ] Progresso granular na tela de processing (etapa do pipeline)
-- [ ] Futuro — migrações com Alembic (hoje é `create_all` no startup)
-- [ ] Futuro — endpoint `GET /captures/history` + tela de histórico no app
-- [ ] Futuro — migrar storage local para object storage (S3/Firebase)
+- [x] MVP ponta a ponta com `FakeProcessor` (cubo sintético).
+- [x] Caminho de templates Blender (`TemplateProcessor`) — hoje usado como **fallback**.
+- [x] **Pipeline de IA integrado** (`IntegratedPipeline`): Hunyuan3D + pré-proc + rembg + refiner + label.
+- [x] **Cache global** por similaridade CLIP (`modelos_3d_universais`, cross-tenant) + `productId` opcional.
+- [x] Módulo comercial `/sales/*` (clientes, produtos, vendas).
+- [x] Suíte de **avaliação quantitativa** comparando IA × templates × fotogrametria (ver [eval/](eval/README.md)).
+- [ ] Calibrar `CACHE_SIMILARITY_THRESHOLD` com dataset real.
+- [ ] Migrações com Alembic (hoje é `create_all` + `ensure_*_schema` no startup).
+- [ ] Endpoint `GET /captures/history` + endpoints admin do cache.
+- [ ] Migrar storage local para object storage (S3/Firebase).
+
+> Fotogrametria (Meshroom/AliceVision) foi **avaliada e descartada** para o pipeline de
+> produção — vidro e superfícies reflexivas quebram a correspondência de pontos. Permanece
+> como **branch de comparação** na suíte `eval/`.
 
 ## Licença
 

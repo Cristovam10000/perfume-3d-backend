@@ -1,5 +1,9 @@
 # Backend
 
+> **Nota:** este é um documento **panorâmico** (visão consolidada). Para o detalhe canônico
+> e didático do backend, use o conjunto numerado [`docs/01`–`15`](README.md) — em caso de
+> divergência, o conjunto numerado manda.
+
 ## Visao geral
 
 O backend em `back/` e uma aplicacao FastAPI que expoe health check, captura/processamento 3D, API comercial `/sales/*` e arquivos estaticos locais (fonte: `back/app/main.py`). A aplicacao cria tabelas SQLAlchemy do modulo `captures`, aplica compatibilidade incremental no schema comercial e inicializa uma fila assíncrona para processamento de jobs (fontes: `back/app/main.py`, `back/app/database.py`, `back/app/modules/sales/repository.py`, `back/app/modules/captures/queue.py`).
@@ -24,8 +28,8 @@ O backend concentra o contrato HTTP consumido pelo Flutter e isola as responsabi
 
 ```text
 back/app/
-  main.py
-  config.py
+  main.py                  # create_app + production_lifespan + factories (build_pipeline, build_*)
+  config.py                # Settings (pydantic-settings)
   database.py
   dependencies.py
   core/
@@ -36,19 +40,38 @@ back/app/
   modules/
     health/router.py
     captures/
-      router.py
-      service.py
+      router.py            # POST /captures, GET /captures/{id}/status
+      service.py           # CaptureService (magro: persiste, enfileira, delega)
       repository.py
-      models.py
+      models.py            # CaptureJob, CaptureImage
       schemas.py
-      processor.py
-      queue.py
-      classifier.py
-      color_detector.py
+      status.py
+      queue.py             # ProcessingQueue (asyncio + worker)
+      # --- pipeline raiz + IA ---
+      processor.py         # Processor ABC + Fake/Template/Hunyuan3DProcessor
+      pipeline.py          # IntegratedPipeline (default)
+      view_router.py       # Labeled/CLIP/PositionalViewRouter
+      # --- cache CLIP ---
+      embeddings.py        # ImageEmbedder + ClipImageEmbedder
+      cache.py             # ModelCache + ClipSimilarityCache
+      modelos_universais.py # tabela modelos_3d_universais + ensure_captures_schema
+      # --- stages do pipeline IA ---
+      image_preprocessor.py
+      background_remover.py
+      mesh_cleaner.py
+      mesh_refiner.py
+      label_extractor.py
+      label_upscaler.py
+      label_projector.py
+      top_projector.py     # presente, não plugado por padrão
+      # --- legado / fallback ---
+      classifier.py        # CLIPClassifier (legado)
+      color_detector.py    # AverageColorDetector (legado)
+      templates_catalog.py
       blender_scripts/
     sales/
       router.py
-      repository.py
+      repository.py        # SalesRepository + ensure_sales_schema
       schemas.py
 ```
 
@@ -75,11 +98,16 @@ Variaveis de ambiente confirmadas:
 | `DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5433/tcc` | Conexao Postgres | `back/.env.example`, `back/app/config.py`, `back/app/database.py` |
 | `STORAGE_ROOT` | `./storage` | Uploads e modelos gerados | `back/.env.example`, `back/app/config.py`, `back/app/storage/local_storage.py` |
 | `CORS_ORIGINS` | `*` | CORS | `back/.env.example`, `back/app/main.py` |
-| `PROCESSOR_TYPE` | `fake` | `fake` ou `template` | `back/.env.example`, `back/app/config.py`, `back/app/main.py` |
-| `BLENDER_EXECUTABLE` | caminho Windows do Blender 5.1 | Usado pelo `TemplateProcessor` | `back/.env.example`, `back/app/config.py`, `back/app/modules/captures/processor.py` |
-| `TEMPLATES_DIR` | `./assets/templates/normalized` | GLBs normalizados | `back/.env.example`, `back/app/config.py` |
-| `CLASSIFIER_TYPE` | `disabled` | `disabled` ou `clip` | `back/.env.example`, `back/app/config.py`, `back/app/main.py` |
-| `COLOR_DETECTOR_TYPE` | `disabled` | `disabled` ou `average` | `back/.env.example`, `back/app/config.py`, `back/app/main.py` |
+| `PIPELINE_MODE` | `integrated` | `fake` \| `template` \| `integrated` — escolhe o `Processor` raiz | `back/.env.example`, `back/app/config.py`, `back/app/main.py` |
+| `HUNYUAN_URL` | `http://localhost:7860` | URL do serviço Hunyuan (modo integrated) | `back/app/config.py`, `back/app/main.py` |
+| `PIPELINE_FALLBACK_TO_TEMPLATE` | `false` | Cai no `TemplateProcessor` se o Hunyuan falhar | `back/app/config.py`, `back/app/main.py` |
+| `CACHE_ENABLED` / `CACHE_SIMILARITY_THRESHOLD` | `true` / `0.92` | Liga o cache CLIP e o limiar de hit | `back/app/config.py` |
+| `BLENDER_EXECUTABLE` | caminho Windows do Blender 5.1 | Usado por Template/refiner/cleaner/label projector | `back/.env.example`, `back/app/config.py`, `back/app/modules/captures/processor.py` |
+| `TEMPLATES_DIR` | `./assets/templates/normalized` | GLBs normalizados (fallback + seed) | `back/.env.example`, `back/app/config.py` |
+| `PROCESSOR_TYPE` *(legado)* | — | Lido como alias de `PIPELINE_MODE`, com aviso de deprecation | `back/app/config.py` |
+| `CLASSIFIER_TYPE` / `COLOR_DETECTOR_TYPE` *(legado)* | `disabled` | Do MVP de templates; fora do fluxo integrado | `back/.env.example`, `back/app/config.py` |
+
+> Lista completa e agrupada das variáveis em [`docs/07 — Camada core`](07-camada-core.md).
 
 ## Como rodar/usar
 
@@ -127,6 +155,6 @@ Esses comandos seguem os arquivos de requisitos e o contrato de inicializacao at
 - O backend nao e containerizado no `docker-compose.yml`; ele deve ser rodado localmente com Uvicorn, salvo se for criado um Dockerfile especifico no futuro (fonte: `docker-compose.yml`).
 - `create_all()` registra apenas modelos SQLAlchemy importados pelo modulo `captures`; o schema comercial inteiro nao e criado por ORM (fontes: `back/app/database.py`, `back/app/modules/captures/models.py`, `back/app/modules/sales/repository.py`).
 - `ensure_sales_schema()` usa `ALTER TABLE IF EXISTS` e nao cria tabelas comerciais do zero (fonte: `back/app/modules/sales/repository.py`).
-- `Hunyuan3DProcessor` existe, mas nao e retornado pela factory `build_processor()`; para usa-lo no runtime principal seria preciso alterar `Settings.processor_type` e `build_processor()` (fontes: `back/app/config.py`, `back/app/main.py`, `back/app/modules/captures/processor.py`).
-- O `FakeProcessor` gera um cubo GLB sintetico; o `TemplateProcessor` invoca Blender headless sobre GLBs normalizados (fonte: `back/app/modules/captures/processor.py`).
+- `Hunyuan3DProcessor` é plugado por **default**: com `PIPELINE_MODE=integrated` (padrão), a factory `build_pipeline()` o instancia dentro do `IntegratedPipeline`. Para rodar sem GPU/Docker, use `PIPELINE_MODE=fake` (cubo) ou `template` (Blender). (Fontes: `back/app/config.py`, `back/app/main.py`, `back/app/modules/captures/pipeline.py`.)
+- O `FakeProcessor` gera um cubo GLB sintetico; o `TemplateProcessor` invoca Blender headless sobre GLBs normalizados; o `IntegratedPipeline` orquestra preprocess + rembg + cache CLIP + Hunyuan + refiner + label (fontes: `back/app/modules/captures/processor.py`, `back/app/modules/captures/pipeline.py`).
 

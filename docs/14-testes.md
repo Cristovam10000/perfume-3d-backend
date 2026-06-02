@@ -1,10 +1,19 @@
 # 14 — Testes (pytest)
 
+> **O que você vai aprender neste doc**
+> - A estratégia de teste: mockar o que é caro (Blender, CLIP, Hunyuan) e ter testes
+>   reais *opt-in* quando o binário/serviço existe.
+> - Por que a suíte **não precisa de Postgres** (usa SQLite em arquivo temporário).
+> - O padrão de **skip condicional** (`importorskip` / guard de Blender) que deixa a
+>   suíte verde em qualquer máquina.
+>
+> **Pré-requisitos:** [04 - Estrutura de pastas](04-estrutura-de-pastas.md) (árvore de `tests/`).
+
 Estratégia: testes de unidade e integração com **mocks** onde custo é alto (Blender, CLIP) e testes reais opt-in quando o binário existe.
 
 ## Contagem atual
 
-A suíte tem **173 funções de teste** distribuídas em ~17 ficheiros. Estado em 2026-05-09: **173 passed, 1 skipped** quando o contêiner Hunyuan está offline.
+A suíte tem **285 funções de teste** distribuídas em 24 ficheiros (`pytest --collect-only`, 2026-05-28). Na prática, vários são **pulados** (não falham) quando dependências externas faltam — Blender, `rembg`, CLIP (`torch`/`transformers`) ou o contêiner Hunyuan. Nenhum teste exige Postgres.
 
 ### Núcleo (Fase 2 — templates + CLIP + cor)
 
@@ -14,7 +23,7 @@ A suíte tem **173 funções de teste** distribuídas em ~17 ficheiros. Estado e
 | `tests/modules/captures/test_service.py` | `CaptureService` (job, classificador, processador) | Mocks de processor/classifier/detectors |
 | `tests/modules/captures/test_router.py` | Rotas com `TestClient` | — |
 | `tests/modules/captures/test_queue.py` | `ProcessingQueue` | — |
-| `tests/modules/captures/test_processor.py` | `FakeProcessor` + `Hunyuan3DProcessor` (com `_FakeTransport`) | 7 testes do `Hunyuan3DProcessor` apêndice |
+| `tests/modules/captures/test_processor.py` | `FakeProcessor` + `TemplateProcessor` + `Hunyuan3DProcessor` (com `_FakeTransport`) | cliente HTTP do Hunyuan testado sem container |
 | `tests/modules/captures/test_template_processor.py` | `TemplateProcessor` | Mocks de subprocess + integração real se Blender no path |
 | `tests/modules/captures/test_customize_template.py` | Script Blender de customize | Pula se sem Blender |
 | `tests/modules/captures/test_classifier.py` | Classificador CLIP | Mocks de `transformers`; sem download em CI |
@@ -33,6 +42,25 @@ A suíte tem **173 funções de teste** distribuídas em ~17 ficheiros. Estado e
 | `tests/modules/captures/test_label_upscaler.py` | `LanczosLabelUpscaler` | Pillow ausente |
 | `tests/modules/captures/test_label_projector.py` | `BlenderLabelProjector` mocked + integração | Blender ausente |
 | `tests/integration/test_hunyuan_real.py` | exercita `POST /generate` real | Contêiner offline |
+
+### Cache CLIP e pipeline integrado
+
+| Ficheiro | Tema | Skip se… |
+|----------|------|----------|
+| `tests/modules/captures/test_embeddings.py` | `ClipImageEmbedder` (embedder do cache) | `torch`/`transformers` ausente |
+| `tests/modules/captures/test_cache.py` | `ClipSimilarityCache` (lookup/store, threshold de similaridade) | — |
+| `tests/modules/captures/test_pipeline.py` | `IntegratedPipeline` (composição dos stages, degradação graciosa) | — |
+| `tests/modules/captures/test_view_router.py` | `Labeled`/`CLIP`/`PositionalViewRouter` (rotulagem de vistas) | CLIP opcional em parte dos casos |
+
+### Suíte de avaliação — `tests/eval/` (52 testes)
+
+| Ficheiro | Tema | Skip se… |
+|----------|------|----------|
+| `tests/eval/test_geometric.py` | métricas Chamfer/Hausdorff/F-Score (cubo/esfera sintéticos) | — |
+| `tests/eval/test_held_out_dataset.py` | loader + validador do `manifest.json` do held-out | — |
+| `tests/eval/test_synthetic_dataset.py` | wrapper de render Blender (subprocess mockado) | Blender p/ integração real |
+
+Cobrem a suíte de benchmark em [`back/eval/`](../eval/) — ver [eval/README.md](../eval/README.md).
 
 > **Ausentes**: o módulo `sales/` ainda não tem cobertura automatizada. Validação manual via app Flutter contra Postgres real.
 

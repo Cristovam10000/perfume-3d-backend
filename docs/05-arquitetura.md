@@ -1,6 +1,19 @@
 # 05 — Arquitetura
 
+> **O que você vai aprender neste doc**
+> - As camadas do backend (`router → service → pipeline → storage/DB`) e por que separá-las.
+> - O **padrão Strategy** aplicado ao pipeline 3D — a ideia central do projeto.
+> - Como a injeção de dependência é feita "na mão" no `main.py`, sem framework de DI.
+> - O ciclo de vida de um job, passo a passo (diagrama de sequência).
+>
+> **Pré-requisitos:** [01 - Visão geral](01-visao-geral.md) e [04 - Estrutura de pastas](04-estrutura-de-pastas.md).
+
 Este documento descreve a **arquitetura lógica** do backend: camadas, padrões de projeto e fluxo de dados. A fonte canônica continua sendo o código em `app/`.
+
+> **Padrão Strategy em uma frase:** definir uma família de algoritmos intercambiáveis
+> atrás de uma mesma interface, e escolher qual usar em tempo de configuração. Aqui,
+> cada etapa do pipeline (remover fundo, refinar malha, etc.) é uma "estratégia"
+> ligada/desligada pelo `.env` — o resto do código não sabe qual implementação está rodando.
 
 ## Visão em camadas
 
@@ -97,7 +110,7 @@ sequenceDiagram
     Pipe-->>W: ProcessingResult
     W->>S: completed + model_path
     C->>R: GET /captures/{id}/status
-    R-->>C: { status, modelUrl, origem }
+    R-->>C: { status, message, modelUrl }
 ```
 
 ## Concorrência e fila
@@ -121,7 +134,7 @@ sequenceDiagram
 | Orquestração do job | `app/modules/captures/service.py` |
 | Composição do pipeline | `app/modules/captures/pipeline.py` |
 | Cache de modelos (CLIP) | `app/modules/captures/cache.py`, `app/modules/captures/embeddings.py` |
-| Tabela persistente do cache | `app/modules/captures/modelos_3d_universais.py` |
+| Tabela persistente do cache | `app/modules/captures/modelos_universais.py` |
 | Submissão e worker | `app/modules/captures/queue.py` |
 | HTTP captures | `app/modules/captures/router.py` |
 | DTOs e aliases camelCase | `app/modules/captures/schemas.py` |

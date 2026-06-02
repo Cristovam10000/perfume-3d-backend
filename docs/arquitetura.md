@@ -26,11 +26,11 @@ Hunyuan Docker service (docker/hunyuan/)
   +-- GPU NVIDIA + cache Hugging Face em volume Docker
 ```
 
-O servico Hunyuan e independente: o container expoe HTTP em `7860` e carrega os modelos de IA dentro dele. No fluxo HTTP principal `POST /captures`, o backend atual ainda nao chama esse container, porque `build_processor()` so instancia `FakeProcessor` ou `TemplateProcessor`. O `Hunyuan3DProcessor` existe como cliente HTTP e e usado por scripts/testes de smoke, mas ainda nao esta ligado ao endpoint de captura do app (fontes: `docker-compose.yml`, `docker/hunyuan/server.py`, `back/app/main.py`, `back/app/modules/captures/processor.py`, `back/scripts/smoke_phase3.py`, `back/scripts/smoke_phase4.py`, `back/scripts/smoke_phase5.py`).
+O servico Hunyuan roda em **processo separado**: o container expoe HTTP em `7860` e carrega os modelos de IA dentro dele. No fluxo HTTP principal `POST /captures` com `PIPELINE_MODE=integrated` (**default**), o backend **chama** esse container: a factory `build_pipeline()` instancia o `IntegratedPipeline`, que usa o `Hunyuan3DProcessor` (cliente `httpx`) como stage de geração 3D. Os modos `fake` (cubo) e `template` (Blender) não tocam o container — úteis para dev sem GPU. O backend Python não importa `torch`/ML pesado; toda inferência fica no container (fontes: `docker-compose.yml`, `docker/hunyuan/server.py`, `back/app/main.py`, `back/app/modules/captures/pipeline.py`, `back/app/modules/captures/processor.py`).
 
 ## Por que existe
 
-Esta visao existe para evitar confundir tres coisas diferentes: o fluxo real de captura com `FakeProcessor`/`TemplateProcessor`, o modulo comercial `/sales`, e o servico Hunyuan standalone em Docker (fontes: `back/app/main.py`, `back/app/modules/captures/processor.py`, `back/app/modules/sales/router.py`, `docker/hunyuan/server.py`).
+Esta visao existe para separar mentalmente tres coisas: (1) o **pipeline 3D** do `POST /captures` — default `integrated` (Hunyuan + cache CLIP + pós-proc), com `fake`/`template` como alternativas; (2) o **modulo comercial** `/sales`; e (3) o **servico Hunyuan** em Docker, que roda em processo separado e é chamado por HTTP (fontes: `back/app/main.py`, `back/app/modules/captures/pipeline.py`, `back/app/modules/captures/processor.py`, `back/app/modules/sales/router.py`, `docker/hunyuan/server.py`).
 
 ## Stack/dependencias
 
@@ -68,5 +68,5 @@ Fluxo comercial:
 
 - O Hunyuan tem endpoints proprios (`/health`, `/generate`) e nao compartilha processo Python com o backend principal (fontes: `docker/hunyuan/server.py`, `docker/hunyuan/entrypoint.sh`).
 - O compose nao declara `depends_on` entre `postgres` e `hunyuan`; sao servicos independentes no mesmo arquivo (fonte: `docker-compose.yml`).
-- `PROCESSOR_TYPE` so aceita `fake` ou `template` nas settings atuais (fonte: `back/app/config.py`).
+- `PIPELINE_MODE` aceita `fake`, `template` ou `integrated` (**default**) nas settings atuais; o antigo `PROCESSOR_TYPE` é lido como alias com aviso de deprecation (fonte: `back/app/config.py`).
 - A URL do backend no Flutter deve ser configurada por `--dart-define=BACKEND_BASE_URL=...` quando `localhost` nao servir para o dispositivo (fonte: `front/lib/core/constants/app_constants.dart`).

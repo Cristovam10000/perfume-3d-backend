@@ -60,7 +60,8 @@ _DEFAULT_WORKTREES = {
 class BranchResult:
     """Resultado de uma branch em um modelo do dataset.
 
-    Vira uma linha do CSV final.
+    Vira uma linha do CSV final. `render_mode` identifica em qual condição
+    de renderização o resultado foi medido (matte vs realistic).
     """
 
     model_id: str
@@ -71,6 +72,7 @@ class BranchResult:
     error: str | None
     metrics: GeometricMetrics | None
     output_glb: Path | None
+    render_mode: str = "matte"
 
 
 # ------------------------------------------------------------------ runners
@@ -170,33 +172,136 @@ def _parse_last_json_line(stdout: str) -> dict | None:
 # -------------------------------------------------------------- main pipeline
 
 
+def load_existing_ok_keys(csv_path: Path) -> set[tuple[str, str, str]]:
+    """Lê o CSV existente e devolve as chaves `(model_id, branch, render_mode)`
+    que já têm `status=ok`. Usado pelo `--skip-existing` para pular pares já
+    completados com sucesso.
+
+    Linhas com `status=error` NÃO são consideradas — entram pra re-tentar.
+    """
+    if not csv_path.exists():
+        return set()
+    keys: set[tuple[str, str, str]] = set()
+    try:
+        with csv_path.open("r", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if header != _CSV_HEADER:
+                return set()
+            # Posições no header: model_id=0, branch=2, render_mode=3, status=4
+            for row in reader:
+                if len(row) < 5:
+                    continue
+                if row[4] == "ok":
+                    keys.add((row[0], row[2], row[3]))
+    except Exception:
+        # CSV corrompido / inacessível — não pula nada por segurança
+        return set()
+    return keys
+
+
 def benchmark_model(
     model: HeldOutModel,
     branches: dict[str, Path],
     eval_data_root: Path,
     blender_executable: Path,
+    orbit_count: int = 24,
+    render_mode: str = "matte",
+    skip_keys: set[tuple[str, str, str]] | None = None,
 ) -> list[BranchResult]:
-    """Para um modelo do dataset, roda todas as branches e mede métricas."""
-    views_dir = eval_data_root / "synthetic_views" / model.id
+    """Para um modelo do dataset, roda todas as branches e mede métricas.
 
-    # 1. Render sintético (gera 4 vistas do GT) — pula se já existe.
-    if not all((views_dir / f"{v}.png").exists() for v in ("front", "left", "back", "right")):
+    Renderiza 4 cardeais + `orbit_count` vistas extras em órbita. As
+    cardeais alimentam IA/Blander; as orbit (mais densas) alimentam
+    Meshroom, que precisa de cobertura fotogramétrica.
+
+    `render_mode` define se as imagens são renderizadas com materiais
+    override (`matte`, geometria pura) ou originais + HDRI (`realistic`,
+    simula condição real). Arquivos vão pra subpasta específica do modo
+    pra permitir comparação entre os dois.
+    """
+    # Subpasta por modo: synthetic_views/<model>/<mode>/{*.png}
+    # Arquivos de output por modo: outputs/<branch>/<model>__<mode>.glb
+    views_dir = eval_data_root / "synthetic_views" / model.id / render_mode
+
+    # 1. Render sintético — pula se já está completo (cardeais + orbit).
+    cardinals_ok = all(
+        (views_dir / f"{v}.png").exists() for v in ("front", "left", "back", "right")
+    )
+    orbit_ok = (
+        orbit_count == 0
+        or len(list(views_dir.glob("orbit_*.png"))) >= orbit_count
+    )
+    if not (cardinals_ok and orbit_ok):
+        print(
+            f"  ⏳ Renderizando (modo={render_mode}) "
+            f"4 cardeais + {orbit_count} orbit...",
+            file=sys.stderr,
+            flush=True,
+        )
+        render_start = time.monotonic()
         render_synthetic_views(
             glb_path=model.glb_path,
             output_dir=views_dir,
             blender_executable=blender_executable,
             rotate_z_deg=model.rotate_z_deg,
+            orbit_count=orbit_count,
+            render_mode=render_mode,
         )
+        print(
+            f"  ✓ Render concluído em {time.monotonic() - render_start:.1f}s",
+            file=sys.stderr,
+            flush=True,
+        )
+    else:
+        print(f"  ↻ Render ({render_mode}) já em cache em {views_dir}", file=sys.stderr, flush=True)
 
-    # 2. Para cada branch, invoca runner e mede métricas
+    # 2. Para cada branch, invoca runner e mede métricas.
+    # Sufixo __<mode> separa os GLBs gerados em cada modo de renderização.
     results: list[BranchResult] = []
     for branch_name, worktree in branches.items():
-        output_glb = eval_data_root / "outputs" / branch_name.lower() / f"{model.id}.glb"
-        payload = invoke_branch(
-            branch=branch_name,
-            worktree=worktree,
-            views_dir=views_dir,
-            output_glb=output_glb,
+        # --skip-existing: pula se já temos linha ok no CSV pra esta chave.
+        if skip_keys is not None and (model.id, branch_name, render_mode) in skip_keys:
+            print(
+                f"  ⏭ Branch {branch_name}: pulado (já existe row ok no CSV)",
+                file=sys.stderr,
+                flush=True,
+            )
+            continue
+
+        output_glb = (
+            eval_data_root / "outputs" / branch_name.lower()
+            / f"{model.id}__{render_mode}.glb"
+        )
+        print(
+            f"  ⏳ Branch {branch_name} processando...",
+            file=sys.stderr,
+            flush=True,
+        )
+        branch_start = time.monotonic()
+        # Captura defensiva: se invoke_branch lançar exceção inesperada (subprocess
+        # crashou de jeito esquisito, erro de I/O, etc), trata como error em vez de
+        # propagar e matar o benchmark inteiro.
+        try:
+            payload = invoke_branch(
+                branch=branch_name,
+                worktree=worktree,
+                views_dir=views_dir,
+                output_glb=output_glb,
+            )
+        except Exception as exc:
+            payload = {
+                "status": "error",
+                "error": f"invoke_branch crashou: {type(exc).__name__}: {exc}",
+                "duration_s": time.monotonic() - branch_start,
+            }
+        elapsed = time.monotonic() - branch_start
+        status_emoji = "✓" if payload.get("status") == "ok" else "✗"
+        print(
+            f"  {status_emoji} {branch_name}: {payload.get('status')} em {elapsed:.1f}s"
+            + (f" — {payload.get('error', '')}" if payload.get("status") != "ok" else ""),
+            file=sys.stderr,
+            flush=True,
         )
 
         if payload["status"] != "ok":
@@ -210,6 +315,7 @@ def benchmark_model(
                     error=payload.get("error"),
                     metrics=None,
                     output_glb=None,
+                    render_mode=render_mode,
                 )
             )
             continue
@@ -227,6 +333,7 @@ def benchmark_model(
                     error=None,
                     metrics=metrics,
                     output_glb=output_glb,
+                    render_mode=render_mode,
                 )
             )
         except Exception as exc:
@@ -240,6 +347,7 @@ def benchmark_model(
                     error=f"metrics failed: {exc}",
                     metrics=None,
                     output_glb=output_glb,
+                    render_mode=render_mode,
                 )
             )
     return results
@@ -248,42 +356,71 @@ def benchmark_model(
 # ---------------------------------------------------------------------- CSV
 
 
+_CSV_HEADER = [
+    "model_id",
+    "shape_category",
+    "branch",
+    "render_mode",
+    "status",
+    "duration_s",
+    "chamfer_l1",
+    "chamfer_l2",
+    "hausdorff",
+    "f_score_001",
+    "f_score_005",
+    "error",
+]
+
+
 def write_csv(results: list[BranchResult], path: Path) -> None:
+    """Faz UPSERT: preserva linhas anteriores, sobrescreve as que repetem
+    (model_id, branch, render_mode). Assim rodar `--render-mode matte` e
+    depois `--render-mode realistic` acumula linhas DIFERENTES (uma por
+    modo) em vez de sobrescrever.
+
+    A chave de identidade é o trio `(model_id, branch, render_mode)` — pra
+    benchmark dual, o mesmo modelo aparece 2× por branch (uma linha por
+    modo de render).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Lê linhas existentes (se houver) em dict por chave triple.
+    existing: dict[tuple[str, str, str], list[str]] = {}
+    if path.exists():
+        with path.open("r", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if header == _CSV_HEADER:
+                for row in reader:
+                    if len(row) >= 4:
+                        existing[(row[0], row[2], row[3])] = row
+
+    # Aplica os resultados novos por cima (upsert).
+    for r in results:
+        m = r.metrics
+        row = [
+            r.model_id,
+            r.shape_category,
+            r.branch,
+            r.render_mode,
+            r.status,
+            f"{r.duration_s:.3f}",
+            f"{m.chamfer_l1:.6f}" if m else "",
+            f"{m.chamfer_l2:.6f}" if m else "",
+            f"{m.hausdorff:.6f}" if m else "",
+            f"{m.f_score_001:.4f}" if m else "",
+            f"{m.f_score_005:.4f}" if m else "",
+            r.error or "",
+        ]
+        existing[(r.model_id, r.branch, r.render_mode)] = row
+
+    # Reescreve tudo, ordenado por (model_id, render_mode, branch).
+    sorted_rows = sorted(existing.values(), key=lambda r: (r[0], r[3], r[2]))
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(
-            [
-                "model_id",
-                "shape_category",
-                "branch",
-                "status",
-                "duration_s",
-                "chamfer_l1",
-                "chamfer_l2",
-                "hausdorff",
-                "f_score_001",
-                "f_score_005",
-                "error",
-            ]
-        )
-        for r in results:
-            m = r.metrics
-            writer.writerow(
-                [
-                    r.model_id,
-                    r.shape_category,
-                    r.branch,
-                    r.status,
-                    f"{r.duration_s:.3f}",
-                    f"{m.chamfer_l1:.6f}" if m else "",
-                    f"{m.chamfer_l2:.6f}" if m else "",
-                    f"{m.hausdorff:.6f}" if m else "",
-                    f"{m.f_score_001:.4f}" if m else "",
-                    f"{m.f_score_005:.4f}" if m else "",
-                    r.error or "",
-                ]
-            )
+        writer.writerow(_CSV_HEADER)
+        for row in sorted_rows:
+            writer.writerow(row)
 
 
 # ----------------------------------------------------------------------- CLI
@@ -323,12 +460,77 @@ def main() -> int:
         type=Path,
         default=Path(r"C:\Program Files\Blender Foundation\Blender 5.1\blender.exe"),
     )
+    p.add_argument(
+        "--orbit-count",
+        type=int,
+        default=24,
+        help=(
+            "Quantidade de vistas extras em órbita pra cada modelo, "
+            "consumidas só pelo Meshroom (IA/Blander leem só as 4 cardeais). "
+            "Default 24 = uma vista a cada ~15° de azimuth."
+        ),
+    )
+    p.add_argument(
+        "--render-mode",
+        nargs="+",
+        choices=("matte", "realistic"),
+        default=["matte"],
+        help=(
+            "Modo(s) de renderização. Pode passar UM ou OS DOIS — para "
+            "benchmark dual da metodologia C, use `--render-mode matte "
+            "realistic` (roda os 2 sequencialmente, cada um popula sua "
+            "subpasta e seu sufixo no CSV).\n"
+            "  matte: materiais substituídos por diffuse opaco (geometria pura).\n"
+            "  realistic: materiais originais + HDRI (simula app real)."
+        ),
+    )
+    p.add_argument(
+        "--only",
+        nargs="+",
+        default=None,
+        metavar="MODEL_ID",
+        help=(
+            "Filtra o dataset para rodar APENAS os model_ids listados. "
+            "Útil pra debug incremental — testa 1 modelo, conserta, repete. "
+            "Sem este flag, roda todos os modelos do manifest."
+        ),
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Roda no máximo N modelos (após o filtro --only). Útil pra smoke test.",
+    )
+    p.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help=(
+            "Pula combinações (model_id, branch, render_mode) que já têm "
+            "row com status=ok no CSV. Erros são re-tentados. Útil para "
+            "retomar benchmark interrompido sem refazer trabalho."
+        ),
+    )
     args = p.parse_args()
 
     dataset = load_held_out(args.eval_data_root / "held_out")
     if len(dataset) == 0:
         print("Dataset vazio. Adicione modelos a manifest.json.", file=sys.stderr)
         return 1
+
+    # Filtra dataset por --only / --limit (ordem importa: filtra, depois limita).
+    models = list(dataset)
+    if args.only:
+        wanted = set(args.only)
+        models = [m for m in models if m.id in wanted]
+        missing = wanted - {m.id for m in models}
+        if missing:
+            print(f"--only não encontrou: {sorted(missing)}", file=sys.stderr)
+            return 4
+    if args.limit is not None and args.limit > 0:
+        models = models[: args.limit]
+    if not models:
+        print("Nenhum modelo após aplicar --only/--limit.", file=sys.stderr)
+        return 5
 
     branches: dict[str, Path] = {}
     for name in args.branches:
@@ -345,21 +547,61 @@ def main() -> int:
             return 3
         branches[name] = worktree
 
-    all_results: list[BranchResult] = []
-    for i, model in enumerate(dataset, 1):
+    # --skip-existing: carrega chaves já completadas com sucesso do CSV.
+    skip_keys: set[tuple[str, str, str]] | None = None
+    if args.skip_existing:
+        skip_keys = load_existing_ok_keys(args.output)
         print(
-            f"[{i}/{len(dataset)}] {model.id} ({model.shape_category})",
+            f"--skip-existing ativo: {len(skip_keys)} chaves (model, branch, mode) "
+            f"já em ok no CSV serão puladas.",
             file=sys.stderr,
         )
-        all_results.extend(
-            benchmark_model(
+
+    all_results: list[BranchResult] = []
+    total_iters = len(models) * len(args.render_mode)
+    iter_idx = 0
+    for mode in args.render_mode:
+        print(
+            f"\n========== Iniciando render_mode={mode} ==========\n",
+            file=sys.stderr,
+        )
+        for model in models:
+            iter_idx += 1
+            print(
+                f"[{iter_idx}/{total_iters}] {model.id} ({model.shape_category}) "
+                f"[{mode}]",
+                file=sys.stderr,
+            )
+            model_results = benchmark_model(
                 model=model,
                 branches=branches,
                 eval_data_root=args.eval_data_root,
                 blender_executable=args.blender_executable,
+                orbit_count=args.orbit_count,
+                render_mode=mode,
+                skip_keys=skip_keys,
             )
-        )
+            all_results.extend(model_results)
+            # Escrita INCREMENTAL: salva o CSV após cada (modelo, modo).
+            # Garante que Ctrl+C / crash não perde resultados anteriores.
+            # write_csv usa upsert por (model_id, branch, render_mode),
+            # então é seguro escrever só os results desta iteração — os
+            # anteriores ficam preservados no arquivo.
+            try:
+                write_csv(model_results, args.output)
+                print(
+                    f"  💾 CSV salvo (incremental) em {args.output}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            except Exception as exc:
+                print(
+                    f"  ⚠ Falha ao escrever CSV incremental: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
+    # Re-escreve no fim só por garantia (no-op se incremental funcionou).
     write_csv(all_results, args.output)
     print(f"CSV salvo em {args.output}", file=sys.stderr)
     return 0

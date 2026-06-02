@@ -1,5 +1,12 @@
 # 10 — Embedder CLIP e detector de cor
 
+> **O que você vai aprender neste doc**
+> - Como o CLIP foi **repurposado**: de classificador de template para *embedder* do cache (mesmo modelo, uso novo).
+> - Por que o `ColorDetector` saiu do fluxo principal (o Hunyuan já infere a cor).
+> - Quando ainda faz sentido ligar cada um (modo `template`, metadado de cor).
+>
+> **Pré-requisitos:** [09g - Cache de similaridade CLIP](09g-cache-similaridade-clip.md) (onde o embedder é consumido).
+
 Dois componentes que vinham juntos no MVP de templates: **classificação de forma** via CLIP zero-shot e **detecção de cor do líquido**. Com o pipeline integrado (Hunyuan + cache), ambos mudaram de papel.
 
 | Componente | Estado | Função |
@@ -105,4 +112,4 @@ COLOR_DETECTOR_TYPE=disabled                   # disabled | average
 - [09g — Cache de similaridade CLIP](09g-cache-similaridade-clip.md) (consumidor do embedder)
 - [09f — Pipeline integrado](09f-pipeline-integrado.md)
 - [02 — Stack tecnológico](02-stack-tecnologico.md) (deps do CLIP)
-- Código: [`app/modules/captures/embeddings.py`](../app/modules/captures/embeddings.py) (planejado), [`app/modules/captures/classifier.py`](../app/modules/captures/classifier.py) (legado), [`app/modules/captures/color_detector.py`](../app/modules/captures/color_detector.py), [`app/modules/captures/templates_catalog.py`](../app/modules/captures/templates_catalog.py)
+- Código: [`app/modules/captures/embeddings.py`](../app/modules/captures/embeddings.py), [`app/modules/captures/classifier.py`](../app/modules/captures/classifier.py) (legado), [`app/modules/captures/color_detector.py`](../app/modules/captures/color_detector.py), [`app/modules/captures/templates_catalog.py`](../app/modules/captures/templates_catalog.py)

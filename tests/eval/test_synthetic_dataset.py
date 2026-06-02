@@ -147,6 +147,74 @@ class TestSuccessPath:
         assert "2048" in cmd
         assert "45.0" in cmd
 
+    def test_orbit_count_default_is_zero(self, setup_files):
+        captured: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append(cmd)
+            out_dir = Path(cmd[cmd.index("--output-dir") + 1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for name in CARDINAL_VIEWS:
+                (out_dir / f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = render_synthetic_views(
+                glb_path=setup_files["glb"],
+                output_dir=setup_files["out"],
+                blender_executable=setup_files["exe"],
+                script_path=setup_files["script"],
+            )
+
+        cmd = captured[0]
+        idx = cmd.index("--orbit-count")
+        assert cmd[idx + 1] == "0"
+        assert result.orbit_views == ()
+
+    def test_orbit_count_propagates_and_collects(self, setup_files):
+        captured: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            captured.append(cmd)
+            out_dir = Path(cmd[cmd.index("--output-dir") + 1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            # Simula Blender escrevendo cardeais + 24 orbit
+            for name in CARDINAL_VIEWS:
+                (out_dir / f"{name}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+            for i in range(24):
+                angle = i * 15
+                (out_dir / f"orbit_{angle:03d}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = render_synthetic_views(
+                glb_path=setup_files["glb"],
+                output_dir=setup_files["out"],
+                blender_executable=setup_files["exe"],
+                script_path=setup_files["script"],
+                orbit_count=24,
+            )
+
+        cmd = captured[0]
+        idx = cmd.index("--orbit-count")
+        assert cmd[idx + 1] == "24"
+        assert len(result.orbit_views) == 24
+        # Ordem natural (sorted) por nome — orbit_000 vem antes de orbit_015 etc.
+        assert result.orbit_views[0].name == "orbit_000.png"
+        assert result.orbit_views[-1].name == "orbit_345.png"
+
+    def test_negative_orbit_count_rejected(self, setup_files):
+        with patch("subprocess.run") as mock_run:
+            with pytest.raises(ValueError, match="orbit_count"):
+                render_synthetic_views(
+                    glb_path=setup_files["glb"],
+                    output_dir=setup_files["out"],
+                    blender_executable=setup_files["exe"],
+                    script_path=setup_files["script"],
+                    orbit_count=-1,
+                )
+            mock_run.assert_not_called()
+
 
 # ---------------------------------------------------------------- failures
 

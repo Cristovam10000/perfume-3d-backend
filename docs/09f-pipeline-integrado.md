@@ -1,8 +1,15 @@
 # 09f — Pipeline integrado (`IntegratedPipeline`)
 
-> **Status:** planejado. Os componentes individuais (preprocess, rembg, Hunyuan client, mesh cleaner, mesh refiner, label extractor/upscaler/projector) já existem em `app/modules/captures/`; o que falta é compor todos eles dentro de uma classe `IntegratedPipeline` que implementa `Processor.process(input)` e plugar isso no `CaptureService` via factory.
+> **O que você vai aprender neste doc**
+> - Como o `IntegratedPipeline` **compõe** os stages num único `Processor` — o coração do backend.
+> - O curto-circuito do cache: quando o fluxo para no stage (3) com um HIT.
+> - A regra de **degradação graciosa**: um GLB quase sempre é entregue, mesmo com falhas parciais.
+> - Como configurar cada stage pelo `.env` e como a factory `build_pipeline()` monta tudo.
+>
+> **Pré-requisitos:** [05 - Arquitetura](05-arquitetura.md) e [08 - Módulo captures](08-modulo-captures.md).
+> Cada stage tem doc próprio: [09b](09b-pipeline-ai-hunyuan.md), [09c](09c-refinamento-mesh.md), [09d](09d-preprocessamento-e-cleanup.md), [09e](09e-aplicacao-label.md), [09g](09g-cache-similaridade-clip.md).
 
-Este documento descreve o design aprovado: como o pipeline compõe os stages, como decide entre cache hit e cache miss (cache **global cross-tenant** via `modelos_3d_universais`), como degrada em falhas parciais e como se configura via `.env`. A separação entre cache global e amarração por tenant (`modelos_3d_produto`) está em [09g](09g-cache-similaridade-clip.md).
+O `IntegratedPipeline` é o `Processor` **default** do backend (`PIPELINE_MODE=integrated`): ele é composto e plugado no `CaptureService` pela factory `build_pipeline()` em `app/main.py`. Este documento descreve como o pipeline compõe os stages, como decide entre cache hit e cache miss (cache **global cross-tenant** via `modelos_3d_universais`), como degrada em falhas parciais e como se configura via `.env`. A separação entre cache global e amarração por tenant (`modelos_3d_produto`) está em [09g](09g-cache-similaridade-clip.md).
 
 ## Visão geral
 
@@ -89,7 +96,7 @@ ProcessingInput (job_id, image_paths, output_path)
 O `IntegratedPipeline` é o **único** componente que conhece a sequência. Cada stage individual continua isolado e testável em separado.
 
 ```python
-# Esboço da assinatura (pipeline.py)
+# Assinatura real (pipeline.py), simplificada
 class IntegratedPipeline(Processor):
     def __init__(
         self,
@@ -105,6 +112,7 @@ class IntegratedPipeline(Processor):
         label_projector: LabelProjector,
         storage: LocalStorage,
         *,
+        view_router: ViewRouter | None = None,        # rotula vistas p/ o Hunyuan
         fallback_processor: Processor | None = None,  # TemplateProcessor
         front_axis: str = "front_y_neg",
         min_island_ratio: float = 0.0,
@@ -115,7 +123,7 @@ class IntegratedPipeline(Processor):
     async def process(self, input: ProcessingInput) -> ProcessingResult: ...
 ```
 
-`ProcessingInput` ganha um campo opcional `product_id: int | None = None`. O service repassa o valor recebido do `POST /captures` (`productId` no form-data) para o pipeline, que o entrega ao `ModelCache.store(...)` no stage (8). O pipeline em si não conhece a tabela `modelos_3d_produto` — quem faz o UPSERT é o `ClipSimilarityCache`.
+`ProcessingInput` tem um campo opcional `product_id: int | None = None`. O service repassa o valor recebido do `POST /captures` (`productId` no form-data) para o pipeline, que o entrega ao `ModelCache.store(...)` no stage (8). O pipeline em si não conhece a tabela `modelos_3d_produto` — quem faz o UPSERT é o `ClipSimilarityCache`.
 
 Cada dependência é uma ABC, então o pipeline pode ser instanciado com `Disabled*` em qualquer stage para teste — útil em testes unitários (`tests/modules/captures/test_pipeline.py`).
 
@@ -180,19 +188,20 @@ TEMPLATES_DIR=./assets/templates/normalized
 BLENDER_EXECUTABLE=C:\Program Files\Blender Foundation\Blender 5.1\blender.exe
 ```
 
-Compat: o valor antigo `PROCESSOR_TYPE` é lido como `PIPELINE_MODE` se estiver presente (com deprecation warning). O bug do `.env` atual com `PROCESSOR_TYPE=template_fitting` é normalizado durante a refatoração — esse valor nunca existiu como Literal válido.
+Compat: o valor antigo `PROCESSOR_TYPE` é lido como `PIPELINE_MODE` se estiver presente (com *deprecation warning*) — ver `_apply_legacy_aliases` em `config.py`. Valores legados `fake`/`template`/`integrated` são mapeados; valores desconhecidos (ex.: `template_fitting`, que apareceu por engano em `.env` antigos) caem no default `integrated` sem quebrar o startup.
 
 ## Factory (`app/main.py`)
 
 ```python
-def build_pipeline(config: Settings = settings) -> Processor:
+def build_pipeline(
+    config: Settings = settings,
+    storage: LocalStorage | None = None,
+) -> Processor:
+    storage = storage or LocalStorage()
     if config.pipeline_mode == "fake":
         return FakeProcessor()
     if config.pipeline_mode == "template":
-        return TemplateProcessor(
-            blender_executable=config.blender_executable,
-            templates_dir=config.templates_dir,
-        )
+        return build_template_processor(config)
     # integrated (default)
     return IntegratedPipeline(
         preprocessor=build_image_preprocessor(config),
@@ -205,9 +214,10 @@ def build_pipeline(config: Settings = settings) -> Processor:
         label_extractor=build_label_extractor(config),
         label_upscaler=build_label_upscaler(config),
         label_projector=build_label_projector(config),
-        storage=LocalStorage(),
+        storage=storage,
+        view_router=build_view_router(config),
         fallback_processor=(
-            TemplateProcessor(...) if config.pipeline_fallback_to_template else None
+            build_template_processor(config) if config.pipeline_fallback_to_template else None
         ),
         front_axis=config.label_front_axis,
         min_island_ratio=config.mesh_min_island_ratio,
@@ -234,10 +244,10 @@ O `scripts/smoke_phase5.py` já implementa **uma versão imperativa** dessa mesm
 
 O smoke continuará útil para depurar etapas isoladas; o pipeline é o caminho de produção.
 
-## Testes (planejado)
+## Testes
 
-- `tests/modules/captures/test_pipeline.py`:
-  - Mocks de cada stage; verifica a ordem das chamadas.
+[`tests/modules/captures/test_pipeline.py`](../tests/modules/captures/test_pipeline.py) (6 testes) cobre, com mocks de cada stage:
+
   - Cenário cache HIT: confirma que stages (4)–(8) **não** são chamados.
   - Cenário cache MISS: confirma que todos os stages são chamados na ordem.
   - Degrade do refiner: confirma que o job conclui usando `cleaned.glb`.

@@ -1,5 +1,13 @@
 # 13 — Endpoints HTTP e contrato com o app
 
+> **O que você vai aprender neste doc**
+> - O contrato HTTP completo entre o backend e o app Flutter (request, response, erros).
+> - Por que as respostas usam **camelCase** (`jobId`, `modelUrl`) via `serialization_alias`.
+> - Como cache hit e geração se distinguem **sem** um campo `origem` dedicado.
+>
+> **Pré-requisitos:** [01 - Visão geral](01-visao-geral.md). Para a sequência interna do
+> `POST /captures`, leia [09f - Pipeline integrado](09f-pipeline-integrado.md).
+
 Base URL: `http://<host>:<porta>/` (ex.: `http://127.0.0.1:8000` ou `http://10.0.2.2:8000` no emulador Android). Prefixos sem versão (não há `/v1`).
 
 ## `GET /health`
@@ -12,7 +20,7 @@ Base URL: `http://<host>:<porta>/` (ex.: `http://127.0.0.1:8000` ou `http://10.0
 - **Content-Type:** `multipart/form-data`
 - **Campos:**
   - `images` — um ou mais ficheiros (nome do campo **images**, repetido para N ficheiros).
-  - `productId` (opcional, parte do form-data, planejado para a integração do pipeline integrado) — `integer`. Quando enviado, o backend amarra o GLB ao produto correspondente em `modelos_3d_produto` ao final do pipeline (cache miss → INSERT; cache hit → UPSERT do vínculo). Se omitido, o GLB é entregue ao job e (em miss) populado em `modelos_3d_universais`, **sem** vincular a nenhum produto comercial.
+  - `productId` (opcional, parte do form-data) — `integer`. Quando enviado, o backend amarra o GLB ao produto correspondente em `modelos_3d_produto` ao final do pipeline (cache miss → INSERT; cache hit → UPSERT do vínculo). Se omitido, o GLB é entregue ao job e (em miss) populado em `modelos_3d_universais`, **sem** vincular a nenhum produto comercial. Recebido em `router.py` (`create_capture`) e propagado pelo `CaptureService.create_job`.
 - **201 Created** com corpo JSON (camelCase por alias Pydantic):
 
 ```json
@@ -52,7 +60,7 @@ O front deve fazer *polling* (ex. a cada 2–3 s) até `status` ser `completed` 
 
 ## Endpoints comerciais — `/sales/*`
 
-API CRUD do módulo `sales/`. Todos retornam JSON com aliases camelCase (Pydantic `serialization_alias`); compatível com `HttpSalesRepository` do app Flutter.
+API CRUD do módulo `sales/`. Todos retornam JSON com aliases camelCase (Pydantic `serialization_alias`); consumido pelo `SalesController` do app Flutter (`front/lib/features/sales/data/sales_repository.dart` — não existe uma classe `HttpSalesRepository` separada).
 
 ### `GET /sales/snapshot`
 
@@ -61,7 +69,7 @@ API CRUD do módulo `sales/`. Todos retornam JSON com aliases camelCase (Pydanti
 ```json
 {
   "hoje": "2026-05-09T00:00:00",
-  "clientes": [ {"id": "...", "nome": "...", "telefone": "...", "score": 0, "status": "...", "emAberto": 0.0, "totalCompras": 0, "parcelasAtraso": 0, "totalComprado": 0.0, "syncStatus": "synced"} ],
+  "clientes": [ {"id": "...", "nome": "...", "telefone": "...", "bairro": "...", "score": 0, "status": "...", "emAberto": 0.0, "totalCompras": 0, "parcelasAtraso": 0, "totalComprado": 0.0, "syncStatus": "synced"} ],
   "produtos": [ {"id": "...", "nome": "...", "categoria": "...", "precoBase": 0.0, "custo": 0.0, "estoque": 0, "estoqueMinimo": 1, "volumeMl": 100, "frascoColorValue": 4285558395, "tem3D": false, "modelo3DPath": null, "previewImg": null, "syncStatus": "synced"} ],
   "vendas": [ {"id": "...", "clienteId": "...", "data": "...", "itens": [...], "total": 0.0, "entrada": 0.0, "numParcelas": 1, "observacoes": null, "syncStatus": "synced"} ],
   "parcelas": [...],
@@ -122,9 +130,9 @@ API CRUD do módulo `sales/`. Todos retornam JSON com aliases camelCase (Pydanti
 
 - **201 Created** com corpo `{ "id": "<uuid-da-venda>" }`.
 - A criação da venda também gera as parcelas automaticamente (regra de negócio do `SalesRepository.create_sale`); são lidas via `/sales/snapshot` no próximo refresh.
-- Erros de validação de regra de negócio (cliente inativo, produto sem estoque, total inconsistente) retornam **422** com mensagem do `ValidationError`.
+- Erros de validação de regra de negócio retornam **422** com mensagem do `ValidationError`. Casos cobertos por `SalesRepository.create_sale`: venda sem itens, `clienteId` inexistente, `produtoId` inexistente, **estoque insuficiente** (`estoque < quantidade solicitada`) e preço unitário negativo.
 
-> **Idempotência:** os endpoints de escrita não exigem `Idempotency-Key` no MVP. O `HttpSalesRepository` do app garante que cada ação dispara uma única requisição via *queue* local de eventos.
+> **Idempotência:** os endpoints de escrita não exigem `Idempotency-Key` no MVP. O `SalesController` do app garante que cada ação dispara uma única requisição via *queue* local de eventos.
 
 ## OpenAPI
 

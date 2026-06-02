@@ -1,5 +1,13 @@
 # 09b — Pipeline IA: Hunyuan3D-2mv
 
+> **O que você vai aprender neste doc**
+> - Por que a geração 3D vive em um **container Docker separado** (com GPU) e não no backend.
+> - Como o `Hunyuan3DProcessor` (cliente HTTP) conversa com esse serviço via `POST /generate`.
+> - Os parâmetros de inferência (`octree_resolution`, `num_inference_steps`, ...) e por que esses valores.
+> - As limitações do modelo (vidro, tampa, texto da label) e como o pós-processamento as mitiga.
+>
+> **Pré-requisitos:** [09f - Pipeline integrado](09f-pipeline-integrado.md) (onde este stage encaixa).
+
 Implementação da etapa de **geração** dentro do `IntegratedPipeline`. O `Hunyuan3DProcessor` é o cliente HTTP que conversa com o contêiner Docker dedicado ao modelo [Hunyuan3D-2mv](https://github.com/Tencent/Hunyuan3D-2) (fork low-VRAM por deepbeepmeep). Recebe 1–6 fotos pré-processadas e segmentadas e devolve um GLB com geometria + textura PBR.
 
 Esse processor **não** é mais usado como Strategy raiz solta — ele é um *stage* dentro do `IntegratedPipeline` (ver [09f](09f-pipeline-integrado.md)). Continua sendo possível instanciá-lo direto nos smokes para depurar a inferência isoladamente.
@@ -85,7 +93,7 @@ O cliente Python valida o magic header `b"glTF"` antes de gravar em disco; se vi
 
 O `IntegratedPipeline` garante isto, mas se você instanciar o processor solo:
 
-- Contêiner `perfume-hunyuan` rodando e com modelo carregado (`/health → ready`).
+- Serviço Hunyuan (`docker compose up hunyuan`) rodando e com modelo carregado (`/health → ready`).
 - Imagens **pré-segmentadas** pelo `RembgBackgroundRemover` (Hunyuan inclui fundo como geometria se receber JPEG cru).
 - Resolução das imagens ≤ 2048 px no maior lado (Hunyuan não consome mais que isso).
 

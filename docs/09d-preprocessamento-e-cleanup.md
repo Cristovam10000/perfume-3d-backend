@@ -1,5 +1,12 @@
 # 09d — Pré-processamento de Imagem e Limpeza de Malha
 
+> **O que você vai aprender neste doc**
+> - As duas "camadas defensivas" do pipeline: tratar a foto na entrada e a malha na saída do Hunyuan.
+> - Por que o pré-processamento clássico (EXIF, white-balance, CLAHE) ainda vale a pena, mesmo com o front comprimindo a imagem.
+> - Por que o cleanup de malha vem **desligado por padrão** (`min_island_ratio=0`) — uma decisão validada na prática.
+>
+> **Pré-requisitos:** [09f - Pipeline integrado](09f-pipeline-integrado.md). São os stages (1) e (5).
+
 Duas camadas defensivas do `IntegratedPipeline`: uma na **entrada** (fotos de smartphone podem ter EXIF errado, luz mista, baixa nitidez) e outra **depois** do Hunyuan (a IA gera GLBs com pequenos artefatos geométricos). Ambas seguem o padrão Strategy: ABC + bypass `Disabled*` + implementação real.
 
 | Stage | Posição no pipeline | Componente |

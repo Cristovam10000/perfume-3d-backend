@@ -1,5 +1,12 @@
 # 07 — Camada `core` e configuração
 
+> **O que você vai aprender neste doc**
+> - Todas as variáveis de ambiente do backend, agrupadas por tema, e o papel de cada uma.
+> - Como `pydantic-settings` lê o `.env` e valida valores com `Literal`.
+> - Os blocos transversais: `database`, `dependencies`, `core/exceptions`, `core/logging`.
+>
+> **Pré-requisitos:** [02 - Stack tecnológico](02-stack-tecnologico.md). Código-fonte: [`app/config.py`](../app/config.py).
+
 Visão geral de arquivos “transversais” fora de `modules/captures/`.
 
 ## Settings
@@ -58,7 +65,7 @@ Referência de variáveis de ambiente (ficheiro de código: [`app/config.py`](..
 | `background_remover_type` | `BACKGROUND_REMOVER_TYPE` | `disabled` \| `rembg` |
 | `mesh_cleaner_type` | `MESH_CLEANER_TYPE` | `disabled` \| `blender` (default `disabled`/no-op) |
 | `mesh_min_island_ratio` | `MESH_MIN_ISLAND_RATIO` | Limiar de ilhas; 0.0 desliga o cleanup mesmo com Blender ativo |
-| `mesh_refiner_type` | `MESH_REFINER_TYPE` | `disabled` \| `blender` |
+| `mesh_refiner_type` | `MESH_REFINER_TYPE` | `disabled` \| `blender` (default `blender` — shader de vidro PBR) |
 | `label_extractor_type` | `LABEL_EXTRACTOR_TYPE` | `disabled` \| `homography` |
 | `label_upscaler_type` | `LABEL_UPSCALER_TYPE` | `disabled` \| `lanczos` |
 | `label_projector_type` | `LABEL_PROJECTOR_TYPE` | `disabled` \| `blender` |
@@ -85,7 +92,7 @@ Referência de variáveis de ambiente (ficheiro de código: [`app/config.py`](..
 - `create_async_engine(settings.database_url, pool_pre_ping=True)`.
 - `SessionFactory` = `async_sessionmaker` com `expire_on_commit=False`.
 - `Base` = `DeclarativeBase` (SQLAlchemy 2.0).
-- `create_all()`: em transação, `Base.metadata.create_all` — usado no lifespan; importa `modules.captures.models` e `modules.captures.modelos_3d_universais` para registrar todas as tabelas (`capture_jobs`, `capture_images`, `modelos_3d_universais`).
+- `create_all()`: em transação, `Base.metadata.create_all` — usado no lifespan; importa `modules.captures.models` e `modules.captures.modelos_universais` para registrar todas as tabelas (`capture_jobs`, `capture_images`, `modelos_3d_universais`).
 
 ## `app/dependencies.py`
 

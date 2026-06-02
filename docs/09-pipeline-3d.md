@@ -1,5 +1,13 @@
 # 09 — Pipeline 3D (templates — fallback)
 
+> **O que você vai aprender neste doc**
+> - A interface raiz `Processor` (`process(input) -> result`) que une os três modos.
+> - O `FakeProcessor` (cubo, p/ testes) e o `TemplateProcessor` (Blender + GLB pronto).
+> - **Quando** o caminho de templates entra em ação hoje: fallback do Hunyuan e modo `template`.
+>
+> **Pré-requisitos:** [05 - Arquitetura](05-arquitetura.md). O caminho principal (IA) está em
+> [09f - Pipeline integrado](09f-pipeline-integrado.md).
+
 O caminho principal de geração é o **`IntegratedPipeline`** baseado em Hunyuan3D + pós-processamento + cache CLIP, documentado em [09f](09f-pipeline-integrado.md). Este documento descreve a **abstração raiz `Processor`** e o **`TemplateProcessor`**, que permanecem no código por dois motivos:
 
 1. **Fallback**: quando o contêiner Hunyuan está offline ou estoura timeout, o backend ainda devolve algo plausível usando os 6 templates GLB pré-existentes em `assets/templates/normalized/`.

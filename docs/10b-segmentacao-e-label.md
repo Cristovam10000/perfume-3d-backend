@@ -1,5 +1,12 @@
 # 10b — Segmentação de fundo e extração de label
 
+> **O que você vai aprender neste doc**
+> - Como o `rembg` remove o fundo (PNG RGBA) — e por que isso melhora muito o mesh do Hunyuan.
+> - O algoritmo de **homografia** que acha a label retangular e corrige a perspectiva (OpenCV).
+> - O significado do `confidence` da label e a regra de fallback quando nada é encontrado.
+>
+> **Pré-requisitos:** [09f - Pipeline integrado](09f-pipeline-integrado.md). São os stages (2) e parte do (7).
+
 Duas etapas de **pré-processamento de imagem** que preparam as fotos do frasco antes da reconstrução 3D. Ambas são *stages* do `IntegratedPipeline` (ver [09f](09f-pipeline-integrado.md)) e seguem o padrão Strategy do restante do módulo: ABC + implementação desativada (zero deps) + implementação real trocável por configuração.
 
 | Stage | Posição no pipeline | Componente |
@@ -94,6 +101,7 @@ O pipeline itera todas as fotos preprocessadas até encontrar uma com `confidenc
 
 ```
 rembg>=2.0.50
+onnxruntime>=1.23
 opencv-python>=4.10
 numpy>=1.26
 pillow>=10.0

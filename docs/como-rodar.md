@@ -18,7 +18,7 @@ Requisitos locais:
 | Python compativel com dependencias FastAPI | Rodar backend em `back/` | `back/requirements.txt` |
 | Docker Desktop | Subir Postgres e, opcionalmente, Hunyuan | `docker-compose.yml` |
 | GPU NVIDIA + suporte Docker GPU | Necessario para Hunyuan | `docker-compose.yml`, `docker/hunyuan/README.md` |
-| Blender 5.1+ | Necessario se `PROCESSOR_TYPE=template` | `back/.env.example`, `back/app/modules/captures/processor.py` |
+| Blender 5.1+ | Necessario em `PIPELINE_MODE=integrated` (refiner/cleaner/label) ou `template` | `back/.env.example`, `back/app/modules/captures/processor.py` |
 
 ## Estrutura
 
@@ -60,11 +60,12 @@ Copy-Item .env.example .env
 
 ```env
 DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5433/tcc
-PROCESSOR_TYPE=fake
+# integrated (default) usa Hunyuan (GPU/Docker) + Blender. Para subir rápido sem GPU, use fake:
+PIPELINE_MODE=fake
 CORS_ORIGINS=*
 ```
 
-Esses defaults batem com `docker-compose.yml` para Postgres local e com o processor leve sem Blender (fontes: `back/.env.example`, `docker-compose.yml`, `back/app/config.py`).
+O default real é `PIPELINE_MODE=integrated` (Hunyuan + cache CLIP + pós-processamento Blender). Para um **primeiro start sem GPU/Docker**, `PIPELINE_MODE=fake` sobe o servidor com um processor leve (cubo sintético); `template` usa Blender sobre GLBs prontos. Para o modo integrated completo, veja [docs/03 — Inicialização](03-inicializacao-do-projeto.md) (fontes: `back/.env.example`, `docker-compose.yml`, `back/app/config.py`).
 
 4. Rodar o backend:
 
@@ -87,7 +88,7 @@ flutter pub get
 flutter run --dart-define=BACKEND_BASE_URL=http://localhost:8000
 ```
 
-Para Android fisico, substitua `localhost` pelo IP da maquina na mesma rede. Para emulador Android, use um host acessivel ao emulador, como `http://10.0.2.2:8000` quando aplicavel `⚠️ a confirmar no ambiente` (fonte: `front/lib/core/constants/app_constants.dart`).
+Para Android fisico, substitua `localhost` pelo IP da maquina na mesma rede. Para **emulador Android**, use `http://10.0.2.2:8000` — `10.0.2.2` é o alias padrão do emulador para o `localhost` da máquina host (fonte: `front/lib/core/constants/app_constants.dart`).
 
 7. Opcional: subir Hunyuan:
 
@@ -102,12 +103,12 @@ Depois:
 Invoke-RestMethod http://localhost:7860/health
 ```
 
-O backend principal nao usa Hunyuan automaticamente sem alteracao de factory/configuracao (fontes: `back/app/main.py`, `back/app/modules/captures/processor.py`, `docker/hunyuan/server.py`).
+Com `PIPELINE_MODE=integrated` (default), o backend usa o Hunyuan automaticamente no `POST /captures`; em `fake`/`template` ele não chama o container (fontes: `back/app/main.py`, `back/app/modules/captures/pipeline.py`, `docker/hunyuan/server.py`).
 
 ## Pontos de atencao
 
 - Se `/sales/snapshot` falhar, o app continua com dados locais/mockados; isso e comportamento esperado do `SalesController` (fonte: `front/lib/features/sales/data/sales_repository.dart`).
-- Se `PROCESSOR_TYPE=template`, o caminho `BLENDER_EXECUTABLE` precisa existir; caso contrario, o `TemplateProcessor` falha antes de rodar (fontes: `back/.env.example`, `back/app/modules/captures/processor.py`).
+- Em `PIPELINE_MODE=template` (ou nos stages Blender do `integrated`), o caminho `BLENDER_EXECUTABLE` precisa existir; caso contrario, o passo Blender falha antes de rodar (fontes: `back/.env.example`, `back/app/modules/captures/processor.py`).
 - Se o Postgres nao estiver em `localhost:5433`, ajuste `DATABASE_URL` (fontes: `back/.env.example`, `docker-compose.yml`).
 - Se o dispositivo nao acessa o backend, ajuste `BACKEND_BASE_URL` no comando Flutter e confira firewall/rede local (fonte: `front/lib/core/constants/app_constants.dart`).
 - Hunyuan pode demorar para ficar `ready`, pois carrega modelos em background (fonte: `docker/hunyuan/server.py`).

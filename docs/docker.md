@@ -82,5 +82,5 @@ Teste de saude do Postgres depende de cliente local (`psql`) ou do backend apont
 - O build do Hunyuan pode baixar pesos do Hugging Face durante o Docker build; o README do servico cita download grande e cache em volume (fontes: `docker/hunyuan/Dockerfile`, `docker/hunyuan/README.md`).
 - `postgres` usa senha `postgres` e banco `tcc`, adequado para desenvolvimento local, nao para producao (fonte: `docker-compose.yml`).
 - O Compose nao declara `backend`; subir `postgres` nao inicia Uvicorn automaticamente (fonte: `docker-compose.yml`).
-- O backend principal nao chama o container Hunyuan automaticamente no estado atual (fontes: `back/app/main.py`, `back/app/modules/captures/processor.py`).
+- Com `PIPELINE_MODE=integrated` (default), o backend principal **chama** o container Hunyuan via HTTP durante o `POST /captures`; nos modos `fake`/`template` ele não toca o container (fontes: `back/app/main.py`, `back/app/modules/captures/pipeline.py`).
 

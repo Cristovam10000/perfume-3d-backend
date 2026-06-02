@@ -1,5 +1,8 @@
 # 15 — Glossário
 
+> **Como usar:** consulte aqui sempre que um termo aparecer pela primeira vez nos outros docs.
+> Os termos estão agrupados por área (pipeline, cache, componentes, operacional, histórico).
+
 ## Pipeline 3D
 
 | Termo | Significado no projeto |
@@ -25,7 +28,7 @@
 | **Mean-pool** | Operação simples de tirar a média de N vetores → 1 vetor. Forma deliberadamente ingênua de agregar várias vistas; suficiente para o MVP. |
 | **L2-normalize** | Dividir o vetor pela sua norma euclidiana. Após normalização, **cosine similarity vira produto interno** (dot product), o que simplifica e acelera a busca. |
 | **Cosine similarity** | Métrica de proximidade entre vetores no intervalo [-1, 1]. Vetores idênticos têm 1.0; ortogonais 0.0. Robusta a magnitude (que é o que queremos — duas fotos do mesmo perfume com luzes diferentes podem ter magnitude diferente mas direção igual). |
-| **Threshold de similaridade** | Valor de cosine acima do qual o cache responde "hit". Default proposto 0.92; precisa de calibração com dataset real. `CACHE_SIMILARITY_THRESHOLD` no `.env`. |
+| **Threshold de similaridade** | Valor de cosine acima do qual o cache responde "hit". Default atual 0.92 (`config.py`); precisa de calibração com dataset real. `CACHE_SIMILARITY_THRESHOLD` no `.env`. |
 | **Cache hit** | Um job cujo embedding bate (cosine ≥ threshold) com uma entrada de `modelos_3d_universais`. O backend devolve o GLB cacheado em segundos sem chamar o Hunyuan. |
 | **Cache miss** | Nenhuma entrada bate. O pipeline segue para Hunyuan + pós-proc + `store` no cache no fim. |
 | **Cold start** | Estado inicial com `modelos_3d_universais` vazia. Todos os jobs viram miss até a primeira geração concluir e popular a tabela. Esperado. |

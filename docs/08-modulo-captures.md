@@ -1,5 +1,12 @@
 # 08 — Módulo `captures`
 
+> **O que você vai aprender neste doc**
+> - O mapa de **todos** os arquivos do módulo `captures` e a responsabilidade de cada um.
+> - A regra de ouro do módulo: **router → service → pipeline** (cada camada faz só o seu papel).
+> - Por que o `CaptureService` é "magro": a coreografia da IA mora no `IntegratedPipeline`, não nele.
+>
+> **Pré-requisitos:** [05 - Arquitetura](05-arquitetura.md). É o módulo central — os docs `09*` detalham cada stage.
+
 Todo o domínio de **captura de fotos → job → modelo 3D** vive em `app/modules/captures/`. Este módulo segue o padrão *feature-first*: router, service, repository, models, schemas, fila, pipeline integrado e estratégias por stage.
 
 ## Arquivos e responsabilidades
@@ -45,7 +52,8 @@ Cada stage tem um bypass `Disabled*` (zero deps, útil para testes) e uma implem
 | `label_extractor.py` | `LabelExtractor` ABC + `HomographyLabelExtractor` (OpenCV: Canny + approxPolyDP + warpPerspective) | [10b](10b-segmentacao-e-label.md) |
 | `label_upscaler.py` | `LabelUpscaler` ABC + `LanczosLabelUpscaler` (Pillow LANCZOS, default 2048 px) | [09e](09e-aplicacao-label.md) |
 | `label_projector.py` | `LabelProjector` ABC + `BlenderLabelProjector` (decal frontal via UV planar) | [09e](09e-aplicacao-label.md) |
-| `top_projector.py` | `TopProjector` ABC + `BlenderTopProjector` (textura da tampa via foto do topo — opcional) | (sem doc dedicada) |
+| `view_router.py` | `ViewRouter` ABC + `LabeledViewRouter` / `CLIPViewRouter` / `PositionalViewRouter` — decide qual vista (front/left/back/right/extra) cada foto representa antes de enviar ao Hunyuan | [09f](09f-pipeline-integrado.md) |
+| `top_projector.py` | `TopProjector` ABC + `BlenderTopProjector` (textura da tampa via foto do topo) — **presente, não plugado no pipeline default** | (sem doc dedicada) |
 | `blender_scripts/cleanup_mesh.py` | Script Blender — limpeza conservadora | [09d](09d-preprocessamento-e-cleanup.md) |
 | `blender_scripts/refine_ai_mesh.py` | Script Blender — shader de vidro PBR | [09c](09c-refinamento-mesh.md) |
 | `blender_scripts/project_label.py` | Script Blender — decal de label | [09e](09e-aplicacao-label.md) |
@@ -65,13 +73,13 @@ Cada stage tem um bypass `Disabled*` (zero deps, útil para testes) e uma implem
 
 - **`create_job`**: valida que há imagens; gera UUID; cria registro com status `waiting`; grava arquivos em `storage/uploads/<job_id>/`; persiste caminhos em `capture_images`; `commit`; `queue.submit(job_id)`.
 - **`get_job`**: lê job + imagens (repositório).
-- **`process_job`**: chama `_prepare_job` (status `processing`); delega para `self._pipeline.process(ProcessingInput(...))`; em sucesso marca `completed` com `model_path` público (e propaga `origem` cache/generated para o `message`); em exceção marca `error` com string da falha.
+- **`process_job`**: chama `_prepare_job` (status `processing`); delega para `self._pipeline.process(ProcessingInput(...))`; em sucesso marca `completed` com `model_path` público (a `message` reflete se veio do cache ou foi gerada — não há campo `origem` separado); em exceção marca `error` com string da falha.
 
 A diferença em relação a versões anteriores: o service **deixou de orquestrar classifier + color detector + processor diretamente**. Toda essa coreografia (incluindo cache, fallback, degrade) está dentro do `IntegratedPipeline`. O service permanece magro: persistência + status + delegar.
 
 ## `IncomingImage`
 
-- Dataclass com `filename` e `content: bytes` — o router lê `UploadFile` e monta a lista.
+- Dataclass com `filename`, `content: bytes` e `view: str | None` (rótulo de vista opcional do app guiado) — o router lê cada `UploadFile` + o campo `views` paralelo e monta a lista.
 
 ## `CaptureRepository`
 

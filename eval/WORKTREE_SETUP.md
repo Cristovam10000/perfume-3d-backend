@@ -118,13 +118,56 @@ Confira que o `run_benchmark.py` está em `back/`:
 ls C:\TCC\back\run_benchmark.py
 ```
 
-## Próximo passo por branch
+## Status das branches (atualizado 2026-05-21)
 
-Cada uma das outras duas branches (Blander, Meshroom) precisa ter um
-`run_benchmark.py` (no root da worktree) com a interface CLI documentada
-em [RUN_BENCHMARK_CONTRACT.md](./RUN_BENCHMARK_CONTRACT.md).
+| Branch | `run_benchmark.py` | Pipeline real | Estado |
+|---|---|---|---|
+| `IA` | ✅ existe em `back/run_benchmark.py` | `IntegratedPipeline` (Hunyuan3D-2mv) | Funcional |
+| `Blander` | ✅ existe em `run_benchmark.py` (raiz) | `TemplateFittingProcessor` ou `TemplateProcessor` | Funcional |
+| `Meshroom` | ✅ existe em `run_benchmark.py` (raiz) | `MeshroomProcessor` (AliceVision via `meshroom_batch.exe`) | Funcional, mas pode falhar com 4 vistas (limitação intrínseca da fotogrametria) |
 
-Quando isso estiver feito, rode (na worktree IA):
+Cada `run_benchmark.py` segue o mesmo contrato CLI documentado em
+[RUN_BENCHMARK_CONTRACT.md](./RUN_BENCHMARK_CONTRACT.md).
+
+## Antes de rodar o benchmark — checklist
+
+### Branch IA (`C:\TCC\back\`)
+
+```powershell
+cd C:\TCC\back
+.\.venv\Scripts\activate
+# venv já configurada anteriormente
+```
+
+### Branch Blander (`C:\TCC_blander\`)
+
+```powershell
+cd C:\TCC_blander
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+pip install -r requirements-classifier.txt   # CLIP (~2GB)
+pip install -r requirements-vision.txt       # opencv para template_fitting
+copy .env.example .env
+# Edite .env: PROCESSOR_TYPE=template_fitting (recomendado) + CLASSIFIER_TYPE=clip
+```
+
+### Branch Meshroom (`C:\TCC_meshroom\`)
+
+```powershell
+cd C:\TCC_meshroom
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+copy .env.example .env
+# Edite .env: PROCESSOR_TYPE=meshroom
+# Confira que MESHROOM_EXECUTABLE aponta pro meshroom_batch.exe correto:
+#   C:\Meshroom\Meshroom-2025.1.0-Windows\Meshroom-2025.1.0\meshroom_batch.exe
+```
+
+## Rodar o benchmark completo
+
+Na worktree IA:
 
 ```powershell
 cd C:\TCC\back
@@ -132,7 +175,39 @@ cd C:\TCC\back
 python -m eval.benchmark --branches IA Blander Meshroom
 ```
 
-E o `results.csv` aparece em `C:\TCC\TCC_eval_data\results.csv`.
+O orquestrador (`eval/benchmark.py`):
+1. Renderiza 4 vistas cardeais de cada GLB held-out (Blender headless).
+2. Para cada branch: chama o `python.exe` da worktree + `run_benchmark.py`.
+3. Passa `--views-dir` e `--output-glb` por branch.
+4. Coleta JSON do stdout → CSV em `C:\TCC\TCC_eval_data\results.csv`.
+
+**Importante**: o orquestrador exporta automaticamente `TCC_EVAL_DATA_ROOT`
+para cada subprocess, então cada `run_benchmark.py` enxerga o dataset
+mesmo sendo invocado de uma worktree que não está dentro de `C:\TCC\`.
+
+## Input por branch (assimétrico de propósito)
+
+Cada método recebe **o número de vistas que ele foi projetado pra usar**:
+
+| Branch | Vistas usadas | Por quê |
+|---|---|---|
+| IA (Hunyuan3D-2mv) | **4** cardeais (front/left/back/right) | Checkpoint multi-view foi treinado com esse formato fixo |
+| Blander (template) | **4** cardeais | CLIP classifier roda nas 4; bottle template é carregado já pronto |
+| Meshroom (AliceVision) | **28** (4 cardeais + 24 orbit) | Fotogrametria precisa de cobertura densa pra SfM funcionar |
+
+O orquestrador renderiza as 28 vistas uma única vez por modelo
+(`orbit_count=24` por default). IA/Blander leem só os 4 cardeais; Meshroom
+lê tudo. Ajustável via `python -m eval.benchmark --orbit-count N`.
+
+## Expectativa de resultado por branch
+
+- **IA (Hunyuan)**: ~30-60s por modelo. Robusto a 4 vistas.
+- **Blander (template fitting)**: ~5-15s por modelo. Sempre roda; qualidade
+  depende do CLIP escolher o template certo. Chamfer ≈ 0 quando o input
+  combina com um template existente (NUNCA acontece no held-out).
+- **Meshroom**: 3-15min por modelo. Mesmo com 28 vistas pode falhar em
+  frascos de vidro/reflexivos (poucos features confiáveis). Status `error`
+  é resultado experimental válido — capturado no CSV.
 
 ## Atualizar deps de cada worktree
 
