@@ -1,19 +1,29 @@
-"""Refina um GLB gerado por IA (Hunyuan3D) trocando o shader do corpo
-por vidro PBR feito à mão, preservando a label texturizada.
+"""Refina um GLB gerado por IA (Hunyuan3D) aplicando vidro PBR no corpo.
 
 A IA produz um GLB onde o "vidro" do frasco vira um material opaco
-azulado (a IA pinta a refração do ambiente como textura). Aqui:
+azulado (a IA pinta a refração do ambiente como textura). O modo de
+refinamento é controlado por `--body-mode`:
 
-1. Identifica o material do corpo (heurística por área + ausência de textura).
-2. Substitui shader por Principled BSDF com transmission=1, IOR=1.45.
-3. Preserva materiais com Image Texture conectada (label).
-4. Opcional: aplica cor no líquido se mesh "Liquid" ou material "water" presente.
+- `auto`  (legado): aplica vidro apenas se existir mesh SEM Image Texture
+  no Base Color (caso de GLBs de template ou Hunyuan sem paint). Saídas
+  reais do Hunyuan com paint vêm 100% texturizadas, então `auto` vira
+  no-op nelas.
+- `glass`: frasco classificado como transparente. Se não houver corpo sem
+  textura, aplica transmissão PBR ao maior mesh texturizado PRESERVANDO a
+  textura no Base Color (vira tinte do vidro). A label real é reprojetada
+  pelo stage seguinte, então alterar o material do corpo é seguro.
+- `keep`: frasco classificado como opaco. Materiais do corpo ficam
+  intactos (a textura pintada pela IA é o resultado correto).
+
+Em todos os modos: opcionalmente aplica cor no líquido se mesh "Liquid"
+ou material "water" estiver presente.
 
 Roda dentro do Blender em modo headless:
 
     blender.exe --background --python refine_ai_mesh.py -- \\
         --input  path/to/raw.glb \\
         --output path/to/refined.glb \\
+        [--body-mode auto|glass|keep] \\
         [--liquid-color #RRGGBB]
 """
 
@@ -114,6 +124,33 @@ def material_tem_textura_image(mat: bpy.types.Material) -> bool:
     return False
 
 
+def identificar_corpo_texturizado(
+    meshes: list[bpy.types.Object],
+) -> tuple[bpy.types.Object | None, bpy.types.Material | None]:
+    """Retorna (obj, material) do maior mesh COM material, texturizado ou não.
+
+    Usado no modo `glass` quando a saída do Hunyuan vem 100% texturizada
+    (caso normal com paint pipeline): o maior mesh é o frasco inteiro e o
+    material texturizado recebe transmissão preservando a textura.
+    """
+    candidatos: list[tuple[float, bpy.types.Object, bpy.types.Material]] = []
+    for obj in meshes:
+        if not obj.data.materials:
+            continue
+        mat = obj.data.materials[0]
+        if mat is None:
+            continue
+        area = calcular_area_mesh(obj)
+        candidatos.append((area, obj, mat))
+
+    if not candidatos:
+        return None, None
+
+    candidatos.sort(key=lambda t: t[0], reverse=True)
+    _, obj_corpo, mat_corpo = candidatos[0]
+    return obj_corpo, mat_corpo
+
+
 def identificar_corpo_vidro(
     meshes: list[bpy.types.Object],
 ) -> tuple[bpy.types.Object | None, bpy.types.Material | None]:
@@ -208,6 +245,63 @@ def aplicar_shader_vidro(mat: bpy.types.Material) -> None:
 
     log(
         f"  shader de vidro aplicado: IOR={GLASS_PARAMS['ior']}, "
+        f"transmission={GLASS_PARAMS['transmission']}, "
+        f"roughness={GLASS_PARAMS['roughness']}"
+    )
+
+
+def aplicar_vidro_preservando_textura(mat: bpy.types.Material) -> None:
+    """Converte um material texturizado em vidro PBR mantendo a textura.
+
+    Não recria a árvore de nós: apenas ajusta Transmission/IOR/Roughness no
+    Principled BSDF existente. A Image Texture conectada ao Base Color é
+    preservada e passa a atuar como tinte do vidro — o azulado que a IA
+    pintou vira a cor do vidro em vez de superfície opaca.
+
+    Alpha fica em 1.0: transparência vem da transmissão (exportada como
+    KHR_materials_transmission no glTF), não de alpha blend — alpha < 1
+    somado a transmission dobraria a transparência em viewers PBR.
+
+    Idempotente: setar os mesmos valores duas vezes produz o mesmo material.
+    """
+    bsdf = get_principled_bsdf(mat)
+    if bsdf is None:
+        log(f"  AVISO: material '{mat.name}' sem Principled BSDF — vidro não aplicado")
+        return
+
+    entrada_roughness = bsdf.inputs.get("Roughness")
+    if entrada_roughness:
+        entrada_roughness.default_value = GLASS_PARAMS["roughness"]
+
+    entrada_ior = bsdf.inputs.get("IOR")
+    if entrada_ior:
+        entrada_ior.default_value = GLASS_PARAMS["ior"]
+
+    for nome_trans in ("Transmission Weight", "Transmission"):
+        entrada_trans = bsdf.inputs.get(nome_trans)
+        if entrada_trans is not None:
+            entrada_trans.default_value = GLASS_PARAMS["transmission"]
+            break
+
+    entrada_alpha = bsdf.inputs.get("Alpha")
+    if entrada_alpha:
+        entrada_alpha.default_value = 1.0
+
+    # Metallic > 0 anula transmissão no glTF; zera por segurança.
+    entrada_metallic = bsdf.inputs.get("Metallic")
+    if entrada_metallic:
+        entrada_metallic.default_value = 0.0
+
+    try:
+        mat.surface_render_method = "BLENDED"
+    except (AttributeError, TypeError):
+        try:
+            mat.blend_method = "BLEND"
+        except (AttributeError, TypeError):
+            pass
+
+    log(
+        f"  vidro com textura preservada: IOR={GLASS_PARAMS['ior']}, "
         f"transmission={GLASS_PARAMS['transmission']}, "
         f"roughness={GLASS_PARAMS['roughness']}"
     )
@@ -315,6 +409,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument(
+        "--body-mode",
+        choices=("auto", "glass", "keep"),
+        default="auto",
+        help=(
+            "auto = vidro só em corpo sem textura (legado); "
+            "glass = força vidro, preservando textura se houver; "
+            "keep = não toca nos materiais do corpo (frasco opaco)"
+        ),
+    )
+    parser.add_argument(
         "--liquid-color", type=str, default=None,
         help="cor hex tipo '#FFAA00' aplicada ao material 'water' ou mesh 'Liquid'",
     )
@@ -326,6 +430,7 @@ def main() -> int:
 
     log(f"input        = {args.input}")
     log(f"output       = {args.output}")
+    log(f"body-mode    = {args.body_mode}")
     log(f"liquid-color = {args.liquid_color}")
 
     if not args.input.exists():
@@ -337,26 +442,43 @@ def main() -> int:
     meshes = [o for o in bpy.data.objects if o.type == "MESH"]
     log(f"meshes encontrados: {[o.name for o in meshes]}")
 
-    # Identifica corpo de vidro
-    corpo_obj, corpo_mat = identificar_corpo_vidro(meshes)
-
-    if corpo_obj is None:
-        log("AVISO: nenhum corpo de vidro identificado — exportando GLB inalterado")
+    corpo_obj: bpy.types.Object | None = None
+    if args.body_mode == "keep":
+        log("body-mode=keep: frasco opaco — materiais do corpo preservados")
     else:
-        log(f"Corpo identificado: '{corpo_obj.name}' (mat='{corpo_mat.name}')")
-        aplicar_shader_vidro(corpo_mat)
+        # Heurística legada: corpo sem Image Texture no Base Color.
+        corpo_obj, corpo_mat = identificar_corpo_vidro(meshes)
 
-    # Detecta tampa (best-effort)
-    tampa_obj = detectar_tampa(meshes, corpo_obj)
-    if tampa_obj is not None and tampa_obj.data.materials:
-        mat_tampa = tampa_obj.data.materials[0]
-        if mat_tampa and not material_tem_textura_image(mat_tampa):
-            log(f"Tampa identificada: '{tampa_obj.name}' (mat='{mat_tampa.name}')")
-            aplicar_shader_tampa(mat_tampa)
+        if corpo_obj is not None:
+            log(f"Corpo identificado: '{corpo_obj.name}' (mat='{corpo_mat.name}')")
+            aplicar_shader_vidro(corpo_mat)
+        elif args.body_mode == "glass":
+            # Saída texturizada do Hunyuan (caso normal com paint): aplica
+            # transmissão ao maior mesh preservando a textura como tinte.
+            corpo_obj, corpo_mat = identificar_corpo_texturizado(meshes)
+            if corpo_obj is None:
+                log("AVISO: nenhum mesh com material — exportando GLB inalterado")
+            else:
+                log(
+                    f"Corpo texturizado identificado: '{corpo_obj.name}' "
+                    f"(mat='{corpo_mat.name}')"
+                )
+                aplicar_vidro_preservando_textura(corpo_mat)
         else:
-            log(f"Tampa '{tampa_obj.name}' tem textura — preservando material")
-    else:
-        log("Tampa não identificada ou sem material próprio — ignorando")
+            log("AVISO: nenhum corpo de vidro identificado — exportando GLB inalterado")
+
+    # Detecta tampa (best-effort) — só nos modos que mexem no corpo.
+    if args.body_mode != "keep":
+        tampa_obj = detectar_tampa(meshes, corpo_obj)
+        if tampa_obj is not None and tampa_obj.data.materials:
+            mat_tampa = tampa_obj.data.materials[0]
+            if mat_tampa and not material_tem_textura_image(mat_tampa):
+                log(f"Tampa identificada: '{tampa_obj.name}' (mat='{mat_tampa.name}')")
+                aplicar_shader_tampa(mat_tampa)
+            else:
+                log(f"Tampa '{tampa_obj.name}' tem textura — preservando material")
+        else:
+            log("Tampa não identificada ou sem material próprio — ignorando")
 
     # Aplica cor no líquido se presente
     if args.liquid_color is not None:

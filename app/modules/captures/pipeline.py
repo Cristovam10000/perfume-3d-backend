@@ -8,7 +8,8 @@ Sequencia executada por process(input):
             MISS -> continua
     (4) Hunyuan3DProcessor  -> raw.glb
     (5) MeshCleaner         -> cleaned.glb (no-op default)
-    (6) MeshRefiner         -> refined.glb (shader de vidro PBR)
+    (5.5) TransparencyClassifier -> body_mode (glass | keep | auto)
+    (6) MeshRefiner         -> refined.glb (vidro PBR se transparente)
     (7) LabelExtractor + Upscaler + Projector
                             -> with_label.glb (degrade se nao achou label)
     (8) ModelCache.store    -> persiste em modelos_3d_universais + UPSERT
@@ -48,6 +49,10 @@ from .processor import (
     ProcessingInput,
     ProcessingResult,
 )
+from .transparency_classifier import (
+    DisabledTransparencyClassifier,
+    TransparencyClassifier,
+)
 from .view_router import PositionalViewRouter, ViewRouter
 
 _log = get_logger("captures.pipeline")
@@ -75,6 +80,7 @@ class IntegratedPipeline(Processor):
         storage: LocalStorage,
         *,
         view_router: ViewRouter | None = None,
+        transparency_classifier: TransparencyClassifier | None = None,
         fallback_processor: Processor | None = None,
         front_axis: str = "front_y_neg",
         min_island_ratio: float = 0.0,
@@ -93,6 +99,9 @@ class IntegratedPipeline(Processor):
         self.label_projector = label_projector
         self.storage = storage
         self.view_router = view_router or PositionalViewRouter()
+        self.transparency_classifier = (
+            transparency_classifier or DisabledTransparencyClassifier()
+        )
         self.fallback_processor = fallback_processor
         self.front_axis = front_axis
         self.min_island_ratio = min_island_ratio
@@ -140,8 +149,10 @@ class IntegratedPipeline(Processor):
 
         # (5) mesh cleaner
         cleaned = await self._safe_clean(raw_glb, workspace)
+        # (5.5) transparencia: decide o body_mode do refiner pelas fotos
+        body_mode = await self._safe_classify_transparency(preprocessed)
         # (6) mesh refiner
-        refined = await self._safe_refine(cleaned, input, workspace)
+        refined = await self._safe_refine(cleaned, input, workspace, body_mode)
         # (7) label extract + upscale + project
         final_glb = await self._safe_apply_label(
             refined,
@@ -306,8 +317,39 @@ class IntegratedPipeline(Processor):
             )
             return raw
 
+    async def _safe_classify_transparency(self, fotos: list[Path]) -> str:
+        """Traduz o veredito de transparencia para o body_mode do refiner.
+
+        True -> "glass" (aplica vidro), False -> "keep" (preserva textura),
+        None/falha -> "auto" (heuristica legada do script Blender).
+        """
+        try:
+            resultado = await self.transparency_classifier.classify(fotos)
+        except Exception as exc:
+            _log.warning(
+                "Classificador de transparencia falhou (%s); usando body_mode=auto",
+                exc,
+            )
+            return "auto"
+
+        if resultado.transparent is None:
+            return "auto"
+        body_mode = "glass" if resultado.transparent else "keep"
+        _log.info(
+            "Transparencia (%s): %s -> body_mode=%s (conf=%.3f)",
+            resultado.source,
+            "transparente" if resultado.transparent else "opaco",
+            body_mode,
+            resultado.confidence,
+        )
+        return body_mode
+
     async def _safe_refine(
-        self, cleaned: Path, input: ProcessingInput, workspace: Path
+        self,
+        cleaned: Path,
+        input: ProcessingInput,
+        workspace: Path,
+        body_mode: str = "auto",
     ) -> Path:
         refined = workspace / "refined.glb"
         try:
@@ -316,6 +358,7 @@ class IntegratedPipeline(Processor):
                     input_glb=cleaned,
                     output_glb=refined,
                     liquid_color=input.liquid_color,
+                    body_mode=body_mode,
                 )
             )
             return refined

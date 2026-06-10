@@ -66,6 +66,11 @@ from .modules.captures.processor import (
     TemplateProcessor,
 )
 from .modules.captures.queue import ProcessingQueue
+from .modules.captures.transparency_classifier import (
+    ClipTransparencyClassifier,
+    DisabledTransparencyClassifier,
+    TransparencyClassifier,
+)
 from .modules.captures.router import router as captures_router
 from .modules.captures.service import CaptureService
 from .modules.captures.view_router import (
@@ -105,6 +110,17 @@ def build_mesh_refiner(config: Settings = settings) -> MeshRefiner:
     if config.mesh_refiner_type == "disabled":
         return DisabledMeshRefiner()
     return BlenderMeshRefiner(blender_executable=config.blender_executable)
+
+
+def build_transparency_classifier(
+    config: Settings = settings,
+) -> TransparencyClassifier:
+    if config.transparency_classifier_type == "disabled":
+        return DisabledTransparencyClassifier()
+    return ClipTransparencyClassifier(
+        model_name=config.cache_embedding_model,
+        threshold=config.transparency_threshold,
+    )
 
 
 def build_label_extractor(config: Settings = settings) -> LabelExtractor:
@@ -220,6 +236,7 @@ def build_pipeline(
         label_projector=build_label_projector(config),
         storage=storage,
         view_router=build_view_router(config),
+        transparency_classifier=build_transparency_classifier(config),
         fallback_processor=fallback,
         front_axis=config.label_front_axis,
         min_island_ratio=config.mesh_min_island_ratio,

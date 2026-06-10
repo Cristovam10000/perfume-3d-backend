@@ -64,6 +64,8 @@ Se as fotos forem usadas como referência para extração de label (stage 7), o 
 
 Pós-processador entre `Hunyuan3DProcessor` e `BlenderMeshRefiner`. Remove artefatos típicos de saída de IA: ilhas soltas (a "bolinha" de canto), furos pequenos no topo da tampa, normais invertidas, polígonos com sombreamento flat.
 
+> **Primeira linha de defesa: o próprio servidor Hunyuan.** O `docker/hunyuan/server.py` aplica os pós-processadores nativos do hy3dgen (`FloaterRemover` + `DegenerateFaceRemover`) **entre a geração de forma e a texturização** (controlado por `HUNYUAN_SHAPE_POSTPROCESS`, default ligado). Limpar lá é melhor do que limpar aqui: os floaters somem antes de receber textura (não desperdiça paint) e a remoção usa a lógica do próprio Hunyuan. O `BlenderMeshCleaner` abaixo vira uma segunda camada opcional para o que escapar.
+
 ### Heurística de ilhas
 
 ```

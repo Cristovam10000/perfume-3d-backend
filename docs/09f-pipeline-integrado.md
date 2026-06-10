@@ -63,8 +63,16 @@ ProcessingInput (job_id, image_paths, output_path)
             │
             ▼
         ┌───────────────────────────────────────────────────────────┐
+        │ (5.5) TransparencyClassifier                               │
+        │     preprocessed_paths → body_mode (glass | keep | auto)   │
+        │     [CLIP zero-shot: frasco transparente ou opaco?]        │
+        └───────────────────────────────────────────────────────────┘
+            │
+            ▼
+        ┌───────────────────────────────────────────────────────────┐
         │ (6) MeshRefiner                                            │
-        │     cleaned.glb → refined.glb  (shader de vidro PBR)       │
+        │     cleaned.glb → refined.glb                              │
+        │     [vidro PBR se body_mode=glass; intacto se keep]        │
         └───────────────────────────────────────────────────────────┘
             │
             ▼
@@ -113,6 +121,7 @@ class IntegratedPipeline(Processor):
         storage: LocalStorage,
         *,
         view_router: ViewRouter | None = None,        # rotula vistas p/ o Hunyuan
+        transparency_classifier: TransparencyClassifier | None = None,  # vidro ou opaco
         fallback_processor: Processor | None = None,  # TemplateProcessor
         front_axis: str = "front_y_neg",
         min_island_ratio: float = 0.0,
@@ -138,6 +147,7 @@ Comportamento por stage quando algo falha. Em todos os casos o pipeline **loga**
 | (3) Cache lookup | Trata como miss. Loga warning. |
 | (4) Hunyuan | **Crítico.** Se `fallback_processor` configurado (`PIPELINE_FALLBACK_TO_TEMPLATE=true`), tenta o `TemplateProcessor`. Caso contrário, levanta `ProcessingError` e o service marca `error`. |
 | (5) Mesh cleaner | Cópia. Refiner recebe `raw.glb`. |
+| (5.5) Transparência | Trata como desconhecido — refiner roda em `body_mode=auto` (heurística legada). |
 | (6) Mesh refiner | Cópia. Label projector recebe `cleaned.glb` (ou `raw.glb`). |
 | (7) Label extract | Tenta fallback por recorte; senão, degrade total — devolve `refined.glb` direto, sem label. |
 | (8) Cache store | Loga warning mas **não** falha o job. O GLB já está disponível no `output_path`. |
@@ -174,6 +184,8 @@ IMAGE_PREPROCESSOR_TYPE=standard      # disabled | standard
 BACKGROUND_REMOVER_TYPE=rembg         # disabled | rembg
 MESH_CLEANER_TYPE=disabled            # disabled | blender (default disabled — bypass)
 MESH_REFINER_TYPE=blender             # disabled | blender
+TRANSPARENCY_CLASSIFIER_TYPE=clip     # disabled | clip (decide vidro vs opaco p/ o refiner)
+TRANSPARENCY_THRESHOLD=0.30           # prob. media minima p/ classificar transparente
 LABEL_EXTRACTOR_TYPE=homography       # disabled | homography
 LABEL_UPSCALER_TYPE=lanczos           # disabled | lanczos
 LABEL_PROJECTOR_TYPE=blender          # disabled | blender

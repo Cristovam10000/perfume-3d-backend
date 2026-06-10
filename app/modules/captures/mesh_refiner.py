@@ -22,11 +22,18 @@ _DEFAULT_BLENDER_EXECUTABLE = Path(
 )
 
 
+_VALID_BODY_MODES = ("auto", "glass", "keep")
+
+
 @dataclass(frozen=True)
 class RefinementInput:
     input_glb: Path
     output_glb: Path
     liquid_color: str | None = None
+    # auto  = vidro só em corpo sem textura (heurística legada)
+    # glass = força vidro, preservando textura se houver (frasco transparente)
+    # keep  = não toca nos materiais do corpo (frasco opaco)
+    body_mode: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -87,6 +94,12 @@ class BlenderMeshRefiner(MeshRefiner):
     async def refine(self, input: RefinementInput) -> RefinementResult:
         self._assert_runtime_assets(input)
 
+        if input.body_mode not in _VALID_BODY_MODES:
+            raise MeshRefinementError(
+                f"body_mode inválido: {input.body_mode!r} "
+                f"(esperado um de {_VALID_BODY_MODES})"
+            )
+
         args = [
             str(self.blender_executable),
             "--background",
@@ -94,6 +107,7 @@ class BlenderMeshRefiner(MeshRefiner):
             "--",
             "--input", str(input.input_glb),
             "--output", str(input.output_glb),
+            "--body-mode", input.body_mode,
         ]
         if input.liquid_color is not None:
             args.extend(["--liquid-color", input.liquid_color])
@@ -112,9 +126,14 @@ class BlenderMeshRefiner(MeshRefiner):
                 f"{input.output_glb}"
             )
 
+        mensagens = {
+            "auto": "Malha refinada com shader de vidro PBR (heurística auto)",
+            "glass": "Malha refinada com vidro PBR (textura preservada como tinte)",
+            "keep": "Malha refinada preservando materiais do corpo (frasco opaco)",
+        }
         return RefinementResult(
             output_glb=input.output_glb,
-            message="Malha refinada com shader de vidro PBR",
+            message=mensagens[input.body_mode],
         )
 
     def _assert_runtime_assets(self, input: RefinementInput) -> None:

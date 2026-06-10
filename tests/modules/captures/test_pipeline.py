@@ -53,6 +53,10 @@ from app.modules.captures.processor import (
     ProcessingInput,
     ProcessingResult,
 )
+from app.modules.captures.transparency_classifier import (
+    TransparencyClassifier,
+    TransparencyResult,
+)
 from app.storage.local_storage import LocalStorage
 
 
@@ -156,12 +160,35 @@ class CopyMeshCleaner(MeshCleaner):
 
 
 class CopyMeshRefiner(MeshRefiner):
+    def __init__(self):
+        self.inputs: list[RefinementInput] = []
+
     async def refine(self, input: RefinementInput) -> RefinementResult:
+        self.inputs.append(input)
         input.output_glb.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(input.input_glb, input.output_glb)
         return RefinementResult(
             output_glb=input.output_glb,
             message="stub refiner",
+        )
+
+
+class FakeTransparencyClassifier(TransparencyClassifier):
+    """Veredito fixo, configurável por teste."""
+
+    def __init__(self, transparent: bool | None, *, fail: bool = False):
+        self.transparent = transparent
+        self.fail = fail
+        self.called = 0
+
+    async def classify(self, image_paths) -> TransparencyResult:
+        self.called += 1
+        if self.fail:
+            raise RuntimeError("classificador quebrou (stub)")
+        return TransparencyResult(
+            transparent=self.transparent,
+            confidence=0.9 if self.transparent is not None else 0.0,
+            source="stub",
         )
 
 
@@ -248,6 +275,8 @@ def _make_pipeline(
     hunyuan: Hunyuan3DProcessor,
     fallback: Processor | None = None,
     label_extractor: LabelExtractor | None = None,
+    mesh_refiner: MeshRefiner | None = None,
+    transparency_classifier: TransparencyClassifier | None = None,
 ):
     return IntegratedPipeline(
         preprocessor=CopyPreprocessor(),
@@ -256,11 +285,12 @@ def _make_pipeline(
         cache=cache,
         hunyuan=hunyuan,
         mesh_cleaner=CopyMeshCleaner(),
-        mesh_refiner=CopyMeshRefiner(),
+        mesh_refiner=mesh_refiner or CopyMeshRefiner(),
         label_extractor=label_extractor or FakeLabelExtractor(),
         label_upscaler=CopyLabelUpscaler(),
         label_projector=CopyLabelProjector(),
         storage=storage,
+        transparency_classifier=transparency_classifier,
         fallback_processor=fallback,
     )
 
@@ -385,6 +415,96 @@ async def test_no_label_degrades_gracefully(
     # Sem label, o GLB final ainda existe (e o refined.glb).
     assert output.exists()
     assert result.origem == "generated"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transparent", "body_mode_esperado"),
+    [
+        (True, "glass"),
+        (False, "keep"),
+        (None, "auto"),
+    ],
+)
+async def test_transparency_verdict_sets_refiner_body_mode(
+    storage: LocalStorage,
+    fotos: list[Path],
+    tmp_path: Path,
+    transparent: bool | None,
+    body_mode_esperado: str,
+):
+    refiner = CopyMeshRefiner()
+    classifier = FakeTransparencyClassifier(transparent)
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        mesh_refiner=refiner,
+        transparency_classifier=classifier,
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="job-transp",
+            image_paths=fotos,
+            output_path=tmp_path / "out.glb",
+        )
+    )
+
+    assert classifier.called == 1
+    assert len(refiner.inputs) == 1
+    assert refiner.inputs[0].body_mode == body_mode_esperado
+
+
+@pytest.mark.asyncio
+async def test_transparency_failure_degrades_to_auto(
+    storage: LocalStorage, fotos: list[Path], tmp_path: Path
+):
+    refiner = CopyMeshRefiner()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        mesh_refiner=refiner,
+        transparency_classifier=FakeTransparencyClassifier(True, fail=True),
+    )
+
+    output = tmp_path / "out.glb"
+    result = await pipe.process(
+        ProcessingInput(
+            job_id="job-transp-fail",
+            image_paths=fotos,
+            output_path=output,
+        )
+    )
+
+    assert result.origem == "generated"
+    assert output.exists()
+    assert refiner.inputs[0].body_mode == "auto"
+
+
+@pytest.mark.asyncio
+async def test_default_classifier_is_disabled_and_uses_auto(
+    storage: LocalStorage, fotos: list[Path], tmp_path: Path
+):
+    """Sem classificador injetado, o pipeline usa Disabled -> body_mode=auto."""
+    refiner = CopyMeshRefiner()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        mesh_refiner=refiner,
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="job-default",
+            image_paths=fotos,
+            output_path=tmp_path / "out.glb",
+        )
+    )
+
+    assert refiner.inputs[0].body_mode == "auto"
 
 
 @pytest.mark.asyncio

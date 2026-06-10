@@ -151,6 +151,53 @@ class TestBlenderMeshRefinerMocked:
         assert args[args.index("--liquid-color") + 1] == "#FFAA00"
 
     @pytest.mark.asyncio
+    async def test_body_mode_defaults_to_auto(self, tmp_path: Path):
+        refiner = _make_refiner(tmp_path)
+        run, captured = _make_fake_runner()
+        inp = _make_input(tmp_path)
+
+        with patch.object(refiner, "_run_blender", side_effect=run):
+            await refiner.refine(inp)
+
+        args = captured["calls"][0]
+        assert "--body-mode" in args
+        assert args[args.index("--body-mode") + 1] == "auto"
+
+    @pytest.mark.asyncio
+    async def test_body_mode_glass_is_passed(self, tmp_path: Path):
+        refiner = _make_refiner(tmp_path)
+        run, captured = _make_fake_runner()
+        inp = _make_input(tmp_path, body_mode="glass")
+
+        with patch.object(refiner, "_run_blender", side_effect=run):
+            resultado = await refiner.refine(inp)
+
+        args = captured["calls"][0]
+        assert args[args.index("--body-mode") + 1] == "glass"
+        assert "textura preservada" in resultado.message
+
+    @pytest.mark.asyncio
+    async def test_body_mode_keep_is_passed(self, tmp_path: Path):
+        refiner = _make_refiner(tmp_path)
+        run, captured = _make_fake_runner()
+        inp = _make_input(tmp_path, body_mode="keep")
+
+        with patch.object(refiner, "_run_blender", side_effect=run):
+            resultado = await refiner.refine(inp)
+
+        args = captured["calls"][0]
+        assert args[args.index("--body-mode") + 1] == "keep"
+        assert "opaco" in resultado.message
+
+    @pytest.mark.asyncio
+    async def test_invalid_body_mode_raises(self, tmp_path: Path):
+        refiner = _make_refiner(tmp_path)
+        inp = _make_input(tmp_path, body_mode="vidro")
+
+        with pytest.raises(MeshRefinementError, match="body_mode inválido"):
+            await refiner.refine(inp)
+
+    @pytest.mark.asyncio
     async def test_nonzero_returncode_raises(self, tmp_path: Path):
         refiner = _make_refiner(tmp_path)
         run, _ = _make_fake_runner(returncode=1, stderr=b"erro fatal", create_output=False)
