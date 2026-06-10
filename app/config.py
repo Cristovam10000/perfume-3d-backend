@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     mesh_cleaner_type: Literal["disabled", "blender"] = "disabled"
     mesh_min_island_ratio: float = 0.0
     mesh_refiner_type: Literal["disabled", "blender"] = "blender"
+    # Classifica o frasco como transparente/opaco (CLIP zero-shot) para o
+    # refiner decidir entre shader de vidro e preservar a textura do corpo.
+    # disabled = refiner usa heuristica legada (`auto`).
+    transparency_classifier_type: Literal["disabled", "clip"] = "clip"
+    # Probabilidade media minima do ensemble "transparente" para aplicar
+    # vidro. Calibrado em fotos reais: vidro translucido escuro ~0.41-0.49,
+    # frascos opacos <=0.10 — 0.30 separa com margem dos dois lados.
+    transparency_threshold: float = 0.30
     label_extractor_type: Literal["disabled", "homography"] = "homography"
     label_upscaler_type: Literal["disabled", "lanczos"] = "lanczos"
     label_projector_type: Literal["disabled", "blender"] = "blender"
