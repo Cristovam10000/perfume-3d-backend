@@ -179,7 +179,7 @@ curl -o cubo.glb http://localhost:8000/files/models/<uuid>.glb
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-A suíte completa tem **319 testes em 29 arquivos** (`pytest`, 2026-07-23). Os testes **não precisam** de Postgres rodando — usam SQLite ou sessões falsas isoladas. Componentes que dependem de Blender/rembg/CLIP/Hunyuan são pulados quando essas dependências faltam. Na execução local de referência, 318 testes passaram e apenas a integração real com o Hunyuan foi pulada porque exige o contêiner ativo.
+A suíte completa tem **320 testes em 29 arquivos** (`pytest`, 2026-07-23). Os testes **não precisam** de Postgres rodando — usam SQLite ou sessões falsas isoladas. Componentes que dependem de Blender/rembg/CLIP/Hunyuan são pulados quando essas dependências faltam. Na execução local de referência, 319 testes passaram e apenas a integração real com o Hunyuan foi pulada porque exige o contêiner ativo.
 
 Detalhes em [14 - Testes](14-testes.md).
 

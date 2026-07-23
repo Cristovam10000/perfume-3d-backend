@@ -191,9 +191,11 @@ Marca ou desmarca a notificação e devolve o objeto atualizado.
 - A criação da venda também gera as parcelas automaticamente (regra de negócio do `SalesRepository.create_sale`); são lidas via `/sales/snapshot` no próximo refresh.
 - Erros de validação de regra de negócio retornam **422** com mensagem do `ValidationError`. Casos cobertos por `SalesRepository.create_sale`: venda sem itens, `clienteId` inexistente, `produtoId` inexistente, **estoque insuficiente** (`estoque < quantidade solicitada`) e preço unitário negativo.
 
-> **Idempotência:** recebimentos usam `requestId` no corpo. As demais telas
-> bloqueiam toque duplo e só apresentam a alteração depois de uma resposta de
-> sucesso do backend.
+> **Idempotência e fila offline:** criação de cliente, produto e venda,
+> renegociação e recebimento aceitam `requestId`. Clientes, produtos e vendas
+> armazenam uma chave única; pagamentos usam `pagamentos.request_id`, e
+> renegociações usam `eventos_parcela.request_id`. Repetir a mesma operação
+> depois de uma falha de rede não duplica registros.
 
 ## OpenAPI
 

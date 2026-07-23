@@ -13,7 +13,7 @@ Estratégia: testes de unidade e integração com **mocks** onde custo é alto (
 
 ## Contagem atual
 
-A suíte tem **319 testes coletados em 29 arquivos** (`pytest`, 2026-07-23). Na execução local de referência, **318 passaram e 1 foi pulado**: `tests/integration/test_hunyuan_real.py`, que exige o contêiner Hunyuan ativo. Outros testes também usam skips condicionais (em vez de falhar) quando dependências externas faltam — Blender, `rembg`, CLIP (`torch`/`transformers`) ou o contêiner Hunyuan. Nenhum teste exige Postgres. Os cinco testes em `tests/test_hunyuan_server.py` protegem a separação entre checkpoint multi-view, textura e fallback, o download restrito ao `safetensors` e os metadados de `/health`.
+A suíte tem **320 testes coletados em 29 arquivos** (`pytest`, 2026-07-23). Na execução local de referência, **319 passaram e 1 foi pulado**: `tests/integration/test_hunyuan_real.py`, que exige o contêiner Hunyuan ativo. Outros testes também usam skips condicionais (em vez de falhar) quando dependências externas faltam — Blender, `rembg`, CLIP (`torch`/`transformers`) ou o contêiner Hunyuan. Nenhum teste exige Postgres. Os cinco testes em `tests/test_hunyuan_server.py` protegem a separação entre checkpoint multi-view, textura e fallback, o download restrito ao `safetensors` e os metadados de `/health`.
 
 ### Núcleo (Fase 2 — templates + CLIP + cor)
 

@@ -57,7 +57,7 @@ Para o pipeline integrado, suba tambem `docker compose up -d hunyuan` e configur
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Estado verificado em 2026-07-23: 319 testes coletados, 318 aprovados e 1 integração real com Hunyuan pulada por exigir o contêiner ativo.
+Estado verificado em 2026-07-23: 320 testes coletados, 319 aprovados e 1 integração real com Hunyuan pulada por exigir o contêiner ativo.
 
 ## Pontos de atencao
 

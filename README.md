@@ -59,8 +59,8 @@ Strategy ligada/desligada pelo `.env`. Documentação detalhada e didática em [
 
 ### Testes automatizados
 
-Na execução de referência de 2026-07-23, o backend coletou **319 testes em 29
-arquivos**: **318 passaram** e **1 foi pulado**. O único skip é a integração real
+Na execução de referência de 2026-07-23, o backend coletou **320 testes em 29
+arquivos**: **319 passaram** e **1 foi pulado**. O único skip é a integração real
 com o Hunyuan, desabilitada por padrão porque exige o container de IA ativo.
 
 ### Benchmark dos pipelines 3D
@@ -225,7 +225,7 @@ o `.glb` via este path. Não precisa ser chamado diretamente pelo app.
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Suíte atual: **319 testes em 29 arquivos** (`pytest`, 2026-07-23),
+Suíte atual: **320 testes em 29 arquivos** (`pytest`, 2026-07-23),
 distribuídos entre o módulo `captures` (pipeline, cache, stages, router, service e fila —
 215), a suíte de avaliação `tests/eval/` (métricas geométricas — 52), os templates
 normalizados (25), a configuração do servidor Hunyuan em Docker (5), a integração

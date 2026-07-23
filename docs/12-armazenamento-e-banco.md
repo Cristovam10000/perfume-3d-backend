@@ -43,13 +43,13 @@ Tabelas referenciadas pelo `SalesRepository` (todas em snake_case e em portuguê
 
 | Tabela | Conteúdo |
 |---|---|
-| `clientes` | Clientes ativos do app comercial. |
-| `produtos` | Catálogo de perfumes por tenant. Colunas garantidas pelo `ensure_sales_schema`: `custo numeric(10,2)`, `estoque_minimo integer`, `volume_ml integer`, `frasco_color_value bigint`. Possui flag `possui_modelo_3d boolean` para integração com captures. |
+| `clientes` | Clientes ativos do app comercial; `sync_request_id` único protege criação offline idempotente. |
+| `produtos` | Catálogo de perfumes por tenant. Colunas garantidas pelo `ensure_sales_schema`: `custo numeric(10,2)`, `estoque_minimo integer`, `volume_ml integer`, `frasco_color_value bigint` e `sync_request_id` único. Possui flag `possui_modelo_3d boolean` para integração com captures. |
 | `modelos_3d_produto` | **Tabela existente** que amarra produto comercial → GLB. `produto_id bigint UNIQUE NOT NULL` (FK para `produtos` ON DELETE CASCADE), `caminho_arquivo_modelo text`, `caminho_imagem_preview text`, `status varchar(50)`, `capture_job_id varchar(36)` (FK para `capture_jobs` ON DELETE SET NULL), `criado_em`, `atualizado_em`. Ganha a coluna **`modelo_universal_id varchar(36)` (FK para `modelos_3d_universais` ON DELETE SET NULL)**, adicionada no startup por `ensure_captures_schema` (idempotente). UNIQUE em `produto_id` preservada (1 modelo por produto do tenant). Ver [09g](09g-cache-similaridade-clip.md). |
-| `vendas` | Cabeçalho da venda (cliente, data, total, parcelado). |
+| `vendas` | Cabeçalho da venda (cliente, data, total, parcelado); `sync_request_id` único evita duplicação no retry. |
 | `itens_venda` | Linhas de cada venda (produto, quantidade, preço unitário). |
 | `parcelas` | Parcelas geradas para vendas a prazo. |
-| `eventos_parcela` | Histórico de eventos por parcela (vencida, paga, renegociada). |
+| `eventos_parcela` | Histórico de eventos por parcela (vencida, paga, renegociada); renegociações podem usar `request_id` único. |
 | `pagamentos` | Pagamentos recebidos; `request_id` único torna a repetição segura após falha de rede. |
 | `notificacoes` | Avisos de amanhã, hoje, atraso e pagamento. Cobranças têm unicidade por parcela/tipo. |
 | `resumo_financeiro_cliente` | Tabela de resumo materializada por cliente. |

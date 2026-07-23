@@ -159,7 +159,7 @@ tests/
         └── test_view_router.py        # 21 — Labeled/CLIP/PositionalViewRouter
 ```
 
-**Total atual: 319 testes em 29 arquivos** (`pytest`, 2026-07-23). Nenhum teste exige Postgres rodando. Vários componentes do pipeline IA pulam quando dependências (`rembg`, `cv2`, `torch`/`transformers`, Blender 5.1+, contêiner Hunyuan) estão ausentes — convenção `pytest.importorskip` ou guard `if not blender.exists(): pytest.skip(...)`. Na execução local de referência, 318 testes passaram e somente a integração real com o Hunyuan foi pulada. Detalhes em [14 - Testes](14-testes.md).
+**Total atual: 320 testes em 29 arquivos** (`pytest`, 2026-07-23). Nenhum teste exige Postgres rodando. Vários componentes do pipeline IA pulam quando dependências (`rembg`, `cv2`, `torch`/`transformers`, Blender 5.1+, contêiner Hunyuan) estão ausentes — convenção `pytest.importorskip` ou guard `if not blender.exists(): pytest.skip(...)`. Na execução local de referência, 319 testes passaram e somente a integração real com o Hunyuan foi pulada. Detalhes em [14 - Testes](14-testes.md).
 
 ## `scripts/` — utilitários offline
 
