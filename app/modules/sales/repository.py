@@ -212,6 +212,7 @@ class SalesRepository:
                 "estoque_minimo": max(payload.estoque_minimo, 1),
                 "volume_ml": max(payload.volume_ml, 1),
                 "frasco_color_value": payload.frasco_color_value,
+                "request_id": payload.request_id,
             },
         )
         product_id = result.scalar_one()
@@ -251,7 +252,6 @@ class SalesRepository:
                 "estoque_minimo": payload.estoque_minimo,
                 "volume_ml": payload.volume_ml,
                 "frasco_color_value": payload.frasco_color_value,
-                "request_id": payload.request_id,
             },
         )
         if result.scalar_one_or_none() is None:
@@ -1087,7 +1087,10 @@ class SalesRepository:
                         )
                 ) as schedule(tipo, agendada_para, mensagem)
                 where p.valor_restante > 0
-                  and (:installment_id is null or p.id = :installment_id)
+                  and (
+                    cast(:installment_id as bigint) is null
+                    or p.id = cast(:installment_id as bigint)
+                  )
                 on conflict (parcela_id, tipo_notificacao)
                     where tipo_notificacao in (
                         'vence_amanha', 'vence_hoje', 'atraso'
