@@ -12,6 +12,7 @@ from app.modules.sales.schemas import (
     PaymentCreateIn,
     ProductCreateIn,
     ProductUpdateIn,
+    SaleCreateIn,
 )
 
 
@@ -83,6 +84,50 @@ def test_payment_accepts_supported_method_and_rejects_zero():
 
 
 def test_due_date_and_notification_read_alias_contract():
-    change = DueDateUpdateIn.model_validate({"dueDate": "2026-08-15"})
+    change = DueDateUpdateIn.model_validate(
+        {
+            "requestId": "due-date-123456",
+            "dueDate": "2026-08-15",
+        }
+    )
     assert change.due_date == date(2026, 8, 15)
+    assert change.request_id == "due-date-123456"
     assert NotificationReadIn().lida is True
+
+
+def test_offline_create_contract_accepts_idempotency_key():
+    client = ClientWriteIn.model_validate(
+        {
+            "requestId": "client-12345678",
+            "nome": "Maria Silva",
+            "telefone": "85999998888",
+            "bairro": "Centro",
+        }
+    )
+    product = ProductCreateIn.model_validate(
+        {
+            "requestId": "product-1234567",
+            "nome": "Perfume teste",
+            "categoria": "Unissex",
+            "precoBase": 200,
+            "custo": 100,
+        }
+    )
+    sale = SaleCreateIn.model_validate(
+        {
+            "requestId": "sale-123456789",
+            "clienteId": "1",
+            "data": "2026-07-23T12:00:00",
+            "itens": [
+                {
+                    "produtoId": "1",
+                    "quantidade": 1,
+                    "precoUnitario": 200,
+                }
+            ],
+            "total": 200,
+        }
+    )
+    assert client.request_id == "client-12345678"
+    assert product.request_id == "product-1234567"
+    assert sale.request_id == "sale-123456789"

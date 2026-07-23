@@ -120,6 +120,12 @@ class SalesSnapshotOut(BaseModel):
 
 
 class ProductCreateIn(BaseModel):
+    request_id: str | None = Field(
+        default=None,
+        alias="requestId",
+        min_length=8,
+        max_length=80,
+    )
     nome: str = Field(min_length=2, max_length=255)
     categoria: str = Field(default="Perfume", min_length=2, max_length=120)
     preco_base: float = Field(alias="precoBase", gt=0)
@@ -145,11 +151,17 @@ class ProductUpdateIn(BaseModel):
 
 
 class ClientWriteIn(BaseModel):
+    request_id: str | None = Field(
+        default=None,
+        alias="requestId",
+        min_length=8,
+        max_length=80,
+    )
     nome: str = Field(min_length=2, max_length=255)
     telefone: str = Field(min_length=8, max_length=20)
     bairro: str = Field(min_length=2, max_length=120)
 
-    model_config = {"str_strip_whitespace": True}
+    model_config = {"populate_by_name": True, "str_strip_whitespace": True}
 
 
 class ProductStockUpdateIn(BaseModel):
@@ -173,6 +185,12 @@ class PaymentReceiptOut(BaseModel):
 
 
 class DueDateUpdateIn(BaseModel):
+    request_id: str | None = Field(
+        default=None,
+        alias="requestId",
+        min_length=8,
+        max_length=80,
+    )
     due_date: date = Field(alias="dueDate")
     observacoes: str | None = Field(default=None, max_length=1000)
 
@@ -192,6 +210,12 @@ class SaleItemIn(BaseModel):
 
 
 class SaleCreateIn(BaseModel):
+    request_id: str | None = Field(
+        default=None,
+        alias="requestId",
+        min_length=8,
+        max_length=80,
+    )
     cliente_id: str = Field(alias="clienteId")
     data: datetime
     itens: list[SaleItemIn]

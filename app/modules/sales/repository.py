@@ -42,8 +42,16 @@ async def ensure_sales_schema(engine: AsyncEngine) -> None:
         "ALTER TABLE IF EXISTS produtos ADD COLUMN IF NOT EXISTS volume_ml integer DEFAULT 100 NOT NULL",
         "ALTER TABLE IF EXISTS produtos ADD COLUMN IF NOT EXISTS frasco_color_value bigint DEFAULT 4285558395 NOT NULL",
         "ALTER TABLE IF EXISTS pagamentos ADD COLUMN IF NOT EXISTS request_id varchar(80)",
+        "ALTER TABLE IF EXISTS clientes ADD COLUMN IF NOT EXISTS sync_request_id varchar(80)",
+        "ALTER TABLE IF EXISTS produtos ADD COLUMN IF NOT EXISTS sync_request_id varchar(80)",
+        "ALTER TABLE IF EXISTS vendas ADD COLUMN IF NOT EXISTS sync_request_id varchar(80)",
+        "ALTER TABLE IF EXISTS eventos_parcela ADD COLUMN IF NOT EXISTS request_id varchar(80)",
         "UPDATE produtos SET estoque_minimo = 1 WHERE estoque_minimo IS NULL OR estoque_minimo < 1",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_pagamentos_request_id ON pagamentos(request_id) WHERE request_id IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_clientes_sync_request_id ON clientes(sync_request_id) WHERE sync_request_id IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_produtos_sync_request_id ON produtos(sync_request_id) WHERE sync_request_id IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_vendas_sync_request_id ON vendas(sync_request_id) WHERE sync_request_id IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_eventos_parcela_request_id ON eventos_parcela(request_id) WHERE request_id IS NOT NULL",
         """
         DELETE FROM notificacoes older
         USING notificacoes newer
@@ -89,11 +97,30 @@ class SalesRepository:
         )
 
     async def create_client(self, payload: ClientWriteIn) -> ClienteOut:
+        if payload.request_id:
+            existing_id = (
+                await self.session.execute(
+                    text(
+                        """
+                        select id from clientes
+                        where sync_request_id = :request_id and ativo = true
+                        """
+                    ),
+                    {"request_id": payload.request_id},
+                )
+            ).scalar_one_or_none()
+            if existing_id is not None:
+                existing = await self._client_by_id(int(existing_id))
+                if existing is not None:
+                    return existing
+
         result = await self.session.execute(
             text(
                 """
-                insert into clientes (nome_completo, telefone, bairro, ativo)
-                values (:nome, :telefone, :bairro, true)
+                insert into clientes (
+                    nome_completo, telefone, bairro, ativo, sync_request_id
+                )
+                values (:nome, :telefone, :bairro, true, :request_id)
                 returning id
                 """
             ),
@@ -101,6 +128,7 @@ class SalesRepository:
                 "nome": payload.nome,
                 "telefone": payload.telefone,
                 "bairro": payload.bairro,
+                "request_id": payload.request_id,
             },
         )
         client_id = int(result.scalar_one())
@@ -142,18 +170,35 @@ class SalesRepository:
         return await self._client_by_id(client_id)
 
     async def create_product(self, payload: ProductCreateIn) -> ProdutoOut:
+        if payload.request_id:
+            existing_id = (
+                await self.session.execute(
+                    text(
+                        """
+                        select id from produtos
+                        where sync_request_id = :request_id and ativo = true
+                        """
+                    ),
+                    {"request_id": payload.request_id},
+                )
+            ).scalar_one_or_none()
+            if existing_id is not None:
+                existing = await self._product_by_id(int(existing_id))
+                if existing is not None:
+                    return existing
+
         result = await self.session.execute(
             text(
                 """
                 insert into produtos (
                     nome, categoria, preco_base, custo, estoque,
                     estoque_minimo, volume_ml, frasco_color_value,
-                    possui_modelo_3d, ativo
+                    possui_modelo_3d, ativo, sync_request_id
                 )
                 values (
                     :nome, :categoria, :preco_base, :custo, :estoque,
                     :estoque_minimo, :volume_ml, :frasco_color_value,
-                    false, true
+                    false, true, :request_id
                 )
                 returning id
                 """
@@ -206,6 +251,7 @@ class SalesRepository:
                 "estoque_minimo": payload.estoque_minimo,
                 "volume_ml": payload.volume_ml,
                 "frasco_color_value": payload.frasco_color_value,
+                "request_id": payload.request_id,
             },
         )
         if result.scalar_one_or_none() is None:
@@ -429,12 +475,13 @@ class SalesRepository:
                 """
                 insert into eventos_parcela (
                     parcela_id, tipo_evento, data_evento,
-                    valor_afetado, observacoes
+                    valor_afetado, observacoes, request_id
                 )
                 values (
                     :parcela_id, 'remarca', current_timestamp,
-                    null, :observacoes
+                    null, :observacoes, :request_id
                 )
+                on conflict (request_id) where request_id is not null do nothing
                 """
             ),
             {
@@ -444,6 +491,7 @@ class SalesRepository:
                     f"Vencimento alterado de {row['data_vencimento']} "
                     f"para {payload.due_date}"
                 ),
+                "request_id": payload.request_id,
             },
         )
         await self._ensure_billing_notifications(installment_id=installment_id)
@@ -480,6 +528,21 @@ class SalesRepository:
         return _notification_from_row(row)
 
     async def create_sale(self, payload: SaleCreateIn) -> CreateSaleOut:
+        if payload.request_id:
+            existing_id = (
+                await self.session.execute(
+                    text(
+                        """
+                        select id from vendas
+                        where sync_request_id = :request_id
+                        """
+                    ),
+                    {"request_id": payload.request_id},
+                )
+            ).scalar_one_or_none()
+            if existing_id is not None:
+                return CreateSaleOut(id=str(existing_id))
+
         if not payload.itens:
             raise ValidationError("A venda precisa ter pelo menos um produto")
 
@@ -496,11 +559,13 @@ class SalesRepository:
                 """
                 insert into vendas (
                     cliente_id, data_venda, valor_total, valor_entrada,
-                    valor_restante, numero_parcelas, observacoes
+                    valor_restante, numero_parcelas, observacoes,
+                    sync_request_id
                 )
                 values (
                     :cliente_id, :data_venda, :valor_total, :valor_entrada,
-                    :valor_restante, :numero_parcelas, :observacoes
+                    :valor_restante, :numero_parcelas, :observacoes,
+                    :request_id
                 )
                 returning id
                 """
@@ -513,6 +578,7 @@ class SalesRepository:
                 "valor_restante": remaining,
                 "numero_parcelas": installments_count,
                 "observacoes": payload.observacoes,
+                "request_id": payload.request_id,
             },
         )
         sale_id = int(result.scalar_one())
