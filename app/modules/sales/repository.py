@@ -45,6 +45,16 @@ async def ensure_sales_schema(engine: AsyncEngine) -> None:
         "UPDATE produtos SET estoque_minimo = 1 WHERE estoque_minimo IS NULL OR estoque_minimo < 1",
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_pagamentos_request_id ON pagamentos(request_id) WHERE request_id IS NOT NULL",
         """
+        DELETE FROM notificacoes older
+        USING notificacoes newer
+        WHERE older.id < newer.id
+          AND older.parcela_id = newer.parcela_id
+          AND older.tipo_notificacao = newer.tipo_notificacao
+          AND older.tipo_notificacao IN (
+              'vence_amanha', 'vence_hoje', 'atraso'
+          )
+        """,
+        """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_notificacoes_cobranca_parcela_tipo
         ON notificacoes(parcela_id, tipo_notificacao)
         WHERE tipo_notificacao IN ('vence_amanha', 'vence_hoje', 'atraso')
@@ -61,6 +71,7 @@ class SalesRepository:
 
     async def snapshot(self) -> SalesSnapshotOut:
         await self._ensure_billing_notifications()
+        await self.session.commit()
         clientes = await self._clientes()
         produtos = await self._produtos()
         vendas = await self._vendas()

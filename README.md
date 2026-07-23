@@ -59,8 +59,8 @@ Strategy ligada/desligada pelo `.env`. Documentação detalhada e didática em [
 
 ### Testes automatizados
 
-Na execução de referência de 2026-07-22, o backend coletou **309 testes em 27
-arquivos**: **308 passaram** e **1 foi pulado**. O único skip é a integração real
+Na execução de referência de 2026-07-23, o backend coletou **319 testes em 29
+arquivos**: **318 passaram** e **1 foi pulado**. O único skip é a integração real
 com o Hunyuan, desabilitada por padrão porque exige o container de IA ativo.
 
 ### Benchmark dos pipelines 3D
@@ -199,6 +199,7 @@ Consulta o estado atual do processamento.
     "status": "waiting|processing|completed|error",
     "message": "Reconstruindo modelo 3D",
     "modelUrl": "http://host:8000/files/models/<jobId>.glb",
+    "productId": 42,
     "error": null
   }
   ```
@@ -224,12 +225,13 @@ o `.glb` via este path. Não precisa ser chamado diretamente pelo app.
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Suíte atual: **309 testes em 27 arquivos** (`pytest`, 2026-07-22),
+Suíte atual: **319 testes em 29 arquivos** (`pytest`, 2026-07-23),
 distribuídos entre o módulo `captures` (pipeline, cache, stages, router, service e fila —
 215), a suíte de avaliação `tests/eval/` (métricas geométricas — 52), os templates
 normalizados (25), a configuração do servidor Hunyuan em Docker (5), a integração
 real opt-in com o Hunyuan (1) e os testes end-to-end
-(`test_main.py` — 11).
+(`test_main.py` — 11), além de **9 testes comerciais** para contratos,
+pagamentos parciais/totais, excesso e idempotência.
 
 Os testes usam SQLite (`aiosqlite`) em arquivo temporário, sem exigir Postgres rodando;
 componentes que dependem de Blender/rembg/CLIP/Hunyuan são **pulados** quando essas

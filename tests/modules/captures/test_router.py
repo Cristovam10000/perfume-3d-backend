@@ -172,6 +172,24 @@ class TestCreateCaptureEndpoint:
         job = await harness.service.get_job(job_id)
         assert job.images[0].view == "front"
 
+    @pytest.mark.asyncio
+    async def test_persists_optional_product_id(self, harness: _Harness):
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        response = await harness.client.post(
+            "/captures",
+            files=files,
+            data={"productId": "42"},
+        )
+        assert response.status_code == 201
+        job_id = response.json()["jobId"]
+        job = await harness.service.get_job(job_id)
+        assert job is not None
+        assert job.product_id == 42
+
+        status = await harness.client.get(f"/captures/{job_id}/status")
+        assert status.status_code == 200
+        assert status.json()["productId"] == 42
+
 
 class TestStatusEndpoint:
     @pytest.mark.asyncio
@@ -192,6 +210,7 @@ class TestStatusEndpoint:
         body = response.json()
         assert body["status"] == CaptureStatus.WAITING.value
         assert body["modelUrl"] is None
+        assert body["productId"] is None
         assert body["error"] is None
         assert isinstance(body["message"], str)
 
