@@ -29,7 +29,9 @@ A URL e definida em runtime:
 --dart-define=BACKEND_BASE_URL=http://localhost:8000
 ```
 
-Captura/processamento usa `/captures/*`. O `SalesController` usa `/sales/*`, mas continua com snapshot local/mockado se o backend estiver indisponivel. No Web, o snapshot e persistido em `localStorage`; nas outras plataformas, o fallback atual fica em memoria durante o processo.
+Captura/processamento usa `/captures/*`. O `SalesController` usa `/sales/*`; o
+mock/cache serve como fallback de leitura, mas novas escritas comerciais so entram
+no estado depois de confirmadas pelo backend.
 
 ## Executar e testar
 
@@ -43,7 +45,7 @@ flutter test
 
 Em aparelho fisico, use o IP do computador. No Android Emulator, normalmente use `http://10.0.2.2:8000`.
 
-Estado verificado em 2026-07-22: analise estatica sem problemas e 3 testes aprovados.
+Estado verificado em 2026-07-23: analise estatica sem problemas e 21 testes aprovados.
 
 ## Limitacoes atuais
 

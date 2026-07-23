@@ -41,6 +41,7 @@ Base URL: `http://<host>:<porta>/` (ex.: `http://127.0.0.1:8000` ou `http://10.0
 | `status` | string | `waiting` \| `processing` \| `completed` \| `error` |
 | `message` | string ou null | mensagem informativa (ex.: "Reconstruindo modelo 3D", "Modelo entregue pelo cache (similaridade=0.95)") |
 | `modelUrl` | string ou null | URL **absoluta** do GLB, só quando concluído; montada com `request.base_url` + `model_path` do job |
+| `productId` | integer ou null | produto vinculado ao job; permite recuperar o destino ao retomar o polling |
 | `error` | string ou null | detalhe se `status=error` |
 
 - **404** se o `job_id` não existir: `{"error": "Job <id> não encontrado"}`.
@@ -64,7 +65,9 @@ API CRUD do módulo `sales/`. Todos retornam JSON com aliases camelCase (Pydanti
 
 ### `GET /sales/snapshot`
 
-- **200** — devolve o estado completo da operação comercial num único payload, otimizado para *first paint* do dashboard:
+- **200** — devolve o estado completo da operação comercial num único payload.
+  Antes da leitura, o backend cria/reagenda os avisos de cobrança sem duplicá-los
+  e retorna somente notificações cuja data programada já chegou:
 
 ```json
 {
@@ -77,6 +80,20 @@ API CRUD do módulo `sales/`. Todos retornam JSON com aliases camelCase (Pydanti
   "notificacoes": [...]
 }
 ```
+
+### `POST /sales/clients` e `PATCH /sales/clients/{client_id}`
+
+```json
+{
+  "nome": "Maria Silva",
+  "telefone": "85999998888",
+  "bairro": "Centro"
+}
+```
+
+- `POST` responde **201**; `PATCH`, **200**.
+- Nome, telefone e bairro são obrigatórios. O `PATCH` responde **404** quando o
+  cliente ativo não existe.
 
 ### `POST /sales/products`
 
@@ -96,7 +113,13 @@ API CRUD do módulo `sales/`. Todos retornam JSON com aliases camelCase (Pydanti
 }
 ```
 
+- Preço e custo precisam ser maiores que zero.
 - **201 Created** com corpo `ProdutoOut` (mesmo schema da listagem em `snapshot.produtos`).
+
+### `PATCH /sales/products/{product_id}`
+
+Edita nome, categoria, preço, custo, estoque mínimo, volume e cor. Estoque não
+faz parte deste payload e continua no endpoint específico abaixo.
 
 ### `PATCH /sales/products/{product_id}/stock`
 
@@ -109,6 +132,42 @@ API CRUD do módulo `sales/`. Todos retornam JSON com aliases camelCase (Pydanti
 - `mode = "add"` soma à quantidade atual; `mode = "set"` substitui.
 - **200** com corpo atualizado `ProdutoOut`.
 - **404** se o produto não existir.
+
+### `POST /sales/installments/{installment_id}/payments`
+
+```json
+{
+  "requestId": "payment-18-1784788800000000",
+  "valor": 50.0,
+  "data": "2026-07-23",
+  "forma": "Pix",
+  "observacoes": "Pagamento parcial"
+}
+```
+
+- `forma`: `Pix`, `Dinheiro`, `Cartão` ou `Transferência`.
+- Aceita total ou parcial; rejeita zero, excesso e parcela já paga.
+- `requestId` é único. Repetir a mesma requisição devolve o mesmo recebimento,
+  sem duplicar o pagamento.
+- Pagamento, saldo/status da parcela, evento, notificação e resumo do cliente
+  são atualizados na mesma transação.
+
+### `PATCH /sales/installments/{installment_id}/due-date`
+
+```json
+{ "dueDate": "2026-08-15", "observacoes": "Combinado com a cliente" }
+```
+
+Altera uma parcela aberta, registra o evento e reagenda os avisos de amanhã,
+hoje e atraso. Parcela paga ou data no passado retorna **422**.
+
+### `PATCH /sales/notifications/{notification_id}/read`
+
+```json
+{ "lida": true }
+```
+
+Marca ou desmarca a notificação e devolve o objeto atualizado.
 
 ### `POST /sales/sales`
 
@@ -132,7 +191,9 @@ API CRUD do módulo `sales/`. Todos retornam JSON com aliases camelCase (Pydanti
 - A criação da venda também gera as parcelas automaticamente (regra de negócio do `SalesRepository.create_sale`); são lidas via `/sales/snapshot` no próximo refresh.
 - Erros de validação de regra de negócio retornam **422** com mensagem do `ValidationError`. Casos cobertos por `SalesRepository.create_sale`: venda sem itens, `clienteId` inexistente, `produtoId` inexistente, **estoque insuficiente** (`estoque < quantidade solicitada`) e preço unitário negativo.
 
-> **Idempotência:** os endpoints de escrita não exigem `Idempotency-Key` no MVP. O `SalesController` do app garante que cada ação dispara uma única requisição via *queue* local de eventos.
+> **Idempotência:** recebimentos usam `requestId` no corpo. As demais telas
+> bloqueiam toque duplo e só apresentam a alteração depois de uma resposta de
+> sucesso do backend.
 
 ## OpenAPI
 

@@ -13,7 +13,7 @@ Estratégia: testes de unidade e integração com **mocks** onde custo é alto (
 
 ## Contagem atual
 
-A suíte tem **309 testes coletados em 27 arquivos** (`pytest`, 2026-07-22). Na execução local de referência, **308 passaram e 1 foi pulado**: `tests/integration/test_hunyuan_real.py`, que exige o contêiner Hunyuan ativo. Outros testes também usam skips condicionais (em vez de falhar) quando dependências externas faltam — Blender, `rembg`, CLIP (`torch`/`transformers`) ou o contêiner Hunyuan. Nenhum teste exige Postgres. Os cinco testes em `tests/test_hunyuan_server.py` protegem a separação entre checkpoint multi-view, textura e fallback, o download restrito ao `safetensors` e os metadados de `/health`.
+A suíte tem **319 testes coletados em 29 arquivos** (`pytest`, 2026-07-23). Na execução local de referência, **318 passaram e 1 foi pulado**: `tests/integration/test_hunyuan_real.py`, que exige o contêiner Hunyuan ativo. Outros testes também usam skips condicionais (em vez de falhar) quando dependências externas faltam — Blender, `rembg`, CLIP (`torch`/`transformers`) ou o contêiner Hunyuan. Nenhum teste exige Postgres. Os cinco testes em `tests/test_hunyuan_server.py` protegem a separação entre checkpoint multi-view, textura e fallback, o download restrito ao `safetensors` e os metadados de `/health`.
 
 ### Núcleo (Fase 2 — templates + CLIP + cor)
 
@@ -63,7 +63,15 @@ A suíte tem **309 testes coletados em 27 arquivos** (`pytest`, 2026-07-22). Na 
 
 Cobrem a suíte de benchmark em [`eval/`](../eval/) — ver [eval/README.md](../eval/README.md).
 
-> **Ausentes**: o módulo `sales/` ainda não tem cobertura automatizada. Validação manual via app Flutter contra Postgres real.
+### Módulo comercial — `tests/modules/sales/` (9 testes)
+
+- `test_schemas.py` cobre cadastro essencial de cliente, preço/custo obrigatórios,
+  contrato de produto, pagamento e aliases.
+- `test_payments.py` cobre pagamento parcial e total, rejeição acima do saldo e
+  repetição idempotente do mesmo `requestId`.
+
+Esses testes usam uma sessão falsa determinística. A execução contra Postgres real
+permanece recomendada como teste de integração antes de uma release.
 
 ## Banco de dados
 

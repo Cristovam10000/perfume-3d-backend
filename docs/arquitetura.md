@@ -61,7 +61,8 @@ Fluxo de captura 3D:
 Fluxo comercial:
 
 1. O Flutter tenta carregar `/sales/snapshot` no boot do `SalesController`.
-2. Criacao de produto, ajuste de estoque e criacao de venda atualizam primeiro o estado local e depois tentam sincronizar com `/sales/*`.
+2. Criacao de clientes/produtos, estoque, vendas e recebimentos aguardam a
+   confirmacao de `/sales/*` antes de atualizar o estado local.
 3. O backend le e escreve no schema comercial via SQL textual.
 
 ## Pontos de atencao

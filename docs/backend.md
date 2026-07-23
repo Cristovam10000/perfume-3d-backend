@@ -27,9 +27,13 @@ O fluxo principal usa `PIPELINE_MODE=integrated`: preprocessamento, remocao de f
 | `POST` | `/captures` | Recebe `images`, `views` opcionais e `productId`; cria um job. |
 | `GET` | `/captures/{job_id}/status` | Retorna status, mensagem, erro e `modelUrl`. |
 | `GET` | `/sales/snapshot` | Snapshot comercial completo. |
-| `POST` | `/sales/products` | Cria produto. |
+| `POST/PATCH` | `/sales/clients`, `/sales/clients/{id}` | Cria ou edita cliente. |
+| `POST/PATCH` | `/sales/products`, `/sales/products/{id}` | Cria ou edita produto. |
 | `PATCH` | `/sales/products/{product_id}/stock` | Ajusta estoque. |
 | `POST` | `/sales/sales` | Cria venda e parcelas. |
+| `POST` | `/sales/installments/{id}/payments` | Recebe valor total ou parcial. |
+| `PATCH` | `/sales/installments/{id}/due-date` | Renegocia vencimento. |
+| `PATCH` | `/sales/notifications/{id}/read` | Marca notificação como lida. |
 
 O contrato detalhado esta em [13 - Endpoints HTTP](13-endpoints-http.md).
 
@@ -53,7 +57,7 @@ Para o pipeline integrado, suba tambem `docker compose up -d hunyuan` e configur
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Estado verificado em 2026-07-22: 309 testes coletados, 308 aprovados e 1 integracao real com Hunyuan pulada por exigir o container ativo.
+Estado verificado em 2026-07-23: 319 testes coletados, 318 aprovados e 1 integração real com Hunyuan pulada por exigir o contêiner ativo.
 
 ## Pontos de atencao
 

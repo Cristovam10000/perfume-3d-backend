@@ -50,8 +50,8 @@ Tabelas referenciadas pelo `SalesRepository` (todas em snake_case e em portuguê
 | `itens_venda` | Linhas de cada venda (produto, quantidade, preço unitário). |
 | `parcelas` | Parcelas geradas para vendas a prazo. |
 | `eventos_parcela` | Histórico de eventos por parcela (vencida, paga, renegociada). |
-| `pagamentos` | Pagamentos recebidos. |
-| `notificacoes` | Notificações comerciais (parcelas vencendo, etc). |
+| `pagamentos` | Pagamentos recebidos; `request_id` único torna a repetição segura após falha de rede. |
+| `notificacoes` | Avisos de amanhã, hoje, atraso e pagamento. Cobranças têm unicidade por parcela/tipo. |
 | `resumo_financeiro_cliente` | Tabela de resumo materializada por cliente. |
 
 > **Decisão arquitetural:** o `SalesRepository` usa SQL textual (`sqlalchemy.text`) em vez de modelos ORM, deliberadamente — o schema comercial é grande, estável e mais legível em SQL puro do que em mappings declarativos. Captures usa SQLAlchemy 2.0 (typed mappings). Ambos compartilham a mesma `AsyncEngine`/`SessionFactory`.
@@ -64,7 +64,7 @@ Tabelas referenciadas pelo `SalesRepository` (todas em snake_case e em portuguê
 ## Testes
 
 - A suíte de testes do `captures` usa **SQLite** assíncrono (fixture em `conftest.py`), não requer Docker do Postgres.
-- O `sales` ainda não tem cobertura de testes automatizada (apenas exercitado manualmente via app Flutter contra um Postgres real). Ver [14 — Testes](14-testes.md).
+- O `sales` possui testes automatizados de schemas e regras de pagamento; a validação SQL completa em Postgres real continua sendo uma etapa de integração manual. Ver [14 — Testes](14-testes.md).
 
 ## Leituras relacionadas
 
