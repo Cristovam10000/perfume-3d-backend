@@ -20,7 +20,7 @@ A composição completa do pipeline está em [09f](09f-pipeline-integrado.md). E
 
 Corrige problemas comuns de fotos de smartphone *antes* da remoção de fundo, para que o `BackgroundRemover` e o Hunyuan3D recebam entradas mais consistentes.
 
-> **Por que ainda existe se o front "formata" a imagem?** O front Flutter só faz compressão JPEG (`imageQuality: 90` no `image_picker`) e análise de qualidade ao vivo (`FrameAnalyzer` em `front/lib/core/utils/frame_analyzer.dart`). Ele **não** corrige EXIF, white balance, exposição, nitidez nem resolução. O preprocessamento clássico no backend ainda paga o aluguel.
+> **Por que ainda existe se o frontend "formata" a imagem?** O Flutter só aplica compressão JPEG (`imageQuality: 90` no `image_picker`). A implementação legada também possui análise ao vivo com `FrameAnalyzer`, mas o frontend **não** corrige EXIF, white balance, exposição, nitidez nem resolução. O preprocessamento clássico continua sendo responsabilidade do backend.
 
 ### O que faz, em ordem
 

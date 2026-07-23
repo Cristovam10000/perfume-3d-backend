@@ -258,11 +258,14 @@ O smoke continuará útil para depurar etapas isoladas; o pipeline é o caminho 
 
 ## Testes
 
-[`tests/modules/captures/test_pipeline.py`](../tests/modules/captures/test_pipeline.py) (6 testes) cobre, com mocks de cada stage:
+[`tests/modules/captures/test_pipeline.py`](../tests/modules/captures/test_pipeline.py) (11 casos coletados) cobre, com mocks de cada stage:
 
   - Cenário cache HIT: confirma que stages (4)–(8) **não** são chamados.
+  - Cache HIT com `product_id`: confirma o vínculo do modelo ao produto.
   - Cenário cache MISS: confirma que todos os stages são chamados na ordem.
-  - Degrade do refiner: confirma que o job conclui usando `cleaned.glb`.
+  - Ausência de label: confirma a degradação graciosa sem interromper o pipeline.
+  - Transparência: confirma os modos transparente, opaco e automático do refiner.
+  - Falha do classificador de transparência: confirma a degradação para modo automático.
   - Falha do Hunyuan com fallback ativo: confirma que o `TemplateProcessor` é chamado.
   - Falha do Hunyuan sem fallback: confirma `ProcessingError` propagada.
 

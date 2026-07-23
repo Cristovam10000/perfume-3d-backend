@@ -92,7 +92,7 @@ Instaladas quando o `IntegratedPipeline` está ativo. `rembg` baixa ~200MB de pe
 
 ## Hunyuan3D (em contêiner Docker — não Python do backend)
 
-O serviço `hunyuan` do Compose (build em [`C:\TCC\docker\hunyuan`](../../docker/hunyuan)) tem suas próprias dependências (`torch`, `diffusers`, `Hunyuan3D-2GP`, `mmgp`, etc.) — o backend Python **não importa nada disso**. A comunicação é puramente HTTP multipart via `httpx.AsyncClient`. Ver [09b](09b-pipeline-ai-hunyuan.md).
+O serviço `hunyuan` do Compose (build em [`docker/hunyuan`](../docker/hunyuan)) tem suas próprias dependências (`torch`, `diffusers`, `Hunyuan3D-2GP`, `mmgp`, etc.) — o backend Python **não importa nada disso**. A comunicação é puramente HTTP multipart via `httpx.AsyncClient`. Ver [09b](09b-pipeline-ai-hunyuan.md).
 
 ## Ferramentas externas (não-Python)
 
@@ -113,7 +113,7 @@ O serviço `hunyuan` do Compose (build em [`C:\TCC\docker\hunyuan`](../../docker
 | Banco | PostgreSQL 16 | container Docker `tcc-postgres` |
 | Worker | `asyncio.Queue` (stdlib) | [`app/modules/captures/queue.py`](../app/modules/captures/queue.py) |
 | Pipeline 3D (orquestração) | `IntegratedPipeline` (Python) | [`app/modules/captures/pipeline.py`](../app/modules/captures/pipeline.py) |
-| Geração 3D (IA) | Hunyuan3D-2mv via container Docker + GPU | [`docker/hunyuan/server.py`](../../docker/hunyuan/server.py), cliente HTTP em [`app/modules/captures/processor.py`](../app/modules/captures/processor.py) |
+| Geração 3D (IA) | Hunyuan3D-2mv via container Docker + GPU | [`docker/hunyuan/server.py`](../docker/hunyuan/server.py), cliente HTTP em [`app/modules/captures/processor.py`](../app/modules/captures/processor.py) |
 | Geração 3D (fallback) | Blender 5.1 headless via subprocess | [`app/modules/captures/processor.py`](../app/modules/captures/processor.py) (`TemplateProcessor`) + [`app/modules/captures/blender_scripts/customize_template.py`](../app/modules/captures/blender_scripts/customize_template.py) |
 | Embedder CLIP (cache) | OpenAI CLIP via transformers | [`app/modules/captures/embeddings.py`](../app/modules/captures/embeddings.py), reutilizando o modelo do legado [`app/modules/captures/classifier.py`](../app/modules/captures/classifier.py) |
 | Cache de modelos | Cosine vs embedding CLIP | [`app/modules/captures/cache.py`](../app/modules/captures/cache.py), [`app/modules/captures/modelos_universais.py`](../app/modules/captures/modelos_universais.py) |

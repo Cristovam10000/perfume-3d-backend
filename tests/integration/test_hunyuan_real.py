@@ -34,8 +34,14 @@ def hunyuan_url() -> str:
     url = "http://localhost:7860"
     try:
         resp = httpx.get(f"{url}/health", timeout=2.0)
-        if resp.status_code != 200 or resp.json().get("status") != "ready":
+        health = resp.json()
+        if resp.status_code != 200 or health.get("status") != "ready":
             pytest.skip(f"Hunyuan não está pronto em {url}: {resp.text}")
+        if health.get("shape_mode") != "multi-view" or health.get("fallback") is not False:
+            pytest.fail(
+                "Hunyuan respondeu ready, mas não carregou o checkpoint multi-view "
+                f"principal: {health}"
+            )
     except Exception as exc:
         pytest.skip(f"Hunyuan não está rodando em {url}: {exc}")
     return url
@@ -77,8 +83,8 @@ async def test_geracao_real_com_entrada_sintetica(hunyuan_url: str, tmp_path: Pa
     cores = [
         (180, 120, 60),   # frente — cor base dourada
         (160, 105, 50),   # lateral esquerda — levemente mais escura
-        (200, 140, 75),   # lateral direita — highlight
         (170, 110, 55),   # traseira — similar à frente
+        (200, 140, 75),   # lateral direita — highlight
     ]
 
     imagens: list[Path] = []

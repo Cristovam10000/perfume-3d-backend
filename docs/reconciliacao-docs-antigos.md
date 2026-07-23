@@ -1,5 +1,7 @@
 # Reconciliacao dos docs antigos
 
+> **Documento historico.** Este relatorio registra uma etapa anterior da reorganizacao, quando as pastas ainda se chamavam `front/` e `back/`. Para o estado atual, use os documentos numerados em [README.md](README.md), [backend.md](backend.md), [frontend.md](frontend.md) e [como-rodar.md](como-rodar.md). Os nomes e conclusoes antigas abaixo foram preservados apenas como rastreabilidade.
+
 ## Visao geral
 
 Este relatorio compara a documentacao antiga em `front/docs/`, `back/docs/`, `front/README.md`, `back/README.md` e `docker/hunyuan/README.md` contra o codigo e configuracoes atuais. A classificacao usa: ✅ correto, ⚠️ desatualizado, ❌ ausente, 🆕 a adicionar.

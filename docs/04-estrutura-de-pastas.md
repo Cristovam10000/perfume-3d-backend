@@ -8,12 +8,12 @@
 > **Pré-requisitos:** [01 - Visão geral](01-visao-geral.md). Para entender *como* as
 > camadas conversam, leia depois [05 - Arquitetura](05-arquitetura.md).
 
-Mapa atual de `c:\TCC\back`. Use este doc como ponto de partida para "onde mora X".
+Mapa atual de `C:\TCC\perfume-3d-backend`. Use este doc como ponto de partida para "onde mora X".
 
 ## Árvore raiz
 
 ```
-back/
+perfume-3d-backend/
 ├── .env                       # config local (gitignored)
 ├── .env.example               # template versionado
 ├── .gitignore
@@ -128,7 +128,7 @@ tests/
 │   ├── __init__.py
 │   └── test_hunyuan_real.py       # 1 — exercita /generate de verdade (pulado se contêiner offline)
 │
-├── eval/                         # testes da suíte de benchmark (ver back/eval/)
+├── eval/                         # testes da suíte de benchmark (ver eval/)
 │   ├── test_geometric.py          # 16 — Chamfer/Hausdorff/F-Score em cubo/esfera sintéticos
 │   ├── test_held_out_dataset.py   # 24 — loader/validador do manifest held-out
 │   └── test_synthetic_dataset.py  # 12 — wrapper Blender de renderização (subprocess mockado)
@@ -149,16 +149,17 @@ tests/
         ├── test_label_extractor.py    # 12 — HomographyLabelExtractor + _ordenar_cantos
         ├── test_image_preprocessor.py # 15 — StandardImagePreprocessor (EXIF, WB, CLAHE, sharpen, resize)
         ├── test_mesh_cleaner.py       # 13 — BlenderMeshCleaner mocked + integração Blender
-        ├── test_mesh_refiner.py       # 9  — BlenderMeshRefiner mocked + integração Blender
+        ├── test_mesh_refiner.py       # 13 — BlenderMeshRefiner mocked + integração Blender
         ├── test_label_upscaler.py     # 8  — LanczosLabelUpscaler
         ├── test_label_projector.py    # 9  — BlenderLabelProjector mocked + integração Blender
         ├── test_embeddings.py         # 5  — ImageEmbedder / ClipImageEmbedder (cache)
         ├── test_cache.py              # 8  — ClipSimilarityCache (lookup/store, threshold)
-        ├── test_pipeline.py           # 6  — IntegratedPipeline (composição, degradação)
+        ├── test_pipeline.py           # 11 — IntegratedPipeline (composição, degradação, transparência)
+        ├── test_transparency_classifier.py # 10 — Disabled/CLIPTransparencyClassifier
         └── test_view_router.py        # 21 — Labeled/CLIP/PositionalViewRouter
 ```
 
-**Total atual: 285 testes** (`pytest --collect-only`, 2026-05-28). Nenhum teste exige Postgres rodando. Vários componentes do pipeline IA pulam quando dependências (`rembg`, `cv2`, `torch`/`transformers`, Blender 5.1+, contêiner Hunyuan) estão ausentes — convenção `pytest.importorskip` ou guard `if not blender.exists(): pytest.skip(...)`. Detalhes em [14 - Testes](14-testes.md).
+**Total atual: 309 testes em 27 arquivos** (`pytest`, 2026-07-22). Nenhum teste exige Postgres rodando. Vários componentes do pipeline IA pulam quando dependências (`rembg`, `cv2`, `torch`/`transformers`, Blender 5.1+, contêiner Hunyuan) estão ausentes — convenção `pytest.importorskip` ou guard `if not blender.exists(): pytest.skip(...)`. Na execução local de referência, 308 testes passaram e somente a integração real com o Hunyuan foi pulada. Detalhes em [14 - Testes](14-testes.md).
 
 ## `scripts/` — utilitários offline
 

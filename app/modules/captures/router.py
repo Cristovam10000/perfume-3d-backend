@@ -111,5 +111,6 @@ async def get_status(
         status=job.status,
         message=job.message,
         model_url=model_url,
+        product_id=job.product_id,
         error=job.error,
     )

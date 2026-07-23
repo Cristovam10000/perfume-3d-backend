@@ -1,5 +1,7 @@
 # Build
 
+> **Documento historico.** Refere-se a um artefato `C:\TCC\build` observado antes da separacao em `perfume-3d-backend` e `perfume-3d-frontend`. Essa pasta nao faz parte do processo atual de inicializacao; para builds Flutter, use o README e a documentacao do repositorio frontend.
+
 ## Visao geral
 
 O diretorio raiz `build/` existe no estado atual e contem uma arvore `build/app/intermediates/flutter/debug/flutter_assets/...`, sem arquivos listados durante a exploracao read-only. Isso indica artefato intermediario de build Flutter/Android, mas o comando exato que o gerou esta `⚠️ a confirmar` (fonte: `build/`).
@@ -41,7 +43,7 @@ Durante a exploracao, nao foram encontrados arquivos dentro de `build/`, apenas 
 Nao edite `build/` manualmente. Para regenerar artefatos Flutter, use comandos Flutter a partir de `front/` quando necessario:
 
 ```powershell
-cd C:\TCC\front
+cd C:\TCC\perfume-3d-frontend
 flutter build apk
 flutter build web
 flutter build windows
@@ -50,7 +52,7 @@ flutter build windows
 Para limpar artefatos do Flutter, o comando usual e:
 
 ```powershell
-cd C:\TCC\front
+cd C:\TCC\perfume-3d-frontend
 flutter clean
 ```
 

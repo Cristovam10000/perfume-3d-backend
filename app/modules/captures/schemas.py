@@ -19,6 +19,7 @@ class CaptureStatusResponse(BaseModel):
     status: str
     message: str | None = None
     model_url: str | None = Field(default=None, serialization_alias="modelUrl")
+    product_id: int | None = Field(default=None, serialization_alias="productId")
     error: str | None = None
 
     model_config = {"populate_by_name": True}

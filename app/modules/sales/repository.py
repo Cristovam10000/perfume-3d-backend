@@ -8,15 +8,20 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from ...core.exceptions import ValidationError
 from .schemas import (
+    ClientWriteIn,
     ClienteOut,
     CreateSaleOut,
+    DueDateUpdateIn,
     EventoParcelaOut,
     ItemVendaOut,
     NotificacaoOut,
     PagamentoOut,
     ParcelaOut,
+    PaymentCreateIn,
+    PaymentReceiptOut,
     ProductCreateIn,
     ProductStockUpdateIn,
+    ProductUpdateIn,
     ProdutoOut,
     SaleCreateIn,
     SalesSnapshotOut,
@@ -36,7 +41,14 @@ async def ensure_sales_schema(engine: AsyncEngine) -> None:
         "ALTER TABLE IF EXISTS produtos ADD COLUMN IF NOT EXISTS estoque_minimo integer DEFAULT 1 NOT NULL",
         "ALTER TABLE IF EXISTS produtos ADD COLUMN IF NOT EXISTS volume_ml integer DEFAULT 100 NOT NULL",
         "ALTER TABLE IF EXISTS produtos ADD COLUMN IF NOT EXISTS frasco_color_value bigint DEFAULT 4285558395 NOT NULL",
+        "ALTER TABLE IF EXISTS pagamentos ADD COLUMN IF NOT EXISTS request_id varchar(80)",
         "UPDATE produtos SET estoque_minimo = 1 WHERE estoque_minimo IS NULL OR estoque_minimo < 1",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_pagamentos_request_id ON pagamentos(request_id) WHERE request_id IS NOT NULL",
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_notificacoes_cobranca_parcela_tipo
+        ON notificacoes(parcela_id, tipo_notificacao)
+        WHERE tipo_notificacao IN ('vence_amanha', 'vence_hoje', 'atraso')
+        """,
     ]
     async with engine.begin() as conn:
         for statement in statements:
@@ -48,6 +60,7 @@ class SalesRepository:
         self.session = session
 
     async def snapshot(self) -> SalesSnapshotOut:
+        await self._ensure_billing_notifications()
         clientes = await self._clientes()
         produtos = await self._produtos()
         vendas = await self._vendas()
@@ -63,6 +76,59 @@ class SalesRepository:
             pagamentos=pagamentos,
             notificacoes=notificacoes,
         )
+
+    async def create_client(self, payload: ClientWriteIn) -> ClienteOut:
+        result = await self.session.execute(
+            text(
+                """
+                insert into clientes (nome_completo, telefone, bairro, ativo)
+                values (:nome, :telefone, :bairro, true)
+                returning id
+                """
+            ),
+            {
+                "nome": payload.nome,
+                "telefone": payload.telefone,
+                "bairro": payload.bairro,
+            },
+        )
+        client_id = int(result.scalar_one())
+        await self._recalculate_summary(client_id)
+        await self.session.commit()
+        client = await self._client_by_id(client_id)
+        if client is None:  # pragma: no cover - retorno defensivo
+            raise RuntimeError("Cliente criado nao encontrado")
+        return client
+
+    async def update_client(
+        self,
+        client_id: int,
+        payload: ClientWriteIn,
+    ) -> ClienteOut | None:
+        result = await self.session.execute(
+            text(
+                """
+                update clientes
+                set nome_completo = :nome,
+                    telefone = :telefone,
+                    bairro = :bairro,
+                    atualizado_em = current_timestamp
+                where id = :id and ativo = true
+                returning id
+                """
+            ),
+            {
+                "id": client_id,
+                "nome": payload.nome,
+                "telefone": payload.telefone,
+                "bairro": payload.bairro,
+            },
+        )
+        if result.scalar_one_or_none() is None:
+            await self.session.rollback()
+            return None
+        await self.session.commit()
+        return await self._client_by_id(client_id)
 
     async def create_product(self, payload: ProductCreateIn) -> ProdutoOut:
         result = await self.session.execute(
@@ -99,6 +165,44 @@ class SalesRepository:
             raise RuntimeError("Produto criado nao encontrado")
         return product
 
+    async def update_product(
+        self,
+        product_id: int,
+        payload: ProductUpdateIn,
+    ) -> ProdutoOut | None:
+        result = await self.session.execute(
+            text(
+                """
+                update produtos
+                set nome = :nome,
+                    categoria = :categoria,
+                    preco_base = :preco_base,
+                    custo = :custo,
+                    estoque_minimo = :estoque_minimo,
+                    volume_ml = :volume_ml,
+                    frasco_color_value = :frasco_color_value,
+                    atualizado_em = current_timestamp
+                where id = :id and ativo = true
+                returning id
+                """
+            ),
+            {
+                "id": product_id,
+                "nome": payload.nome,
+                "categoria": payload.categoria,
+                "preco_base": payload.preco_base,
+                "custo": payload.custo,
+                "estoque_minimo": payload.estoque_minimo,
+                "volume_ml": payload.volume_ml,
+                "frasco_color_value": payload.frasco_color_value,
+            },
+        )
+        if result.scalar_one_or_none() is None:
+            await self.session.rollback()
+            return None
+        await self.session.commit()
+        return await self._product_by_id(product_id)
+
     async def update_stock(
         self, product_id: int, payload: ProductStockUpdateIn
     ) -> ProdutoOut | None:
@@ -122,6 +226,247 @@ class SalesRepository:
         )
         await self.session.commit()
         return await self._product_by_id(product_id)
+
+    async def receive_payment(
+        self,
+        installment_id: int,
+        payload: PaymentCreateIn,
+    ) -> PaymentReceiptOut:
+        existing = await self._payment_receipt_by_request_id(payload.request_id)
+        if existing is not None:
+            return existing
+
+        row = (
+            await self.session.execute(
+                text(
+                    """
+                    select
+                        p.id, p.venda_id, p.valor_original, p.valor_pago,
+                        p.valor_restante, p.status, v.cliente_id,
+                        c.nome_completo
+                    from parcelas p
+                    join vendas v on v.id = p.venda_id
+                    join clientes c on c.id = v.cliente_id
+                    where p.id = :id
+                    for update
+                    """
+                ),
+                {"id": installment_id},
+            )
+        ).mappings().first()
+        if row is None:
+            raise ValidationError(f"Parcela {installment_id} nao encontrada")
+
+        remaining = float(row["valor_restante"])
+        if row["status"] == "paga" or remaining <= 0:
+            raise ValidationError("Esta parcela ja esta paga")
+        if payload.valor > remaining + 0.005:
+            raise ValidationError(
+                f"Valor recebido excede o saldo da parcela: {remaining:.2f}"
+            )
+
+        paid = round(float(row["valor_pago"]) + payload.valor, 2)
+        new_remaining = round(max(float(row["valor_original"]) - paid, 0), 2)
+        status = "paga" if new_remaining <= 0 else "parcial"
+
+        payment_id = int(
+            (
+                await self.session.execute(
+                    text(
+                        """
+                        insert into pagamentos (
+                            parcela_id, valor_pago, data_pagamento,
+                            forma_pagamento, observacoes, request_id
+                        )
+                        values (
+                            :parcela_id, :valor, :data, :forma,
+                            :observacoes, :request_id
+                        )
+                        returning id
+                        """
+                    ),
+                    {
+                        "parcela_id": installment_id,
+                        "valor": payload.valor,
+                        "data": payload.data,
+                        "forma": payload.forma,
+                        "observacoes": payload.observacoes,
+                        "request_id": payload.request_id,
+                    },
+                )
+            ).scalar_one()
+        )
+        await self.session.execute(
+            text(
+                """
+                update parcelas
+                set valor_pago = :valor_pago,
+                    valor_restante = :valor_restante,
+                    status = :status,
+                    data_ultimo_pagamento = :data,
+                    atualizado_em = current_timestamp
+                where id = :id
+                """
+            ),
+            {
+                "id": installment_id,
+                "valor_pago": paid,
+                "valor_restante": new_remaining,
+                "status": status,
+                "data": payload.data,
+            },
+        )
+        await self.session.execute(
+            text(
+                """
+                insert into eventos_parcela (
+                    parcela_id, tipo_evento, data_evento,
+                    valor_afetado, observacoes
+                )
+                values (
+                    :parcela_id, 'pagamento', :data,
+                    :valor, :observacoes
+                )
+                """
+            ),
+            {
+                "parcela_id": installment_id,
+                "data": payload.data,
+                "valor": payload.valor,
+                "observacoes": payload.observacoes or f"Pagamento via {payload.forma}",
+            },
+        )
+        await self.session.execute(
+            text(
+                """
+                insert into notificacoes (
+                    cliente_id, parcela_id, tipo_notificacao,
+                    tipo_destinatario, agendada_para, status,
+                    mensagem, valor, lida
+                )
+                values (
+                    :cliente_id, :parcela_id, 'pagamento',
+                    'vendedor', current_timestamp, 'pendente',
+                    :mensagem, :valor, false
+                )
+                """
+            ),
+            {
+                "cliente_id": int(row["cliente_id"]),
+                "parcela_id": installment_id,
+                "mensagem": (
+                    f"Pagamento de R$ {payload.valor:.2f} recebido de "
+                    f"{row['nome_completo']}."
+                ),
+                "valor": payload.valor,
+            },
+        )
+        await self._recalculate_summary(int(row["cliente_id"]))
+        await self.session.commit()
+        receipt = await self._payment_receipt_by_payment_id(payment_id)
+        if receipt is None:  # pragma: no cover - retorno defensivo
+            raise RuntimeError("Pagamento criado nao encontrado")
+        return receipt
+
+    async def update_installment_due_date(
+        self,
+        installment_id: int,
+        payload: DueDateUpdateIn,
+    ) -> ParcelaOut:
+        row = (
+            await self.session.execute(
+                text(
+                    """
+                    select
+                        p.id, p.valor_pago, p.valor_restante, p.status,
+                        p.data_vencimento, v.cliente_id
+                    from parcelas p
+                    join vendas v on v.id = p.venda_id
+                    where p.id = :id
+                    for update
+                    """
+                ),
+                {"id": installment_id},
+            )
+        ).mappings().first()
+        if row is None:
+            raise ValidationError(f"Parcela {installment_id} nao encontrada")
+        if row["status"] == "paga" or float(row["valor_restante"]) <= 0:
+            raise ValidationError("Nao e possivel renegociar uma parcela paga")
+        if payload.due_date < date.today():
+            raise ValidationError("O novo vencimento nao pode estar no passado")
+
+        status = "parcial" if float(row["valor_pago"]) > 0 else "pendente"
+        await self.session.execute(
+            text(
+                """
+                update parcelas
+                set data_vencimento = :due_date,
+                    status = :status,
+                    atualizado_em = current_timestamp
+                where id = :id
+                """
+            ),
+            {
+                "id": installment_id,
+                "due_date": payload.due_date,
+                "status": status,
+            },
+        )
+        await self.session.execute(
+            text(
+                """
+                insert into eventos_parcela (
+                    parcela_id, tipo_evento, data_evento,
+                    valor_afetado, observacoes
+                )
+                values (
+                    :parcela_id, 'remarca', current_timestamp,
+                    null, :observacoes
+                )
+                """
+            ),
+            {
+                "parcela_id": installment_id,
+                "observacoes": payload.observacoes
+                or (
+                    f"Vencimento alterado de {row['data_vencimento']} "
+                    f"para {payload.due_date}"
+                ),
+            },
+        )
+        await self._ensure_billing_notifications(installment_id=installment_id)
+        await self._recalculate_summary(int(row["cliente_id"]))
+        await self.session.commit()
+        installment = await self._installment_by_id(installment_id)
+        if installment is None:  # pragma: no cover - retorno defensivo
+            raise RuntimeError("Parcela atualizada nao encontrada")
+        return installment
+
+    async def mark_notification_read(
+        self,
+        notification_id: int,
+        read: bool,
+    ) -> NotificacaoOut | None:
+        row = (
+            await self.session.execute(
+                text(
+                    """
+                    update notificacoes
+                    set lida = :lida
+                    where id = :id
+                    returning id, cliente_id, parcela_id, tipo_notificacao,
+                              agendada_para, mensagem, valor, lida
+                    """
+                ),
+                {"id": notification_id, "lida": read},
+            )
+        ).mappings().first()
+        if row is None:
+            await self.session.rollback()
+            return None
+        await self.session.commit()
+        return _notification_from_row(row)
 
     async def create_sale(self, payload: SaleCreateIn) -> CreateSaleOut:
         if not payload.itens:
@@ -322,6 +667,30 @@ class SalesRepository:
             for row in rows
         ]
 
+    async def _client_by_id(self, client_id: int) -> ClienteOut | None:
+        row = (
+            await self.session.execute(
+                text(
+                    """
+                    select
+                        c.id, c.nome_completo, c.telefone,
+                        coalesce(c.bairro, '') as bairro,
+                        coalesce(r.score_pagador, 0) as score,
+                        coalesce(r.status_pagador, 'warn') as status_pagador,
+                        coalesce(r.valor_total_em_aberto, 0) as em_aberto,
+                        coalesce(r.total_vendas, 0) as total_compras,
+                        coalesce(r.total_parcelas_atrasadas, 0) as parcelas_atraso,
+                        coalesce(r.valor_total_comprado, 0) as total_comprado
+                    from clientes c
+                    left join resumo_financeiro_cliente r on r.cliente_id = c.id
+                    where c.id = :id and c.ativo = true
+                    """
+                ),
+                {"id": client_id},
+            )
+        ).mappings().first()
+        return _client_from_row(row) if row else None
+
     async def _produtos(self) -> list[ProdutoOut]:
         rows = (
             await self.session.execute(
@@ -475,6 +844,58 @@ class SalesRepository:
             for row in parcel_rows
         ]
 
+    async def _installment_by_id(self, installment_id: int) -> ParcelaOut | None:
+        row = (
+            await self.session.execute(
+                text(
+                    """
+                    select
+                        p.id, p.venda_id, p.numero_parcela, v.numero_parcelas,
+                        p.valor_original, p.valor_pago, p.data_vencimento,
+                        case
+                            when p.status <> 'paga' and p.data_vencimento < current_date
+                                then 'atrasada'
+                            else p.status
+                        end as status
+                    from parcelas p
+                    join vendas v on v.id = p.venda_id
+                    where p.id = :id
+                    """
+                ),
+                {"id": installment_id},
+            )
+        ).mappings().first()
+        if row is None:
+            return None
+        event_rows = (
+            await self.session.execute(
+                text(
+                    """
+                    select parcela_id, tipo_evento, data_evento,
+                           valor_afetado, observacoes
+                    from eventos_parcela
+                    where parcela_id = :id
+                    order by data_evento
+                    """
+                ),
+                {"id": installment_id},
+            )
+        ).mappings()
+        events = [
+            EventoParcelaOut(
+                tipo=event["tipo_evento"],
+                data=event["data_evento"],
+                descricao=event["observacoes"] or event["tipo_evento"],
+                valor=(
+                    float(event["valor_afetado"])
+                    if event["valor_afetado"] is not None
+                    else None
+                ),
+            )
+            for event in event_rows
+        ]
+        return _installment_from_row(row, events)
+
     async def _pagamentos(self) -> list[PagamentoOut]:
         rows = (
             await self.session.execute(
@@ -500,32 +921,149 @@ class SalesRepository:
             for row in rows
         ]
 
+    async def _payment_receipt_by_request_id(
+        self,
+        request_id: str,
+    ) -> PaymentReceiptOut | None:
+        row = (
+            await self.session.execute(
+                text("select id from pagamentos where request_id = :request_id"),
+                {"request_id": request_id},
+            )
+        ).mappings().first()
+        if row is None:
+            return None
+        return await self._payment_receipt_by_payment_id(int(row["id"]))
+
+    async def _payment_receipt_by_payment_id(
+        self,
+        payment_id: int,
+    ) -> PaymentReceiptOut | None:
+        row = (
+            await self.session.execute(
+                text(
+                    """
+                    select id, parcela_id, data_pagamento, valor_pago,
+                           forma_pagamento, observacoes
+                    from pagamentos
+                    where id = :id
+                    """
+                ),
+                {"id": payment_id},
+            )
+        ).mappings().first()
+        if row is None:
+            return None
+        installment = await self._installment_by_id(int(row["parcela_id"]))
+        if installment is None:  # pragma: no cover - FK garante a parcela
+            return None
+        return PaymentReceiptOut(
+            payment=_payment_from_row(row),
+            installment=installment,
+        )
+
+    async def _ensure_billing_notifications(
+        self,
+        *,
+        installment_id: int | None = None,
+    ) -> None:
+        await self.session.execute(
+            text(
+                """
+                insert into notificacoes (
+                    cliente_id, parcela_id, tipo_notificacao,
+                    tipo_destinatario, agendada_para, status,
+                    mensagem, valor, lida
+                )
+                select
+                    v.cliente_id,
+                    p.id,
+                    schedule.tipo,
+                    'vendedor',
+                    schedule.agendada_para,
+                    'pendente',
+                    schedule.mensagem,
+                    p.valor_restante,
+                    false
+                from parcelas p
+                join vendas v on v.id = p.venda_id
+                join clientes c on c.id = v.cliente_id
+                cross join lateral (
+                    values
+                        (
+                            'vence_amanha',
+                            (p.data_vencimento - interval '1 day') + time '09:00',
+                            'Parcela de ' || c.nome_completo ||
+                            ' vence amanha.'
+                        ),
+                        (
+                            'vence_hoje',
+                            p.data_vencimento + time '09:00',
+                            'Parcela de ' || c.nome_completo ||
+                            ' vence hoje.'
+                        ),
+                        (
+                            'atraso',
+                            (p.data_vencimento + interval '1 day') + time '09:00',
+                            'Parcela de ' || c.nome_completo ||
+                            ' esta em atraso.'
+                        )
+                ) as schedule(tipo, agendada_para, mensagem)
+                where p.valor_restante > 0
+                  and (:installment_id is null or p.id = :installment_id)
+                on conflict (parcela_id, tipo_notificacao)
+                    where tipo_notificacao in (
+                        'vence_amanha', 'vence_hoje', 'atraso'
+                    )
+                do update set
+                    agendada_para = excluded.agendada_para,
+                    mensagem = excluded.mensagem,
+                    valor = excluded.valor,
+                    status = 'pendente',
+                    lida = case
+                        when notificacoes.agendada_para is distinct from
+                             excluded.agendada_para
+                            then false
+                        else notificacoes.lida
+                    end
+                """
+            ),
+            {"installment_id": installment_id},
+        )
+
     async def _notificacoes(self) -> list[NotificacaoOut]:
         rows = (
             await self.session.execute(
                 text(
                     """
-                    select id, cliente_id, parcela_id, tipo_notificacao,
-                           agendada_para, mensagem, valor, lida
-                    from notificacoes
-                    order by agendada_para
+                    select
+                        n.id, n.cliente_id, n.parcela_id,
+                        n.tipo_notificacao, n.agendada_para,
+                        n.mensagem, n.valor, n.lida
+                    from notificacoes n
+                    left join parcelas p on p.id = n.parcela_id
+                    where n.agendada_para <= current_timestamp
+                      and (
+                          n.tipo_notificacao = 'pagamento'
+                          or (
+                              coalesce(p.valor_restante, 0) > 0
+                              and case n.tipo_notificacao
+                                  when 'vence_amanha' then
+                                      p.data_vencimento = current_date + 1
+                                  when 'vence_hoje' then
+                                      p.data_vencimento = current_date
+                                  when 'atraso' then
+                                      p.data_vencimento < current_date
+                                  else true
+                              end
+                          )
+                      )
+                    order by n.lida, n.agendada_para desc
                     """
                 )
             )
         ).mappings()
-        return [
-            NotificacaoOut(
-                id=str(row["id"]),
-                cliente_id=str(row["cliente_id"]),
-                parcela_id=str(row["parcela_id"]),
-                tipo=_notification_type(row["tipo_notificacao"]),
-                data=row["agendada_para"],
-                texto=row["mensagem"] or "",
-                valor=float(row["valor"]),
-                lida=bool(row["lida"]),
-            )
-            for row in rows
-        ]
+        return [_notification_from_row(row) for row in rows]
 
     async def _recalculate_summary(self, cliente_id: int) -> None:
         await self.session.execute(
@@ -620,6 +1158,21 @@ class SalesRepository:
         )
 
 
+def _client_from_row(row) -> ClienteOut:
+    return ClienteOut(
+        id=str(row["id"]),
+        nome=row["nome_completo"],
+        telefone=row["telefone"],
+        bairro=row["bairro"],
+        score=int(row["score"]),
+        status=row["status_pagador"],
+        em_aberto=float(row["em_aberto"]),
+        total_compras=int(row["total_compras"]),
+        parcelas_atraso=int(row["parcelas_atraso"]),
+        total_comprado=float(row["total_comprado"]),
+    )
+
+
 def _produto_from_row(row) -> ProdutoOut:
     model_path = row["caminho_arquivo_modelo"]
     preview_img = row["caminho_imagem_preview"]
@@ -636,6 +1189,47 @@ def _produto_from_row(row) -> ProdutoOut:
         tem_3d=bool(row["possui_modelo_3d"] or model_path),
         modelo_3d_path=model_path,
         preview_img=preview_img,
+    )
+
+
+def _installment_from_row(
+    row,
+    events: list[EventoParcelaOut] | None = None,
+) -> ParcelaOut:
+    return ParcelaOut(
+        id=str(row["id"]),
+        venda_id=str(row["venda_id"]),
+        numero=int(row["numero_parcela"]),
+        total=int(row["numero_parcelas"]),
+        valor=float(row["valor_original"]),
+        vencimento=as_datetime(row["data_vencimento"]),
+        status=row["status"],
+        valor_pago=float(row["valor_pago"]),
+        eventos=events or [],
+    )
+
+
+def _payment_from_row(row) -> PagamentoOut:
+    return PagamentoOut(
+        id=str(row["id"]),
+        parcela_id=str(row["parcela_id"]),
+        data=as_datetime(row["data_pagamento"]),
+        valor=float(row["valor_pago"]),
+        forma=row["forma_pagamento"],
+        observacoes=row["observacoes"],
+    )
+
+
+def _notification_from_row(row) -> NotificacaoOut:
+    return NotificacaoOut(
+        id=str(row["id"]),
+        cliente_id=str(row["cliente_id"]),
+        parcela_id=str(row["parcela_id"]),
+        tipo=_notification_type(row["tipo_notificacao"]),
+        data=row["agendada_para"],
+        texto=row["mensagem"] or "",
+        valor=float(row["valor"]),
+        lida=bool(row["lida"]),
     )
 
 

@@ -120,21 +120,67 @@ class SalesSnapshotOut(BaseModel):
 
 
 class ProductCreateIn(BaseModel):
-    nome: str
-    categoria: str = "Perfume"
-    preco_base: float = Field(alias="precoBase")
-    custo: float = 0
-    estoque: int = 0
+    nome: str = Field(min_length=2, max_length=255)
+    categoria: str = Field(default="Perfume", min_length=2, max_length=120)
+    preco_base: float = Field(alias="precoBase", gt=0)
+    custo: float = Field(gt=0)
+    estoque: int = Field(default=0, ge=0)
     estoque_minimo: int = Field(default=1, alias="estoqueMinimo")
     volume_ml: int = Field(default=100, alias="volumeMl")
     frasco_color_value: int = Field(default=0xFFCB3E7B, alias="frascoColorValue")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "str_strip_whitespace": True}
+
+
+class ProductUpdateIn(BaseModel):
+    nome: str = Field(min_length=2, max_length=255)
+    categoria: str = Field(min_length=2, max_length=120)
+    preco_base: float = Field(alias="precoBase", gt=0)
+    custo: float = Field(gt=0)
+    estoque_minimo: int = Field(alias="estoqueMinimo", ge=1)
+    volume_ml: int = Field(alias="volumeMl", ge=1)
+    frasco_color_value: int = Field(alias="frascoColorValue")
+
+    model_config = {"populate_by_name": True, "str_strip_whitespace": True}
+
+
+class ClientWriteIn(BaseModel):
+    nome: str = Field(min_length=2, max_length=255)
+    telefone: str = Field(min_length=8, max_length=20)
+    bairro: str = Field(min_length=2, max_length=120)
+
+    model_config = {"str_strip_whitespace": True}
 
 
 class ProductStockUpdateIn(BaseModel):
     mode: Literal["add", "set"]
     quantity: int
+
+
+class PaymentCreateIn(BaseModel):
+    request_id: str = Field(alias="requestId", min_length=8, max_length=80)
+    valor: float = Field(gt=0)
+    data: date
+    forma: Literal["Pix", "Dinheiro", "Cartão", "Transferência"]
+    observacoes: str | None = Field(default=None, max_length=1000)
+
+    model_config = {"populate_by_name": True, "str_strip_whitespace": True}
+
+
+class PaymentReceiptOut(BaseModel):
+    payment: PagamentoOut
+    installment: ParcelaOut
+
+
+class DueDateUpdateIn(BaseModel):
+    due_date: date = Field(alias="dueDate")
+    observacoes: str | None = Field(default=None, max_length=1000)
+
+    model_config = {"populate_by_name": True, "str_strip_whitespace": True}
+
+
+class NotificationReadIn(BaseModel):
+    lida: bool = True
 
 
 class SaleItemIn(BaseModel):

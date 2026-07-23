@@ -1,8 +1,8 @@
 # Perfume 3D — Backend
 
-Backend FastAPI do MVP acadêmico de captura e reconstrução 3D de perfumes. O
-app Flutter (`../front`) captura um lote de imagens, envia a este serviço, e
-depois busca o modelo `.glb` gerado para renderizar no visualizador 3D.
+Backend FastAPI do MVP acadêmico de captura e reconstrução 3D de perfumes. O app
+Flutter do repositório `perfume-3d-frontend` captura um lote de imagens, envia a este
+serviço e depois busca o modelo `.glb` gerado para renderizar no visualizador 3D.
 
 ## Stack
 
@@ -55,36 +55,86 @@ tests/                    # pytest suite
 implementação raiz em `build_pipeline()`, e **cada stage** do pipeline IA também é uma
 Strategy ligada/desligada pelo `.env`. Documentação detalhada e didática em [`docs/`](docs/README.md).
 
+## Validação e resultados
+
+### Testes automatizados
+
+Na execução de referência de 2026-07-22, o backend coletou **309 testes em 27
+arquivos**: **308 passaram** e **1 foi pulado**. O único skip é a integração real
+com o Hunyuan, desabilitada por padrão porque exige o container de IA ativo.
+
+### Benchmark dos pipelines 3D
+
+O benchmark comparou a geração por IA, o caminho procedural com Blender e a
+fotogrametria Meshroom em modelos *held-out*, usando renderizações matte e
+realistas. Chamfer menor representa menor erro geométrico; F-Score maior representa
+melhor correspondência com a geometria de referência.
+
+| Método | Sucessos registrados | Chamfer L1 matte ↓ | F-Score@1% matte ↑ | Tempo médio matte |
+|---|---:|---:|---:|---:|
+| IA (Hunyuan3D) | 24/26 (92,3%) | **0,0370** | **0,5637** | 838,4 s |
+| Blander (template/Blender) | 24/26 (92,3%) | 0,1053 | 0,1364 | **20,9 s** |
+| Meshroom | 0/24 (0%) | — | — | — |
+
+![Taxa de sucesso dos métodos avaliados](analysis/01_taxa_sucesso.png)
+
+![Relação entre tempo de processamento e qualidade geométrica](analysis/03_tempo_vs_qualidade.png)
+
+Nos casos concluídos, a IA obteve qualidade geométrica superior, enquanto o
+caminho Blender foi muito mais rápido. As diferenças IA × Blender em Chamfer L1
+e F-Score@1% foram significativas no teste de Wilcoxon pareado em ambos os modos
+(`p <= 0,001953`). O Meshroom não concluiu os 24 ensaios registrados em superfícies
+reflexivas/translúcidas; dois casos previstos não possuem execução registrada.
+
+Os resultados usam 13 modelos com renderizações sintéticas e métricas geométricas,
+sem avaliação perceptual de textura. IA/Blender receberam 4 vistas cardeais e o
+Meshroom, 28 vistas. Portanto, os números demonstram o comportamento neste protocolo,
+mas não devem ser tratados como garantia de desempenho em qualquer conjunto real.
+
+> O rótulo `Blander` foi mantido nos gráficos e no CSV para preservar a
+> rastreabilidade do experimento; a implementação correspondente usa Blender.
+
+Detalhes, dispersão e testes estatísticos: [resumo da análise](analysis/analysis_summary.md)
+e [protocolo de avaliação](eval/README.md).
+
 ## Pré-requisitos
 
 - **Python 3.12+** (foi desenvolvido com 3.14, mas 3.12 e 3.13 também funcionam)
-- **Docker** para rodar o Postgres
+- **Docker Desktop** para rodar Postgres e, no modo `integrated`, o Hunyuan
+- **GPU NVIDIA + suporte a GPU no Docker** para o Hunyuan3D-2mv
 - **Git**
 
 ## Setup
 
 ### 1. Postgres
 
-Este projeto assume o container `tcc-postgres` na porta `5433` com banco `tcc`
-e credenciais `postgres/postgres`. Se ainda não tem:
+O [`docker-compose.yml`](docker-compose.yml) usa as variáveis `POSTGRES_*`
+do `.env`, publica o banco apenas em `127.0.0.1:5433` e preserva os dados no
+volume `tcc_postgres_data`:
 
 ```powershell
-docker run -d `
-  --name tcc-postgres `
-  -e POSTGRES_USER=postgres `
-  -e POSTGRES_PASSWORD=postgres `
-  -e POSTGRES_DB=tcc `
-  -p 5433:5432 `
-  postgres:16
+Copy-Item .env.example .env
+# Ajuste POSTGRES_PASSWORD e use a mesma senha na DATABASE_URL.
+docker compose up -d postgres
+docker compose ps
 ```
 
-Se já existe mas está parado:
+### 2. IA Hunyuan3D-2mv (modo `integrated`)
 
 ```powershell
-docker start tcc-postgres
+docker compose up -d --build hunyuan
+docker compose logs -f --tail=120 hunyuan
 ```
 
-### 2. Ambiente Python
+A carga com pesos em cache pode levar cerca de 4–10 minutos; no primeiro uso há
+também o download de aproximadamente 5 GB. Confirme o checkpoint principal em
+`http://localhost:7860/health`: o resultado esperado contém `status=ready`,
+`shape_mode=multi-view`, `shape_repo=tencent/Hunyuan3D-2mv` e
+`fallback=false`. Se aparecer `single-view`, o serviço está funcional em modo
+degradado e usa somente a primeira foto na geometria. Detalhes no
+[README do serviço Hunyuan](docker/hunyuan/README.md).
+
+### 3. Ambiente Python
 
 ```powershell
 # criar venv e ativar
@@ -95,15 +145,14 @@ py -m venv .venv
 pip install -r requirements-dev.txt
 ```
 
-### 3. Variáveis de ambiente
+### 4. Variáveis de ambiente
 
-```powershell
-Copy-Item .env.example .env
-```
+O arquivo `.env` criado na etapa 1 traz valores de desenvolvimento. Antes de subir
+os serviços, troque a senha de exemplo tanto em `POSTGRES_PASSWORD` quanto em
+`DATABASE_URL`. As demais opções do pipeline estão documentadas em
+[docs/03 — Inicialização](docs/03-inicializacao-do-projeto.md).
 
-O `.env` default já aponta para `postgresql+asyncpg://postgres:postgres@localhost:5433/tcc`.
-
-### 4. Subir o servidor
+### 5. Subir o servidor
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -122,9 +171,10 @@ diretórios `storage/uploads/` e `storage/models/`, e inicia o worker da fila.
 | http://10.0.2.2:8000 | Base URL para o app Flutter em **emulador Android** |
 | http://&lt;IP-da-maquina&gt;:8000 | Base URL para o app em **device físico** na mesma Wi-Fi |
 
-Para device físico, ajuste `backendBaseUrl` em
-[`../front/lib/core/constants/app_constants.dart`](../front/lib/core/constants/app_constants.dart)
-e libere a porta 8000 no firewall do Windows.
+Para device físico, execute o frontend com
+`--dart-define=BACKEND_BASE_URL=http://IP_DA_MAQUINA:8000`; a configuração está em
+`perfume-3d-frontend/lib/core/constants/app_constants.dart`. Se necessário, libere a
+porta 8000 no firewall do Windows.
 
 ## Endpoints
 
@@ -174,10 +224,12 @@ o `.glb` via este path. Não precisa ser chamado diretamente pelo app.
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Cobertura atual: **285 testes** (`pytest --collect-only`), distribuídos entre o módulo
-`captures` (pipeline, cache, stages, router, service, fila — ~196), a suíte de avaliação
-`tests/eval/` (métricas geométricas — 52), os templates normalizados (25) e os testes
-end-to-end (`test_main.py` — 11).
+Suíte atual: **309 testes em 27 arquivos** (`pytest`, 2026-07-22),
+distribuídos entre o módulo `captures` (pipeline, cache, stages, router, service e fila —
+215), a suíte de avaliação `tests/eval/` (métricas geométricas — 52), os templates
+normalizados (25), a configuração do servidor Hunyuan em Docker (5), a integração
+real opt-in com o Hunyuan (1) e os testes end-to-end
+(`test_main.py` — 11).
 
 Os testes usam SQLite (`aiosqlite`) em arquivo temporário, sem exigir Postgres rodando;
 componentes que dependem de Blender/rembg/CLIP/Hunyuan são **pulados** quando essas
@@ -213,7 +265,7 @@ curl -o cubo.glb http://localhost:8000/files/models/<uuid>.glb
 ## Estados do job
 
 Os nomes são **idênticos** ao que o parser do Flutter reconhece em
-[`processing_job.dart:64`](../front/lib/features/processing/domain/processing_job.dart#L64).
+`perfume-3d-frontend/lib/features/processing/domain/processing_job.dart`.
 
 | Estado | Significado |
 |---|---|

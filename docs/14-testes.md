@@ -13,7 +13,7 @@ Estratégia: testes de unidade e integração com **mocks** onde custo é alto (
 
 ## Contagem atual
 
-A suíte tem **285 funções de teste** distribuídas em 24 ficheiros (`pytest --collect-only`, 2026-05-28). Na prática, vários são **pulados** (não falham) quando dependências externas faltam — Blender, `rembg`, CLIP (`torch`/`transformers`) ou o contêiner Hunyuan. Nenhum teste exige Postgres.
+A suíte tem **309 testes coletados em 27 arquivos** (`pytest`, 2026-07-22). Na execução local de referência, **308 passaram e 1 foi pulado**: `tests/integration/test_hunyuan_real.py`, que exige o contêiner Hunyuan ativo. Outros testes também usam skips condicionais (em vez de falhar) quando dependências externas faltam — Blender, `rembg`, CLIP (`torch`/`transformers`) ou o contêiner Hunyuan. Nenhum teste exige Postgres. Os cinco testes em `tests/test_hunyuan_server.py` protegem a separação entre checkpoint multi-view, textura e fallback, o download restrito ao `safetensors` e os metadados de `/health`.
 
 ### Núcleo (Fase 2 — templates + CLIP + cor)
 
@@ -50,6 +50,7 @@ A suíte tem **285 funções de teste** distribuídas em 24 ficheiros (`pytest -
 | `tests/modules/captures/test_embeddings.py` | `ClipImageEmbedder` (embedder do cache) | `torch`/`transformers` ausente |
 | `tests/modules/captures/test_cache.py` | `ClipSimilarityCache` (lookup/store, threshold de similaridade) | — |
 | `tests/modules/captures/test_pipeline.py` | `IntegratedPipeline` (composição dos stages, degradação graciosa) | — |
+| `tests/modules/captures/test_transparency_classifier.py` | `DisabledTransparencyClassifier` + `ClipTransparencyClassifier` (10 testes, CLIP mockado) | — |
 | `tests/modules/captures/test_view_router.py` | `Labeled`/`CLIP`/`PositionalViewRouter` (rotulagem de vistas) | CLIP opcional em parte dos casos |
 
 ### Suíte de avaliação — `tests/eval/` (52 testes)
@@ -60,7 +61,7 @@ A suíte tem **285 funções de teste** distribuídas em 24 ficheiros (`pytest -
 | `tests/eval/test_held_out_dataset.py` | loader + validador do `manifest.json` do held-out | — |
 | `tests/eval/test_synthetic_dataset.py` | wrapper de render Blender (subprocess mockado) | Blender p/ integração real |
 
-Cobrem a suíte de benchmark em [`back/eval/`](../eval/) — ver [eval/README.md](../eval/README.md).
+Cobrem a suíte de benchmark em [`eval/`](../eval/) — ver [eval/README.md](../eval/README.md).
 
 > **Ausentes**: o módulo `sales/` ainda não tem cobertura automatizada. Validação manual via app Flutter contra Postgres real.
 
@@ -71,7 +72,7 @@ Cobrem a suíte de benchmark em [`back/eval/`](../eval/) — ver [eval/README.md
 ## Executar
 
 ```powershell
-cd c:\TCC\back
+cd C:\TCC\perfume-3d-backend
 .\.venv\Scripts\python.exe -m pytest
 ```
 

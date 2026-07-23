@@ -161,7 +161,7 @@ A troca deve ser feita criando outra implementação de `LabelUpscaler`, sem alt
 Smoke completo (cobertura legada — `scripts/smoke_phase5.py`):
 
 ```powershell
-cd C:\TCC\back
+cd C:\TCC\perfume-3d-backend
 .\.venv\Scripts\python.exe scripts\smoke_phase5.py C:\imagens_Novas --hunyuan-wait-seconds 900 --max-images 6 --open
 ```
 

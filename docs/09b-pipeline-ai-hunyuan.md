@@ -21,7 +21,7 @@ Esse processor **não** é mais usado como Strategy raiz solta — ele é um *st
 ## Arquitetura: backend → HTTP → Docker → GPU
 
 ```
-FastAPI (back/)
+FastAPI (`perfume-3d-backend/`)
     └── IntegratedPipeline
             └── Hunyuan3DProcessor
                     │  httpx.AsyncClient
@@ -52,15 +52,20 @@ O backend **não importa** `torch`, `transformers`, nem qualquer lib ML pesada. 
 | `texture_resolution` | 2048 | Textura multi-view quando disponível, single-view caso contrário. |
 | `timeout_seconds` (cliente) | 1200 | 20 min — uma run com parâmetros pesados pode demorar 6–12 min na RTX 5050. |
 | `service_url` | `http://localhost:7860` | Configurável via `HUNYUAN_URL` no `.env`. |
+| checkpoint de forma | `tencent/Hunyuan3D-2mv/hunyuan3d-dit-v2-mv` (`fp16`) | Usa `front`, `left`, `back` e `right` na geometria. |
+| fallback de forma | `tencent/Hunyuan3D-2/hunyuan3d-dit-v2-0` (`fp16`) | Modo degradado; usa somente a primeira imagem na geometria. |
+| checkpoint de textura | `tencent/Hunyuan3D-2` | Independente do repositório de forma multi-view. |
 
 Esses defaults vieram da sessão `historico/2026-05-09_integracao-sales-e-melhorias-hunyuan.md`.
+O servidor pré-resolve o snapshot da forma solicitando somente `config.yaml` e
+`model.fp16.safetensors`; o `.ckpt` duplicado do repositório não é necessário.
 
 ## Como subir o contêiner
 
-Veja [docker/hunyuan/README.md](../../docker/hunyuan/README.md) para instruções detalhadas. Resumo:
+Veja [docker/hunyuan/README.md](../docker/hunyuan/README.md) para instruções detalhadas. Resumo:
 
 ```bash
-# Na raiz do repositório (C:\TCC):
+# Na raiz do repositório backend (C:\TCC\perfume-3d-backend):
 
 # Build (20-40min na primeira vez — baixa ~5GB de pesos):
 docker build -t perfume-hunyuan ./docker/hunyuan
@@ -72,16 +77,20 @@ docker run --gpus all -p 7860:7860 perfume-hunyuan
 docker compose up hunyuan
 ```
 
-Aguarde ~2 minutos para o modelo carregar, então:
+A carga com cache pode levar cerca de 4–10 minutos. No primeiro uso, some o
+download do checkpoint multi-view (~5 GB). Aguarde o principal ficar pronto:
 
 ```bash
 curl http://localhost:7860/health
-# → {"status":"ready"}
+# → {"status":"ready","shape_mode":"multi-view",...,"fallback":false}
 ```
 
 ## Contrato HTTP do contêiner
 
-- `GET /health` — `{"status": "loading" | "ready" | "error"}`.
+- `GET /health` — retorna `loading`, `ready` ou `error`. Quando pronto, inclui
+  `shape_mode`, `shape_repo`, `shape_subfolder`, `shape_variant` e `fallback`.
+  O healthcheck do Compose só considera o contêiner saudável quando o corpo
+  contém `status=ready`.
 - `POST /generate` (multipart):
   - `images`: 1..6 arquivos (PNG RGBA preferencial; o servidor faz `convert("RGBA")` mas máscara pré-aplicada melhora a qualidade do mesh).
   - `octree_resolution`, `num_inference_steps`, `guidance_scale`, `mc_algo`, `texture_resolution` — todos como `Form`.
@@ -119,7 +128,11 @@ O `IntegratedPipeline` garante isto, mas se você instanciar o processor solo:
 
 Dentro do `IntegratedPipeline`, falhas do Hunyuan caem em duas categorias:
 
-1. **Recuperáveis no próprio contêiner** (server.py faz fallback): `dmc → mc`, `octree 384 → 256`, textura multi-view → single-view, lista vazia (`PipelineSemMalhaError`). Tudo isso é log + retry interno.
+1. **Recuperáveis no próprio contêiner** (server.py faz fallback): checkpoint de
+   forma multi-view → single-view de outro repositório, `dmc → mc`, octree
+   `384 → 256`, textura multi-view → single-view e lista vazia
+   (`PipelineSemMalhaError`). O `/health` revela quando o fallback de checkpoint
+   foi usado.
 2. **Não recuperáveis** (`/health` não responde, timeout do cliente, GLB inválido): o pipeline integrado decide entre:
    - Fallback para `TemplateProcessor` se `PIPELINE_FALLBACK_TO_TEMPLATE=true` (default `false` — preserva a falha como sinal de problema operacional).
    - Marcar o job como `error` com mensagem específica.
@@ -142,4 +155,4 @@ Dentro do `IntegratedPipeline`, falhas do Hunyuan caem em duas categorias:
 - [09g — Cache de similaridade CLIP](09g-cache-similaridade-clip.md)
 - [10b — Segmentação e extração de label](10b-segmentacao-e-label.md) (entrada do Hunyuan)
 - Código: [`app/modules/captures/processor.py`](../app/modules/captures/processor.py) (classe `Hunyuan3DProcessor`)
-- Docker: [`docker/hunyuan/`](../../docker/hunyuan/) (Dockerfile, server.py, README)
+- Docker: [`docker/hunyuan/`](../docker/hunyuan/) (Dockerfile, server.py, README)

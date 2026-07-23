@@ -11,7 +11,7 @@
 
 ## O que o backend é
 
-O `perfume-3d-backend` é um serviço HTTP em **FastAPI** que recebe um lote de fotos de um perfume, gera um modelo 3D `.glb` correspondente e devolve a URL do modelo pronto. É o servidor par do app Flutter em [`../../front`](../../front).
+O `perfume-3d-backend` é um serviço HTTP em **FastAPI** que recebe um lote de fotos de um perfume, gera um modelo 3D `.glb` correspondente e devolve a URL do modelo pronto. É o servidor par do app Flutter em [`perfume-3d-frontend`](../../perfume-3d-frontend).
 
 A geração 3D usa um **pipeline integrado** baseado em IA generativa:
 

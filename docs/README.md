@@ -1,6 +1,6 @@
 # Documentação técnica — backend `perfume-3d-backend`
 
-Esta pasta descreve o estado **planejado** do backend FastAPI na raiz `back/`. O backend é o serviço HTTP que recebe lotes de fotos do app Flutter, gera um modelo 3D `.glb` por meio de um **pipeline integrado de IA (Hunyuan3D + pós-processamento)** e devolve a URL do modelo pronto. Modelos já gerados de perfumes equivalentes são reaproveitados via **cache por similaridade visual (CLIP)** para evitar regerar o mesmo frasco.
+Esta pasta descreve o backend FastAPI do repositório `perfume-3d-backend/`. O backend é o serviço HTTP que recebe lotes de fotos do app Flutter, gera um modelo 3D `.glb` por meio de um **pipeline integrado de IA (Hunyuan3D + pós-processamento)** e devolve a URL do modelo pronto. Modelos já gerados de perfumes equivalentes são reaproveitados via **cache por similaridade visual (CLIP)** para evitar regerar o mesmo frasco.
 
 **Conjunto de documentos:** `01-` a `15-` (todos versionados em `docs/`). Quando código e doc divergem, **o código manda** — atualize o Markdown após alterações reais. Os docs marcados como *planejado* descrevem o desenho aprovado para a integração; a implementação acontece em commits subsequentes.
 
@@ -44,7 +44,7 @@ Esta pasta descreve o estado **planejado** do backend FastAPI na raiz `back/`. O
 
 ## Convenções
 
-- Todos os caminhos são relativos à raiz `back/`.
+- Todos os caminhos são relativos à raiz do repositório `perfume-3d-backend/`.
 - O código Python é a fonte canônica. Quando houver divergência, **atualize os docs** (estão errados, não o código).
 - Docs marcados como *planejado* descrevem o design aprovado; código pode estar parcialmente implementado.
 - Exemplos de comando assumem PowerShell em Windows. Para bash/zsh, traduza os paths e os ativadores de venv.
@@ -61,6 +61,6 @@ Ao modificar uma rota, configuração, módulo ou processo, atualize **pelo meno
 
 ## Relação com o front
 
-O contrato HTTP entre back e front está em [13 - Endpoints HTTP](13-endpoints-http.md) (`jobId`, `modelUrl` em camelCase, valores de `status`). Se o repositório Flutter tiver um documento de contrato partilhado (ex. em `front/docs/`), mantenha-o alinhado com a secção 13.
+O contrato HTTP entre backend e frontend está em [13 - Endpoints HTTP](13-endpoints-http.md) (`jobId`, `modelUrl` em camelCase, valores de `status`) e no documento correspondente do frontend em [`16-contrato-backend.md`](../../perfume-3d-frontend/docs/16-contrato-backend.md). Mantenha os dois alinhados.
 
-Importante: o front **não pré-processa** as fotos. Ele faz só compressão JPEG (`imageQuality: 90`) e feedback de qualidade ao vivo (`FrameAnalyzer` em `front/lib/core/utils/frame_analyzer.dart`). EXIF, white-balance, remoção de fundo e segmentação ficam todos no backend.
+Importante: o frontend **não pré-processa** as fotos além da compressão JPEG (`imageQuality: 90`). EXIF, white-balance, remoção de fundo e segmentação ficam no backend.

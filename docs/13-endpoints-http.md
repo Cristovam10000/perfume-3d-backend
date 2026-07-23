@@ -60,7 +60,7 @@ O front deve fazer *polling* (ex. a cada 2–3 s) até `status` ser `completed` 
 
 ## Endpoints comerciais — `/sales/*`
 
-API CRUD do módulo `sales/`. Todos retornam JSON com aliases camelCase (Pydantic `serialization_alias`); consumido pelo `SalesController` do app Flutter (`front/lib/features/sales/data/sales_repository.dart` — não existe uma classe `HttpSalesRepository` separada).
+API CRUD do módulo `sales/`. Todos retornam JSON com aliases camelCase (Pydantic `serialization_alias`); consumido pelo `SalesController` do app Flutter ([`sales_repository.dart`](../../perfume-3d-frontend/lib/features/sales/data/sales_repository.dart) — não existe uma classe `HttpSalesRepository` separada).
 
 ### `GET /sales/snapshot`
 
@@ -161,4 +161,4 @@ Documentado em [09g - Cache de similaridade CLIP](09g-cache-similaridade-clip.md
 - [09f — Pipeline integrado](09f-pipeline-integrado.md) (sequência interna do `POST /captures`)
 - [09g — Cache de similaridade CLIP](09g-cache-similaridade-clip.md) (endpoints admin futuros)
 - [12 — Armazenamento e banco](12-armazenamento-e-banco.md) (tabelas referenciadas pelos endpoints `/sales/*` e a nova `modelos_3d_universais`)
-- Front: [`16 - Contrato do backend`](../../front/docs/16-contrato-backend.md), [`18 - Feature sales`](../../front/docs/18-feature-sales.md)
+- Frontend: [`16 - Contrato do backend`](../../perfume-3d-frontend/docs/16-contrato-backend.md), [`18 - Feature sales`](../../perfume-3d-frontend/docs/18-feature-sales.md)

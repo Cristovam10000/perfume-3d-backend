@@ -20,10 +20,10 @@ Como sair de um clone novo até o servidor respondendo `200` no `/health`. Coman
 
 ## 1. Postgres + Hunyuan via docker-compose
 
-A raiz do repositório (`C:\TCC`) tem um `docker-compose.yml` que sobe `postgres` (DB do backend) e `hunyuan` (serviço de geração 3D). Em uma instalação fresca:
+A raiz do repositório backend (`C:\TCC\perfume-3d-backend`) tem um `docker-compose.yml` que sobe `postgres` (DB do backend) e `hunyuan` (serviço de geração 3D). Em uma instalação fresca:
 
 ```powershell
-cd C:\TCC
+cd C:\TCC\perfume-3d-backend
 docker compose up -d postgres   # rápido (~10s)
 docker compose up -d hunyuan    # primeira vez: build de 20-40min + download de ~5GB de pesos
 ```
@@ -32,9 +32,9 @@ Verificar:
 
 ```powershell
 docker compose ps
-# postgres deve estar Up (healthy); hunyuan demora ~2min após start até ficar 'ready'.
+# postgres deve ficar healthy; hunyuan fica starting até os modelos estarem prontos.
 Invoke-RestMethod http://localhost:7860/health
-# → {"status":"loading"} ou {"status":"ready"}
+# sucesso completo: status=ready, shape_mode=multi-view, fallback=False
 ```
 
 Para desenvolvimento sem GPU, é possível subir só o postgres e usar `PIPELINE_MODE=fake` ou `PIPELINE_MODE=template` no backend.
@@ -44,7 +44,7 @@ Para desenvolvimento sem GPU, é possível subir só o postgres e usar `PIPELINE
 ## 2. Ambiente Python
 
 ```powershell
-cd c:\TCC\back
+cd C:\TCC\perfume-3d-backend
 
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
@@ -79,9 +79,10 @@ Custo: ~200MB de pesos ONNX do `rembg` na primeira execução (cacheado em `~/.u
 
 ```powershell
 Copy-Item .env.example .env
+# Troque POSTGRES_PASSWORD e repita a senha na DATABASE_URL.
 ```
 
-O `.env.example` já vem com defaults sãs para dev local. Pontos que talvez você queira ajustar:
+O `.env.example` já vem com valores de desenvolvimento. Pontos que talvez você queira ajustar:
 
 | Variável | Default | Quando mudar |
 |---|---|---|
@@ -93,7 +94,8 @@ O `.env.example` já vem com defaults sãs para dev local. Pontos que talvez voc
 | `CACHE_EMBEDDER_TYPE` | `clip` | Mude para `disabled` em ambientes sem `torch`/transformers; o cache opera apenas com cold-store. |
 | `COLOR_DETECTOR_TYPE` | `disabled` | Mude para `average` se quer persistir cor do líquido como metadado (Hunyuan já infere; opcional). |
 | `PIPELINE_FALLBACK_TO_TEMPLATE` | `false` | Ative se quer que o backend gere via `TemplateProcessor` quando o Hunyuan estiver offline. |
-| `DATABASE_URL` | aponta para `tcc-postgres` na 5433 | Mude se seu Postgres está em outro host/porta. |
+| `POSTGRES_PASSWORD` | placeholder local | Troque e mantenha a mesma senha dentro de `DATABASE_URL`. |
+| `DATABASE_URL` | aponta para o Postgres local na 5433 | Mude se seu Postgres está em outro host/porta. |
 
 Detalhes de cada chave em [07 — Camada `core` → secção *Settings*](07-camada-core.md#settings) e [09f](09f-pipeline-integrado.md) §"Configuração".
 
@@ -138,7 +140,7 @@ curl.exe http://localhost:8000/health
 | http://10.0.2.2:8000 | Base URL para o app Flutter no **emulador Android** |
 | http://&lt;IP-da-LAN&gt;:8000 | Base URL para device físico na mesma Wi-Fi |
 
-Para device físico, ajuste `backendBaseUrl` em [`../../front/lib/core/constants/app_constants.dart`](../../front/lib/core/constants/app_constants.dart) e libere a porta 8000 no firewall do Windows (`New-NetFirewallRule -DisplayName "TCC backend 8000" -Direction Inbound -LocalPort 8000 -Protocol TCP -Action Allow`).
+Para device físico, passe `--dart-define=BACKEND_BASE_URL=http://IP_DA_MAQUINA:8000` ao executar o Flutter; a configuração está em [`AppConstants`](../../perfume-3d-frontend/lib/core/constants/app_constants.dart). Se necessário, libere a porta 8000 no firewall do Windows (`New-NetFirewallRule -DisplayName "Perfume 3D backend 8000" -Direction Inbound -LocalPort 8000 -Protocol TCP -Action Allow`).
 
 ## 6. Smoke test do fluxo completo
 
@@ -177,7 +179,7 @@ curl -o cubo.glb http://localhost:8000/files/models/<uuid>.glb
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-A suíte completa tem **285 testes** em 24 arquivos (`pytest --collect-only`). Os testes **não precisam** de Postgres rodando — usam SQLite em arquivo temporário (fixture `session_factory` em [`tests/conftest.py`](../tests/conftest.py)). Componentes que dependem de Blender/rembg/CLIP/Hunyuan são pulados quando essas dependências faltam.
+A suíte completa tem **309 testes em 27 arquivos** (`pytest`, 2026-07-22). Os testes **não precisam** de Postgres rodando — usam SQLite em arquivo temporário (fixture `session_factory` em [`tests/conftest.py`](../tests/conftest.py)). Componentes que dependem de Blender/rembg/CLIP/Hunyuan são pulados quando essas dependências faltam. Na execução local de referência, 308 testes passaram e apenas a integração real com o Hunyuan foi pulada porque exige o contêiner ativo.
 
 Detalhes em [14 - Testes](14-testes.md).
 
@@ -208,7 +210,7 @@ Provavelmente você ativou o venv errado. Confirme com:
 .\.venv\Scripts\python.exe -c "import sys; print(sys.executable)"
 ```
 
-O caminho deve apontar para `.venv\Scripts\python.exe` dentro de `back/`.
+O caminho deve apontar para `.venv\Scripts\python.exe` dentro de `perfume-3d-backend/`.
 
 ### `connection refused` no Postgres
 
@@ -229,13 +231,20 @@ Em CPU, a primeira inferência leva ~5-10s (carrega pesos). Se travar, é provav
 
 ### Hunyuan demora muito a ficar `ready`
 
-O `GET /health` do container retorna `loading` enquanto os ~5GB de pesos sobem para a VRAM. Esperar 2-3 minutos é normal. Se passar disso:
+O `GET /health` do container retorna `loading` enquanto baixa pesos e o `mmgp`
+os organiza entre RAM e VRAM. Na RTX 5050 observada, a inicialização com cache
+pode levar cerca de 4–10 minutos; no primeiro uso, some o download de ~5 GB.
+Acompanhe em vez de confiar apenas no ponto verde do Docker Desktop:
 
 ```powershell
 docker compose logs -f --tail=120 hunyuan
 ```
 
-Procure por erros de CUDA (`no kernel image`, `out of memory`) ou de carregamento de checkpoint. Detalhes em [`../../docker/hunyuan/README.md`](../../docker/hunyuan/README.md) e [09b](09b-pipeline-ai-hunyuan.md).
+Procure por erros de CUDA (`no kernel image`, `out of memory`) ou de carregamento de checkpoint. Detalhes em [`../docker/hunyuan/README.md`](../docker/hunyuan/README.md) e [09b](09b-pipeline-ai-hunyuan.md).
+
+Mesmo com `status=ready`, confira `shape_mode=multi-view` e `fallback=False`.
+`single-view` com fallback significa que o serviço está disponível em modo
+degradado e usa somente a primeira imagem para gerar a geometria.
 
 ### Hunyuan responde 503 / timeout durante `/generate`
 
