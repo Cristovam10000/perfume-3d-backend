@@ -169,6 +169,58 @@ class SalesRepository:
         await self.session.commit()
         return await self._client_by_id(client_id)
 
+    async def delete_client(self, client_id: int) -> bool:
+        """Desativa um cliente sem apagar seu eventual historico financeiro.
+
+        Clientes com vendas nao podem ser desativados porque as vendas e
+        parcelas continuariam referenciando-os no snapshot comercial.
+        """
+        active = (
+            await self.session.execute(
+                text("select ativo from clientes where id = :id"),
+                {"id": client_id},
+            )
+        ).scalar_one_or_none()
+        if active is None:
+            await self.session.rollback()
+            return False
+        # DELETE e idempotente: repetir uma exclusao ja concluida e sucesso.
+        if active is False:
+            return True
+
+        has_sales = (
+            await self.session.execute(
+                text(
+                    """
+                    select exists(
+                        select 1 from vendas where cliente_id = :id
+                    )
+                    """
+                ),
+                {"id": client_id},
+            )
+        ).scalar_one()
+        if bool(has_sales):
+            await self.session.rollback()
+            raise ValidationError(
+                "Não é possível excluir um cliente que possui vendas. "
+                "O histórico financeiro precisa ser preservado."
+            )
+
+        await self.session.execute(
+            text(
+                """
+                update clientes
+                set ativo = false,
+                    atualizado_em = current_timestamp
+                where id = :id
+                """
+            ),
+            {"id": client_id},
+        )
+        await self.session.commit()
+        return True
+
     async def create_product(self, payload: ProductCreateIn) -> ProdutoOut:
         if payload.request_id:
             existing_id = (

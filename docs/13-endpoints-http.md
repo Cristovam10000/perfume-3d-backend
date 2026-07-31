@@ -95,6 +95,13 @@ API CRUD do módulo `sales/`. Todos retornam JSON com aliases camelCase (Pydanti
 - Nome, telefone e bairro são obrigatórios. O `PATCH` responde **404** quando o
   cliente ativo não existe.
 
+### `DELETE /sales/clients/{client_id}`
+
+Faz exclusão lógica (`ativo = false`) e responde **204**. Para preservar o
+histórico financeiro, clientes que possuem vendas não podem ser excluídos e
+recebem **422**. Um ID inexistente recebe **404**; repetir a exclusão de um
+cliente já desativado continua respondendo **204**.
+
 ### `POST /sales/products`
 
 - **Content-Type:** `application/json`

@@ -28,6 +28,7 @@ O fluxo principal usa `PIPELINE_MODE=integrated`: preprocessamento, remocao de f
 | `GET` | `/captures/{job_id}/status` | Retorna status, mensagem, erro e `modelUrl`. |
 | `GET` | `/sales/snapshot` | Snapshot comercial completo. |
 | `POST/PATCH` | `/sales/clients`, `/sales/clients/{id}` | Cria ou edita cliente. |
+| `DELETE` | `/sales/clients/{id}` | Desativa cliente sem vendas. |
 | `POST/PATCH` | `/sales/products`, `/sales/products/{id}` | Cria ou edita produto. |
 | `PATCH` | `/sales/products/{product_id}/stock` | Ajusta estoque. |
 | `POST` | `/sales/sales` | Cria venda e parcelas. |

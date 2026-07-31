@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response, status
 
 from ...core.exceptions import NotFoundError
 from ...database import get_session
@@ -65,6 +65,21 @@ async def update_client(
     if client is None:
         raise NotFoundError(f"Cliente {client_id} nao encontrado")
     return client
+
+
+@router.delete(
+    "/clients/{client_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_client(
+    client_id: int,
+    session=Depends(get_session),
+) -> Response:
+    repo = SalesRepository(session)
+    deleted = await repo.delete_client(client_id)
+    if not deleted:
+        raise NotFoundError(f"Cliente {client_id} nao encontrado")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
