@@ -21,7 +21,7 @@ class CaptureJob(Base):
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     model_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # product_id opcional: quando o POST /captures vem amarrado a um produto
+    # product_id opcional: quando o POST /captures vem amarrado a um produto 
     # do tenant (em /sales). Usado pelo IntegratedPipeline para fazer UPSERT
     # em modelos_3d_produto ao final do pipeline.
     product_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
