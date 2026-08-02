@@ -62,6 +62,8 @@ A conclusão é que o problema está nos *prompts* (o sinal), não no corte. O e
 
 ## Resultado 3 — o extrator de rótulo nunca funcionou
 
+> **Resolvido.** A detecção passou de traço de borda para região preenchida; o La vivacité agora é detectado e projetado. Ver [09e](09e-aplicacao-label.md#detecção-por-região-2026-08).
+
 Executado sobre as **21 fotos reais** dos 6 jobs: **0 detecções**. Não é o threshold de confiança — o detector não produz candidato nenhum.
 
 Instrumentando os filtros de `HomographyLabelExtractor`:
@@ -77,6 +79,8 @@ Instrumentando os filtros de `HomographyLabelExtractor`:
 Causa: os contornos vêm de um **mapa de bordas Canny dilatado**, então `contourArea` mede a área do *traço* da borda (~3 px de espessura), não a região que ela delimita. A faixa de 5–60% foi calibrada como se fossem regiões preenchidas. Baixar o mínimo não resolve — a 0,001% entrariam os 270 fragmentos aleatórios do GRAND.
 
 Consequência: nenhum job jamais produziu `with_label.glb`, e `project_label.py` **nunca executou com entrada real**. Ele não é ruim na tarefa; ele é **não testado** nela. A distinção importa.
+
+Quando finalmente executou, apareceram dois defeitos que só entrada real revelaria: o cluster frontal incluía tampa e adereços (decal deslocado para a borda) e o offset fixo deixava o plano atrás da barriga do frasco (decal partido em manchas). Ambos corrigidos — ver [09e](09e-aplicacao-label.md#heurística-de-face-frontal).
 
 ## Resultado 4 — decomposição do efeito de vidro
 

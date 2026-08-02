@@ -371,6 +371,7 @@ class IntegratedPipeline(Processor):
         # Extrai a melhor label entre todas as fotos disponiveis.
         melhor_label: Path | None = None
         melhor_conf = 0.0
+        melhor_altura: float | None = None
         for foto, mascara in zip(preprocessed, masked):
             try:
                 extraida = await self.label_extractor.extract(
@@ -390,6 +391,9 @@ class IntegratedPipeline(Processor):
             if extraida.confidence > melhor_conf:
                 melhor_conf = extraida.confidence
                 melhor_label = extraida.image_path
+                # A altura vem da mesma foto da label — o projetor a usa para
+                # posicionar o decal na altura certa do frasco.
+                melhor_altura = extraida.vertical_position
                 if extraida.confidence >= self.label_min_confidence:
                     # Acima do threshold; usa essa e para de procurar.
                     break
@@ -422,6 +426,7 @@ class IntegratedPipeline(Processor):
                     label_image=label_upscaled,
                     output_glb=with_label,
                     front_axis=self.front_axis,
+                    vertical_position=melhor_altura,
                 )
             )
             return with_label

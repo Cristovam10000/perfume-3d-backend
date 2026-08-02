@@ -23,6 +23,12 @@ from pathlib import Path
 import bpy  # noqa: E402
 from mathutils import Vector  # noqa: E402
 
+# `segment_bottle.py` é irmão deste arquivo; rodando via `blender --python`, o
+# diretório do script não entra no sys.path automaticamente.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from segment_bottle import alturas_das_faces, encontrar_corte  # noqa: E402
+
 
 FRONT_AXES = {
     "front_y_neg": Vector((0.0, -1.0, 0.0)),
@@ -52,6 +58,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--front-axis", choices=sorted(FRONT_AXES), default="front_y_neg")
     parser.add_argument("--cosine-threshold", type=float, default=0.70)
     parser.add_argument("--label-scale", type=float, default=0.70)
+    parser.add_argument(
+        "--vertical-position",
+        type=float,
+        default=None,
+        help=(
+            "Altura do centro da label na silhueta do frasco (0=topo, 1=base), "
+            "vinda do LabelExtractor. Sem isso o decal cai no centroide do "
+            "corpo, que fica abaixo da label real na maioria dos frascos."
+        ),
+    )
     return parser.parse_args(get_argv_after_double_dash())
 
 
@@ -138,11 +154,24 @@ def detectar_cluster_frontal(
     eixo_frente: Vector,
     *,
     threshold_inicial: float,
+    z_maximo: float | None = None,
 ) -> tuple[list[bpy.types.MeshPolygon], float, int]:
-    """Retorna poligonos frontais, area total e face principal."""
+    """Retorna poligonos frontais, area total e face principal.
+
+    `z_maximo` restringe o cluster ao **corpo** do frasco (abaixo do ombro).
+    Sem ele, "voltado para a frente" inclui tampa e adereços — no La vivacité o
+    laço lateral puxava o centroide ponderado por área para a esquerda e a
+    `altura_face` dava 1,88 num frasco de altura 1,9, ou seja, o cluster era o
+    frasco inteiro. O decal saía pequeno e deslocado para a borda.
+    """
     area_total = sum(area_poligono_mundo(obj, p) for p in obj.data.polygons)
     if area_total <= 0:
         raise RuntimeError("mesh sem area")
+
+    matriz = obj.matrix_world
+
+    def no_corpo(poligono: bpy.types.MeshPolygon) -> bool:
+        return z_maximo is None or (matriz @ poligono.center).z <= z_maximo
 
     melhor: tuple[list[bpy.types.MeshPolygon], float, int] | None = None
     for threshold in (threshold_inicial, 0.55, 0.40, 0.25):
@@ -152,6 +181,8 @@ def detectar_cluster_frontal(
         face_indice = -1
 
         for poligono in obj.data.polygons:
+            if not no_corpo(poligono):
+                continue
             normal = normal_poligono_mundo(obj, poligono)
             if normal.dot(eixo_frente) < threshold:
                 continue
@@ -251,8 +282,14 @@ def criar_decal_label(
     label_path: Path,
     *,
     label_scale: float,
+    posicao_vertical: float | None = None,
 ) -> float:
-    """Cria um plano com a label sobre o cluster frontal."""
+    """Cria um plano com a label sobre o cluster frontal.
+
+    `posicao_vertical` (0=topo do frasco, 1=base) vem do `LabelExtractor` e
+    define a altura do decal. Sem ela o decal fica no centroide do cluster —
+    o meio do corpo —, tipicamente abaixo de onde a label realmente está.
+    """
     largura_img, altura_img, aspecto_label = dimensoes_label(label_path)
     log(f"label image = {largura_img}x{altura_img} (aspect={aspecto_label:.3f})")
 
@@ -305,9 +342,37 @@ def criar_decal_label(
         peso_total += peso
     centro_3d = centro_3d / max(peso_total, 1e-9)
 
+    if posicao_vertical is not None:
+        # Converte "fração a partir do topo da silhueta" para Z do mundo,
+        # usando a extensão vertical do frasco INTEIRO — a mesma referência que
+        # o extrator usou na foto (a silhueta inclui a tampa).
+        zs = [(obj.matrix_world @ v.co).z for v in obj.data.vertices]
+        z_topo, z_base = max(zs), min(zs)
+        alvo = z_topo - posicao_vertical * (z_topo - z_base)
+        log(
+            f"altura da label: {posicao_vertical:.2f} da silhueta -> "
+            f"z={alvo:.4f} (centroide era {centro_3d.z:.4f})"
+        )
+        centro_3d = Vector((centro_3d.x, centro_3d.y, alvo))
+
+    # O decal e um plano PLANO sobre uma superficie CURVA. Um offset fixo deixa
+    # o meio do plano atras da barriga do frasco, e o decal aparece partido em
+    # manchas nas laterais. Projeta-se os vertices do cluster no eixo da normal
+    # e coloca-se o plano a frente do ponto mais saliente.
+    profundidades = [
+        (obj.matrix_world @ obj.data.vertices[indice].co).dot(normal_media)
+        for poligono in poligonos
+        for indice in poligono.vertices
+    ]
     diagonal = max(obj.dimensions.length, 1.0)
-    offset = normal_media * (diagonal * 0.003)
-    centro_3d = centro_3d + offset
+    margem = diagonal * 0.004
+    if profundidades:
+        saliencia = max(profundidades) - centro_3d.dot(normal_media)
+        avanco = max(saliencia, 0.0) + margem
+    else:
+        avanco = margem
+    centro_3d = centro_3d + normal_media * avanco
+    log(f"decal avancado {avanco:.4f} a frente do centroide (barriga + margem)")
 
     metade_u = eixo_u * (largura_label / 2.0)
     metade_v = eixo_v * (altura_label / 2.0)
@@ -368,11 +433,23 @@ def main() -> int:
         raise RuntimeError("corpo do frasco nao identificado")
     log(f"corpo identificado: {corpo.name}")
 
+    # Restringe ao corpo: sem isso a tampa e adereços (o laço do La vivacité)
+    # entram no cluster frontal e deslocam o decal.
+    z_corte, diag = encontrar_corte(alturas_das_faces(corpo))
+    if z_corte is None:
+        log(f"AVISO: ombro nao identificado ({diag.get('motivo')}) — usando o mesh inteiro")
+    else:
+        log(
+            f"ombro em z_rel={diag['z_rel_pico']:.2f} (razao {diag['razao']:.2f}x); "
+            f"cluster frontal limitado a z <= {z_corte:.4f}"
+        )
+
     eixo_frente = FRONT_AXES[args.front_axis].normalized()
     poligonos, area_cluster, face_indice = detectar_cluster_frontal(
         corpo,
         eixo_frente,
         threshold_inicial=args.cosine_threshold,
+        z_maximo=z_corte,
     )
     log(
         f"cluster frontal: faces={len(poligonos)}, area={area_cluster:.4f}, "
@@ -385,6 +462,7 @@ def main() -> int:
         eixo_frente,
         args.label,
         label_scale=args.label_scale,
+        posicao_vertical=args.vertical_position,
     )
 
     log(f"STATS:target_face_index={face_indice},coverage_ratio={cobertura:.4f}")

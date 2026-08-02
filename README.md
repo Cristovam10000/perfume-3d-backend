@@ -59,8 +59,8 @@ Strategy ligada/desligada pelo `.env`. Documentação detalhada e didática em [
 
 ### Testes automatizados
 
-Na execução de referência de 2026-08-02, o backend coletou **313 testes em 29
-arquivos**: **312 passaram** e **1 foi pulado**. O único skip é a integração real
+Na execução de referência de 2026-08-02, o backend coletou **318 testes em 29
+arquivos**: **317 passaram** e **1 foi pulado**. O único skip é a integração real
 com o Hunyuan, desabilitada por padrão porque exige o container de IA ativo.
 
 ### Benchmark dos pipelines 3D
@@ -225,7 +225,7 @@ o `.glb` via este path. Não precisa ser chamado diretamente pelo app.
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Suíte atual: **313 testes em 29 arquivos** (`pytest`, 2026-08-02), distribuídos entre o
+Suíte atual: **318 testes em 29 arquivos** (`pytest`, 2026-08-02), distribuídos entre o
 módulo `captures` (pipeline, cache, stages, router, service e fila), a suíte de avaliação
 `tests/eval/` (métricas geométricas), os templates normalizados, a configuração do servidor
 Hunyuan em Docker, a integração real opt-in com o Hunyuan e os testes end-to-end
@@ -292,7 +292,8 @@ Os nomes são **idênticos** ao que o parser do Flutter reconhece em
 - [x] Módulo comercial `/sales/*` (clientes, produtos, vendas).
 - [x] Suíte de **avaliação quantitativa** comparando IA × templates × fotogrametria (ver [eval/](eval/README.md)).
 - [ ] Calibrar `CACHE_SIMILARITY_THRESHOLD` com dataset real.
-- [ ] Corrigir o `HomographyLabelExtractor` — 0 detecções em 21 fotos reais (ver [docs/16](docs/16-auditoria-blender.md)).
+- [x] **Corrigir o `HomographyLabelExtractor`** — detecção por região substituiu o traço de borda; La vivacité detectado e projetado (ver [docs/09e](docs/09e-aplicacao-label.md)).
+- [ ] Detecção de rótulo em frascos sem placa física (texto impresso no vidro) — exige detecção de texto.
 - [ ] Recalibrar os prompts do `ClipTransparencyClassifier` — vidro âmbar escuro pontua abaixo de frasco opaco.
 - [ ] Alinhamento rotacional da projeção do topo — estimador por silhueta implementado, mas o Hunyuan arredonda a tampa e apaga o sinal (ver [docs/09h](docs/09h-segmentacao-corpo-tampa.md)).
 - [ ] Migrações com Alembic (hoje é `create_all` + `ensure_*_schema` no startup).

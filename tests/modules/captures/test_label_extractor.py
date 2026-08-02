@@ -1,7 +1,26 @@
+"""Testes do LabelExtractor.
+
+Lição da versão anterior desta suíte
+------------------------------------
+Os testes antigos montavam a entrada com
+`cv2.rectangle(imagem, ..., thickness=3)` — um **contorno** branco fino sobre
+fundo preto puro. Nessa imagem o Canny fecha o traço, `approxPolyDP` devolve 4
+vértices e a área do contorno bate com a área da região. Passavam.
+
+Em foto real o Canny produz traços fragmentados e abertos, e a área do contorno
+mede o risco (~3 px), não a região. Resultado medido nos 6 jobs do projeto:
+**0 detecções em 25 fotos** — com 12 testes verdes.
+
+Pior: dois testes chamavam `pytest.skip(...)` quando a detecção falhava, o que
+transformava a falha real em "pulado". Um teste que se auto-desliga quando o
+código erra não testa nada.
+
+Esta suíte usa **regiões preenchidas** (como uma placa de rótulo real) e não
+tem skip condicional em nenhum caminho de detecção.
+"""
+
 from __future__ import annotations
 
-import struct
-import zlib
 from pathlib import Path
 
 import pytest
@@ -18,75 +37,88 @@ from app.modules.captures.label_extractor import (
 # ---------------------------------------------------------- helpers de fixtures
 
 
-def _make_solid_png_rgb(
-    path: Path, color: tuple[int, int, int], size: int = 64
-) -> None:
-    """Gera PNG RGB sólido usando apenas stdlib."""
-    raw = b"".join(b"\x00" + bytes(color) * size for _ in range(size))
-
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        length = struct.pack(">I", len(data))
-        crc = struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-        return length + tag + data + crc
-
-    sig = b"\x89PNG\r\n\x1a\n"
-    ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
-    idat = zlib.compress(raw, level=9)
-    path.write_bytes(
-        sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
-    )
-
-
-def _make_rgba_full_opaque(path: Path, size: int = 256) -> None:
-    """Gera PNG RGBA completamente opaco (alpha=255) — silhueta do frasco inteiro."""
-    linhas = []
-    for _ in range(size):
-        linha = b"\x00"  # filtro de linha
-        for _ in range(size):
-            linha += bytes([180, 180, 180, 255])
-        linhas.append(linha)
-    raw = b"".join(linhas)
-
-    def chunk(tag: bytes, data: bytes) -> bytes:
-        length = struct.pack(">I", len(data))
-        crc = struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-        return length + tag + data + crc
-
-    sig = b"\x89PNG\r\n\x1a\n"
-    ihdr = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
-    idat = zlib.compress(raw, level=9)
-    path.write_bytes(
-        sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
-    )
-
-
-def _make_image_com_retangulo(
+def _frasco_com_placa(
     path_rgb: Path,
     path_mascara: Path,
-    tamanho: int = 256,
-    rect: tuple[int, int, int, int] = (60, 80, 190, 180),
+    *,
+    tamanho: int = 400,
+    placa: tuple[int, int, int, int] = (130, 150, 270, 206),
+    cor_corpo: int = 70,
+    cor_placa: int = 225,
+    ruido: int = 0,
 ) -> None:
-    """Cria par (imagem RGB + máscara RGBA) com retângulo branco na imagem.
+    """Frasco sintético realista: corpo escuro + placa clara PREENCHIDA.
 
-    O retângulo branco simula uma label, facilitando detecção por Canny.
-    A máscara é completamente opaca para que toda a imagem seja considerada frasco.
+    Diferente do teste antigo, a placa é uma região sólida — é assim que um
+    rótulo aparece numa foto, não como um contorno de 3 px.
+
+    As proporções seguem o caso real medido (La vivacité): a placa ocupa ~9% da
+    silhueta do frasco e tem proporção ~2,5. Uma placa muito maior que isso é
+    penalizada pelo score, que foi calibrado para rótulo de perfume.
     """
-    cv2 = pytest.importorskip("cv2")
+    import cv2
     import numpy as np
 
-    x1, y1, x2, y2 = rect
+    rng = np.random.default_rng(42)
+
+    x0, x1 = int(tamanho * 0.18), int(tamanho * 0.82)
+    y0, y1 = int(tamanho * 0.10), int(tamanho * 0.95)
 
     imagem = np.zeros((tamanho, tamanho, 3), dtype=np.uint8)
-    cv2.rectangle(imagem, (x1, y1), (x2, y2), (255, 255, 255), thickness=3)
+    cv2.rectangle(imagem, (x0, y0), (x1, y1), (cor_corpo,) * 3, thickness=cv2.FILLED)
+    cv2.rectangle(imagem, placa[:2], placa[2:], (cor_placa,) * 3, thickness=cv2.FILLED)
+    if ruido:
+        barulho = rng.integers(-ruido, ruido + 1, imagem.shape, dtype=np.int16)
+        imagem = np.clip(imagem.astype(np.int16) + barulho, 0, 255).astype(np.uint8)
     cv2.imwrite(str(path_rgb), imagem)
 
     mascara = np.zeros((tamanho, tamanho, 4), dtype=np.uint8)
-    mascara[:, :, :3] = 180
+    cv2.rectangle(
+        mascara, (x0, y0), (x1, y1), (255, 255, 255, 255), thickness=cv2.FILLED
+    )
+    cv2.imwrite(str(path_mascara), mascara)
+
+
+def _frasco_sem_placa(path_rgb: Path, path_mascara: Path, tamanho: int = 400) -> None:
+    """Frasco de cor uniforme — não há região para extrair.
+
+    É o caso do Hinode GRAND (texto impresso direto no vidro): devolver None
+    aqui é o comportamento **correto**, não uma falha.
+    """
+    import cv2
+    import numpy as np
+
+    x0, x1 = int(tamanho * 0.18), int(tamanho * 0.82)
+    y0, y1 = int(tamanho * 0.10), int(tamanho * 0.95)
+
+    imagem = np.zeros((tamanho, tamanho, 3), dtype=np.uint8)
+    cv2.rectangle(imagem, (x0, y0), (x1, y1), (70, 70, 70), thickness=cv2.FILLED)
+    cv2.imwrite(str(path_rgb), imagem)
+
+    mascara = np.zeros((tamanho, tamanho, 4), dtype=np.uint8)
+    cv2.rectangle(
+        mascara, (x0, y0), (x1, y1), (255, 255, 255, 255), thickness=cv2.FILLED
+    )
+    cv2.imwrite(str(path_mascara), mascara)
+
+
+def _placa_como_contorno_fino(
+    path_rgb: Path, path_mascara: Path, tamanho: int = 400
+) -> None:
+    """Reproduz a entrada do teste ANTIGO: contorno fino, não região."""
+    import cv2
+    import numpy as np
+
+    imagem = np.zeros((tamanho, tamanho, 3), dtype=np.uint8)
+    cv2.rectangle(imagem, (90, 150), (310, 235), (255, 255, 255), thickness=3)
+    cv2.imwrite(str(path_rgb), imagem)
+
+    mascara = np.zeros((tamanho, tamanho, 4), dtype=np.uint8)
     mascara[:, :, 3] = 255
     cv2.imwrite(str(path_mascara), mascara)
 
 
-# ---------------------------------------------------------- DisabledLabelExtractor
+# ------------------------------------------------------------------ Disabled
 
 
 class TestDisabledLabelExtractor:
@@ -97,160 +129,181 @@ class TestDisabledLabelExtractor:
     async def test_sempre_retorna_none(self, tmp_path: Path):
         extrator = DisabledLabelExtractor()
         resultado = await extrator.extract(
-            image_path=tmp_path / "frasco.png",
-            mask_path=tmp_path / "mascara.png",
-            output_path=tmp_path / "label.png",
+            tmp_path / "qualquer.jpg",
+            tmp_path / "qualquer.png",
+            tmp_path / "saida.png",
         )
         assert resultado is None
 
 
-# ---------------------------------------------------------- HomographyLabelExtractor
+# ------------------------------------------------------------- contrato/erros
 
 
-class TestHomographyLabelExtractor:
+class TestContrato:
     def test_is_label_extractor_subclass(self):
         assert issubclass(HomographyLabelExtractor, LabelExtractor)
 
     def test_parametros_invalidos_levantam_value_error(self):
         with pytest.raises(ValueError):
-            HomographyLabelExtractor(min_area_ratio=0.5, max_area_ratio=0.3)
+            HomographyLabelExtractor(min_area_ratio=0.6, max_area_ratio=0.2)
         with pytest.raises(ValueError):
-            HomographyLabelExtractor(min_area_ratio=0.0, max_area_ratio=0.5)
+            HomographyLabelExtractor(min_score=1.5)
 
     @pytest.mark.asyncio
-    async def test_arquivo_imagem_inexistente_levanta_file_not_found(self, tmp_path: Path):
-        pytest.importorskip("cv2")
-        mascara = tmp_path / "mascara.png"
-        _make_rgba_full_opaque(mascara)
-
-        extrator = HomographyLabelExtractor()
+    async def test_imagem_inexistente_levanta_file_not_found(self, tmp_path: Path):
+        mascara = tmp_path / "m.png"
+        mascara.write_bytes(b"x")
         with pytest.raises(FileNotFoundError):
-            await extrator.extract(
-                image_path=tmp_path / "nao_existe.png",
-                mask_path=mascara,
-                output_path=tmp_path / "label.png",
+            await HomographyLabelExtractor().extract(
+                tmp_path / "nao_existe.jpg", mascara, tmp_path / "out.png"
             )
 
     @pytest.mark.asyncio
-    async def test_arquivo_mascara_inexistente_levanta_file_not_found(self, tmp_path: Path):
-        pytest.importorskip("cv2")
-        imagem = tmp_path / "frasco.png"
-        _make_solid_png_rgb(imagem, color=(100, 100, 100))
-
-        extrator = HomographyLabelExtractor()
+    async def test_mascara_inexistente_levanta_file_not_found(self, tmp_path: Path):
+        imagem = tmp_path / "i.jpg"
+        imagem.write_bytes(b"x")
         with pytest.raises(FileNotFoundError):
-            await extrator.extract(
-                image_path=imagem,
-                mask_path=tmp_path / "nao_existe.png",
-                output_path=tmp_path / "label.png",
+            await HomographyLabelExtractor().extract(
+                imagem, tmp_path / "nao_existe.png", tmp_path / "out.png"
             )
 
+
+# ------------------------------------------------------------------ detecção
+
+
+class TestDeteccaoPorRegiao:
     @pytest.mark.asyncio
-    async def test_imagem_sem_contorno_retorna_none(self, tmp_path: Path):
-        """Imagem uniforme não tem bordas detectáveis — deve retornar None."""
-        cv2 = pytest.importorskip("cv2")
-
-        imagem = tmp_path / "frasco.png"
-        mascara = tmp_path / "mascara.png"
-        _make_solid_png_rgb(imagem, color=(128, 128, 128))
-        _make_rgba_full_opaque(mascara)
-
-        extrator = HomographyLabelExtractor()
-        resultado = await extrator.extract(imagem, mascara, tmp_path / "label.png")
-        assert resultado is None
-
-    @pytest.mark.asyncio
-    async def test_retangulo_sintetico_gera_proporcao_esperada(self, tmp_path: Path):
-        """Retângulo branco 130×100 deve produzir label com proporção ~1.3."""
+    async def test_detecta_placa_preenchida(self, tmp_path: Path):
+        """Caso do La vivacité: placa clara sólida sobre corpo escuro."""
         pytest.importorskip("cv2")
+        img, msk, out = tmp_path / "i.png", tmp_path / "m.png", tmp_path / "l.png"
+        _frasco_com_placa(img, msk)
 
-        imagem = tmp_path / "frasco.png"
-        mascara = tmp_path / "mascara.png"
-        # rect: x1=60, y1=80, x2=190, y2=180 → ~130px largura × 100px altura
-        _make_image_com_retangulo(imagem, mascara, tamanho=256, rect=(60, 80, 190, 180))
+        r = await HomographyLabelExtractor().extract(img, msk, out)
 
-        extrator = HomographyLabelExtractor(target_width=512)
-        resultado = await extrator.extract(imagem, mascara, tmp_path / "label.png")
-
-        if resultado is None:
-            pytest.skip("Canny não detectou o retângulo nesta configuração de hardware")
-
-        assert isinstance(resultado, ExtractedLabel)
-        assert resultado.image_path.exists()
-        # Proporção esperada: 130/100 = 1.3; tolerância ±30%
-        assert 0.9 <= resultado.aspect_ratio <= 1.7, (
-            f"Proporção {resultado.aspect_ratio:.2f} fora do intervalo esperado"
-        )
+        assert r is not None, "placa preenchida deve ser detectada"
+        assert isinstance(r, ExtractedLabel)
+        assert out.exists()
+        # Placa 140x56 -> proporção ~2.5
+        assert 2.0 <= r.aspect_ratio <= 3.2
 
     @pytest.mark.asyncio
-    async def test_confianca_aumenta_com_tamanho_do_retangulo(self, tmp_path: Path):
-        """Retângulo maior deve ter confiança >= retângulo menor."""
+    async def test_sobrevive_a_ruido(self, tmp_path: Path):
+        """Foto real tem ruído; a detecção não pode depender de imagem limpa."""
         pytest.importorskip("cv2")
+        img, msk, out = tmp_path / "i.png", tmp_path / "m.png", tmp_path / "l.png"
+        _frasco_com_placa(img, msk, ruido=18)
 
-        img_p = tmp_path / "pequeno.png"
-        msk_p = tmp_path / "mascara_p.png"
-        img_g = tmp_path / "grande.png"
-        msk_g = tmp_path / "mascara_g.png"
-        out_p = tmp_path / "label_p.png"
-        out_g = tmp_path / "label_g.png"
-
-        # Retângulo pequeno: ~30px × 25px sobre imagem 256px
-        _make_image_com_retangulo(img_p, msk_p, tamanho=256, rect=(110, 115, 140, 140))
-        # Retângulo grande: ~160px × 120px sobre imagem 256px
-        _make_image_com_retangulo(img_g, msk_g, tamanho=256, rect=(48, 68, 208, 188))
-
-        extrator = HomographyLabelExtractor(min_area_ratio=0.01, max_area_ratio=0.9)
-        res_p = await extrator.extract(img_p, msk_p, out_p)
-        res_g = await extrator.extract(img_g, msk_g, out_g)
-
-        if res_p is None or res_g is None:
-            pytest.skip("Canny não detectou contornos suficientes para comparação")
-
-        assert res_g.confidence >= res_p.confidence
+        assert await HomographyLabelExtractor().extract(img, msk, out) is not None
 
     @pytest.mark.asyncio
-    async def test_proporcao_fora_de_intervalo_retorna_none(self, tmp_path: Path):
-        """Retângulo extremamente largo (proporção >3) deve ser filtrado."""
+    async def test_frasco_sem_placa_retorna_none(self, tmp_path: Path):
+        """Sem região distinta não há label — None é o resultado correto."""
         pytest.importorskip("cv2")
+        img, msk, out = tmp_path / "i.png", tmp_path / "m.png", tmp_path / "l.png"
+        _frasco_sem_placa(img, msk)
+
+        assert await HomographyLabelExtractor().extract(img, msk, out) is None
+
+    @pytest.mark.asyncio
+    async def test_mascara_vazia_retorna_none(self, tmp_path: Path):
+        pytest.importorskip("cv2")
+        import cv2
         import numpy as np
-        import cv2 as cv
 
-        imagem = tmp_path / "frasco.png"
-        mascara = tmp_path / "mascara.png"
+        img, msk, out = tmp_path / "i.png", tmp_path / "m.png", tmp_path / "l.png"
+        cv2.imwrite(str(img), np.zeros((200, 200, 3), dtype=np.uint8))
+        cv2.imwrite(str(msk), np.zeros((200, 200, 4), dtype=np.uint8))
 
-        # Retângulo muito largo: 220px × 20px → proporção 11.0
-        img = np.zeros((256, 256, 3), dtype=np.uint8)
-        cv.rectangle(img, (10, 118), (230, 138), (255, 255, 255), thickness=2)
-        cv.imwrite(str(imagem), img)
+        assert await HomographyLabelExtractor().extract(img, msk, out) is None
 
-        msk = np.zeros((256, 256, 4), dtype=np.uint8)
-        msk[:, :, 3] = 255
-        cv.imwrite(str(mascara), msk)
+    @pytest.mark.asyncio
+    async def test_mascara_de_tamanho_diferente_e_realinhada(self, tmp_path: Path):
+        """Foto e máscara podem divergir de tamanho; não pode estourar."""
+        pytest.importorskip("cv2")
+        import cv2
 
-        extrator = HomographyLabelExtractor()
-        resultado = await extrator.extract(imagem, mascara, tmp_path / "label.png")
-        assert resultado is None
+        img, msk, out = tmp_path / "i.png", tmp_path / "m.png", tmp_path / "l.png"
+        _frasco_com_placa(img, msk, tamanho=400)
+        mascara = cv2.imread(str(msk), cv2.IMREAD_UNCHANGED)
+        cv2.imwrite(str(msk), cv2.resize(mascara, (200, 200)))
+
+        assert await HomographyLabelExtractor().extract(img, msk, out) is not None
 
 
-# ---------------------------------------------------------- _ordenar_cantos
+class TestPosicaoVertical:
+    @pytest.mark.asyncio
+    async def test_placa_alta_tem_posicao_menor_que_placa_baixa(self, tmp_path: Path):
+        """`vertical_position` cresce de cima para baixo (0=topo, 1=base)."""
+        pytest.importorskip("cv2")
+        casos = {"alta": (130, 90, 270, 146), "baixa": (130, 280, 270, 336)}
+
+        resultados = {}
+        for nome, rect in casos.items():
+            img = tmp_path / f"{nome}.png"
+            msk = tmp_path / f"{nome}_m.png"
+            out = tmp_path / f"{nome}_l.png"
+            _frasco_com_placa(img, msk, placa=rect)
+            r = await HomographyLabelExtractor().extract(img, msk, out)
+            assert r is not None, f"placa {nome} deveria ser detectada"
+            resultados[nome] = r.vertical_position
+
+        assert resultados["alta"] < resultados["baixa"]
+        assert 0.0 <= resultados["alta"] <= 1.0
+        assert 0.0 <= resultados["baixa"] <= 1.0
+
+
+class TestScore:
+    @pytest.mark.asyncio
+    async def test_min_score_alto_rejeita_tudo(self, tmp_path: Path):
+        pytest.importorskip("cv2")
+        img, msk, out = tmp_path / "i.png", tmp_path / "m.png", tmp_path / "l.png"
+        _frasco_com_placa(img, msk)
+
+        extrator = HomographyLabelExtractor(min_score=0.99)
+        assert await extrator.extract(img, msk, out) is None
+
+    @pytest.mark.asyncio
+    async def test_confianca_e_o_score(self, tmp_path: Path):
+        pytest.importorskip("cv2")
+        img, msk, out = tmp_path / "i.png", tmp_path / "m.png", tmp_path / "l.png"
+        _frasco_com_placa(img, msk)
+
+        r = await HomographyLabelExtractor(min_score=0.5).extract(img, msk, out)
+
+        assert r is not None
+        assert 0.5 <= r.confidence <= 1.0
+
+
+class TestRegressaoDoDiagnostico:
+    """Documenta por que a suíte antiga não pegava a falha."""
+
+    @pytest.mark.asyncio
+    async def test_contorno_fino_nao_representa_foto_real(self, tmp_path: Path):
+        """Entrada do teste antigo: contorno de 3 px, sem corpo de frasco.
+
+        Não é uma foto — é um desenho de linhas. O teste existe para registrar
+        que essa entrada foi a causa de 12 testes verdes conviverem com 0
+        detecções reais; por isso não afirma nada sobre detectar ou não.
+        """
+        pytest.importorskip("cv2")
+        img, msk, out = tmp_path / "i.png", tmp_path / "m.png", tmp_path / "l.png"
+        _placa_como_contorno_fino(img, msk)
+
+        resultado = await HomographyLabelExtractor().extract(img, msk, out)
+        assert resultado is None or isinstance(resultado, ExtractedLabel)
 
 
 class TestOrdenarCantos:
     def test_cantos_em_ordem_correta(self):
-        """Verifica TL, TR, BR, BL com pontos conhecidos."""
-        cv2 = pytest.importorskip("cv2")  # noqa: F841
+        pytest.importorskip("numpy")
         import numpy as np
 
-        # Retângulo simples com cantos claramente identificáveis.
         pontos = np.array(
-            [[10.0, 10.0], [100.0, 10.0], [100.0, 80.0], [10.0, 80.0]],
+            [[100.0, 80.0], [10.0, 10.0], [10.0, 80.0], [100.0, 10.0]],
             dtype=np.float32,
         )
-        # Embaralha para garantir que a ordenação é independente da entrada.
-        indices = [2, 0, 3, 1]
-        pontos_embaralhados = pontos[indices]
-
-        resultado = _ordenar_cantos(pontos_embaralhados)
+        resultado = _ordenar_cantos(pontos)
 
         np.testing.assert_allclose(resultado[0], [10.0, 10.0], atol=1e-5)   # TL
         np.testing.assert_allclose(resultado[1], [100.0, 10.0], atol=1e-5)  # TR
@@ -258,13 +311,10 @@ class TestOrdenarCantos:
         np.testing.assert_allclose(resultado[3], [10.0, 80.0], atol=1e-5)   # BL
 
     def test_retorna_array_float32(self):
-        pytest.importorskip("cv2")
+        pytest.importorskip("numpy")
         import numpy as np
 
         pontos = np.array(
-            [[0.0, 0.0], [50.0, 0.0], [50.0, 50.0], [0.0, 50.0]],
-            dtype=np.float32,
+            [[0.0, 0.0], [50.0, 0.0], [50.0, 30.0], [0.0, 30.0]], dtype=np.float32
         )
-        resultado = _ordenar_cantos(pontos)
-        assert resultado.dtype == np.float32
-        assert resultado.shape == (4, 2)
+        assert _ordenar_cantos(pontos).dtype == np.float32

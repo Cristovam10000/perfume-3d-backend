@@ -41,9 +41,35 @@ BlenderLabelProjector
 with_label.glb  → output_path
 ```
 
-Se a homografia não encontra uma label retangular, o pipeline tenta um fallback por recorte: escolhe a região central/direita do frasco com maior densidade de bordas. Isso cobre perfumes em que o texto é impresso direto no vidro, sem uma etiqueta retangular física. Também é possível fornecer uma label manual (caminho `label_image_path` no `modelos_3d_universais` ou via parâmetro do smoke).
+Se nenhuma região atinge `min_score`, o stage **degrada**: copia `refined.glb` para o output, sem label. O job conclui normalmente.
 
-Se mesmo o fallback falhar, o stage **degrada**: copia `refined.glb` para o output, sem label. O job conclui normalmente; o `message` indica "concluído sem label".
+> Não há mais fallback por recorte central/direito. Ele produzia um retângulo arbitrário do corpo do frasco e projetá-lo no GLB é pior do que não projetar nada.
+
+## Detecção por região (2026-08)
+
+A implementação anterior procurava quadriláteros nos contornos de um mapa de bordas **Canny dilatado**. Medido nas fotos reais dos 6 jobs do projeto: **0 detecções em 25 fotos**.
+
+A causa é que `contourArea` de um contorno de traço mede a área do **risco** (~3 px de espessura), não a região que ele delimita. O maior candidato ficava em 0,03%–1,0% da máscara, contra um mínimo exigido de 5%.
+
+Os 12 testes unitários passavam porque a entrada era um retângulo branco perfeito sobre fundo preto (`cv2.rectangle(..., thickness=3)`), onde o Canny fecha o contorno e a área bate. **O teste validava a premissa do código, não a realidade.** Dois deles ainda chamavam `pytest.skip(...)` quando a detecção falhava, convertendo falha real em "pulado".
+
+A implementação atual usa **regiões preenchidas**:
+
+1. Ensemble de binarizações — Otsu em duas polaridades (placa clara sobre corpo escuro e vice-versa) mais fechamentos morfológicos de 15 e 31 px, que unem letras soltas num bloco.
+2. Cada região vira candidato; um score 0..1 combina área, proporção, centralização e retangularidade.
+3. `cv2.minAreaRect` dá os 4 cantos — sempre 4, ao contrário de `approxPolyDP`, que só às vezes fecha em quadrilátero.
+
+### Resultado medido
+
+| Frasco | Antes | Depois |
+|---|---|---|
+| La vivacité (placa prateada) | não detectava | **detecta, score 0,78** |
+| La vivacité 2ª captura | não detectava | **detecta, score 0,78** |
+| ASAD (texto + medalhão) | não detectava | rejeitado (score 0,73 < 0,75) |
+| Feeling Sexy (script diagonal) | não detectava | rejeitado |
+| GRAND ×2 (texto no vidro) | não detectava | rejeitado |
+
+**2 de 25 fotos**, ambas no único frasco com placa física real. O default `min_score=0.75` é deliberadamente conservador: projetar um recorte errado é pior do que não projetar. Frascos com texto impresso direto no vidro não têm região para extrair, e devolver None neles é o comportamento correto.
 
 ## Lanczos vs Real-ESRGAN
 
@@ -97,6 +123,18 @@ front_y_neg
 
 O script calcula, para cada polígono, o produto escalar entre a normal em mundo e o eixo de frente. Polígonos com cosseno alto entram no cluster frontal. O threshold inicial é 0.70, com fallbacks mais permissivos para meshes irregulares.
 
+### Restrição ao corpo (2026-08)
+
+O cluster é limitado a **abaixo do ombro**, usando o mesmo corte de [`segment_bottle.py`](09h-segmentacao-corpo-tampa.md). Sem isso, "voltado para a frente" incluía tampa e adereços: no La vivacité o laço lateral puxava o centroide ponderado por área para a esquerda, e a `altura_face` dava 1,88 num frasco de altura 1,9 — o cluster era o frasco inteiro. O decal saía pequeno e colado na borda.
+
+### Profundidade do decal
+
+O decal é um plano **plano** sobre uma superfície **curva**. Com o offset fixo anterior (0,3% da diagonal), o meio do plano ficava atrás da barriga do frasco e o decal aparecia partido em manchas laterais. Agora os vértices do cluster são projetados no eixo da normal e o plano é posto à frente do ponto mais saliente.
+
+### Altura do decal
+
+`ExtractedLabel.vertical_position` (0=topo da silhueta, 1=base) viaja do extrator até o script via `--vertical-position`. Sem ela o decal cai no centroide do corpo — o meio do frasco —, tipicamente abaixo de onde a label realmente está. Essa informação já era calculada na detecção e estava sendo descartada.
+
 O stdout do Blender emite:
 
 ```text
@@ -140,8 +178,8 @@ Num cache hit subsequente, o GLB cacheado já contém a label projetada; o stage
 
 - Frascos redondos ou muito curvos podem deixar o decal parecendo plano demais.
 - Labels muito pequenas na foto continuam ruins após Lanczos.
-- Se o `LabelExtractor` não encontrar label com confidence > 0.3, o stage tenta um recorte automático central/direito; se mesmo assim falhar, roda em modo degradado e copia `refined.glb` para `with_label.glb`.
-- O fallback por recorte é pragmático: funciona bem quando o texto está visível na foto frontal, mas pode trazer parte do vidro/fundo junto com a label.
+- **Só funciona com placa física.** Frascos com o nome impresso direto no vidro (Hinode GRAND) não têm região distinta para extrair e são corretamente rejeitados. Cobrir esses casos exigiria detecção de texto, não de região.
+- O `min_score=0.75` rejeita o medalhão do ASAD (0,73). É um emblema real da marca, mas não é a label — a margem é apertada e frascos com emblemas circulares grandes podem passar.
 - O eixo frontal pode precisar de ajuste por produto, especialmente se a ordem das fotos não seguir uma vista frontal clara.
 - A projeção não resolve geometria errada; ela melhora legibilidade da label.
 

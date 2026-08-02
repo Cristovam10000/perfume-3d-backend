@@ -1,16 +1,15 @@
 """Extração e correção perspectiva da label frontal do frasco de perfume.
 
 Recebe a foto original (RGB) e a máscara RGBA gerada pelo BackgroundRemover.
-Localiza a região retangular da label, aplica transformação de perspectiva
-(homografia) e entrega a label como PNG plano — pronto para ser projetado
-sobre o template 3D.
+Localiza a região da label, aplica transformação de perspectiva (homografia) e
+entrega a label como PNG plano — pronto para ser projetado sobre o GLB.
 
 Mesmo padrão Strategy do restante do módulo: ABC + bypass + implementação
 real trocável por configuração.
 
 Implementações disponíveis:
 - `DisabledLabelExtractor`: sempre retorna None (sem extração).
-- `HomographyLabelExtractor`: detecção de contorno + warpPerspective via OpenCV.
+- `HomographyLabelExtractor`: detecção por região + warpPerspective via OpenCV.
 """
 
 from __future__ import annotations
@@ -28,8 +27,13 @@ _log = get_logger("captures.label_extractor")
 @dataclass(frozen=True)
 class ExtractedLabel:
     image_path: Path    # PNG da label com perspectiva corrigida
-    confidence: float   # 0..1, qualidade da extração (área contorno / área máscara)
+    confidence: float   # 0..1, score de quão "label" a região parece
     aspect_ratio: float # largura / altura da label extraída
+    # Altura do centro da label na silhueta do frasco: 0.0 = topo, 1.0 = base.
+    # O `LabelProjector` usa isso para posicionar o decal na altura certa; sem
+    # essa informação ele cai no centroide do corpo, que fica abaixo da label
+    # real na maioria dos frascos.
+    vertical_position: float = 0.5
 
 
 class LabelExtractor(ABC):
@@ -61,35 +65,73 @@ class DisabledLabelExtractor(LabelExtractor):
 
 
 class HomographyLabelExtractor(LabelExtractor):
-    """Extrai a label frontal via detecção de contorno e transformação de perspectiva.
+    """Extrai a label frontal por **detecção de região** + correção de perspectiva.
 
-    Algoritmo:
-    1. Carrega a máscara, limiariza o canal alpha para obter a silhueta binária.
-    2. Dentro da bounding box do frasco, aplica Canny na imagem RGB original.
-    3. Encontra contornos quadrilaterais (approxPolyDP com 4 vértices).
-    4. Filtra por área (entre min_area_ratio e max_area_ratio da máscara),
-       proporção (0.3–3.0) e posição horizontal (centrado no frasco).
-    5. Escolhe o maior contorno válido. Se nenhum → retorna None.
-    6. Ordena os 4 cantos (TL, TR, BR, BL) via soma/diferença das coordenadas.
-    7. Calcula retângulo alvo: target_width × (target_width / aspect_ratio).
-    8. getPerspectiveTransform + warpPerspective para achatar a label.
-    9. Salva como PNG e retorna ExtractedLabel.
+    Por que região e não borda
+    --------------------------
+    A implementação anterior procurava quadriláteros nos contornos de um mapa de
+    bordas Canny dilatado. Em foto real o Canny produz traços **fragmentados e
+    abertos**, e `contourArea` de um traço mede a área do risco (~3 px de
+    espessura), não a região que ele delimita. Medido nas 21 fotos reais dos 6
+    jobs do projeto: **0 detecções**, com o maior candidato em 0,03%–1,0% da
+    máscara contra um mínimo exigido de 5%.
+
+    Os 12 testes unitários passavam porque usavam um retângulo branco perfeito
+    sobre fundo preto (`cv2.rectangle(..., thickness=3)`), onde o Canny fecha o
+    contorno e a área bate. O teste validava a premissa, não a realidade.
+
+    Algoritmo atual
+    ---------------
+    1. Silhueta binária a partir do canal alpha da máscara.
+    2. Recorte na bounding box do frasco.
+    3. **Ensemble de binarizações** (Otsu claro/escuro + fechamentos
+       morfológicos). Cada hipótese responde a um jeito de a label se destacar:
+       placa clara sobre vidro escuro, texto claro sobre corpo escuro, etc. O
+       fechamento une letras soltas num bloco.
+    4. Cada região vira candidato; `_pontuar` combina área, proporção,
+       centralização e retangularidade num score 0..1.
+    5. Melhor score acima de `min_score` vence; senão devolve None.
+    6. `minAreaRect` do contorno dá os 4 cantos (sempre 4, mesmo com contorno
+       irregular) → `getPerspectiveTransform` → `warpPerspective`.
+
+    Calibração e limites
+    --------------------
+    Medido nas fotos reais do projeto:
+
+    - **La vivacité** (placa prateada retangular): detecção correta, score 0,78.
+    - **ASAD** (texto dourado + medalhão): encontra o **medalhão**, não o texto.
+      É um emblema real da marca, mas não é a label.
+    - **Feeling Sexy** (texto em script diagonal): região parcial, score 0,67.
+    - **GRAND** (texto impresso direto no vidro): nenhum candidato.
+
+    O default `min_score=0.75` deixa passar apenas o caso de placa real. Isso é
+    deliberado: projetar um recorte errado no GLB é pior do que não projetar
+    nada. Frascos sem placa — texto impresso direto no vidro — não têm região
+    para extrair, e devolver None neles é o comportamento correto.
     """
+
+    # Faixa de área do candidato, em % da máscara do frasco. Placa de perfume
+    # fica em torno de 8%; abaixo de 1,5% é ruído, acima de 45% é o corpo.
+    _AREA_IDEAL_PCT = 8.0
 
     def __init__(
         self,
-        min_area_ratio: float = 0.05,  # contorno deve ter >5% da área da máscara
-        max_area_ratio: float = 0.60,  # e <60% (senão é o frasco inteiro)
-        target_width: int = 1024,      # resolução horizontal do PNG de saída
+        min_area_ratio: float = 0.015,  # 1,5% da máscara
+        max_area_ratio: float = 0.45,   # 45% (acima disso é o corpo do frasco)
+        target_width: int = 1024,       # resolução horizontal do PNG de saída
+        min_score: float = 0.75,        # abaixo disso, não projeta
     ):
         if not 0.0 < min_area_ratio < max_area_ratio <= 1.0:
             raise ValueError(
                 "min_area_ratio e max_area_ratio devem satisfazer "
                 "0 < min < max <= 1"
             )
+        if not 0.0 <= min_score <= 1.0:
+            raise ValueError(f"min_score deve estar em [0, 1]: {min_score}")
         self.min_area_ratio = min_area_ratio
         self.max_area_ratio = max_area_ratio
         self.target_width = target_width
+        self.min_score = min_score
 
     async def extract(
         self,
@@ -114,7 +156,6 @@ class HomographyLabelExtractor(LabelExtractor):
         mask_path: Path,
         output_path: Path,
     ) -> ExtractedLabel | None:
-        """Executa detecção e correção de perspectiva em thread."""
         # Imports lazy: módulo importa mesmo sem cv2/numpy instalados.
         import cv2
         import numpy as np
@@ -127,8 +168,26 @@ class HomographyLabelExtractor(LabelExtractor):
         if mascara_rgba is None:
             raise FileNotFoundError(f"cv2 não conseguiu abrir a máscara: {mask_path}")
 
-        # Canal alpha → silhueta binária do frasco.
-        canal_alpha = mascara_rgba[:, :, 3] if mascara_rgba.shape[2] == 4 else mascara_rgba[:, :, 0]
+        canal_alpha = (
+            mascara_rgba[:, :, 3]
+            if mascara_rgba.ndim == 3 and mascara_rgba.shape[2] == 4
+            else (mascara_rgba[:, :, 0] if mascara_rgba.ndim == 3 else mascara_rgba)
+        )
+
+        # Foto e máscara vêm do mesmo frame, mas o preprocessador pode ter
+        # redimensionado uma delas. Sem alinhar as dimensões, os dois recortes
+        # saem com shapes diferentes e o `bitwise_and` estoura.
+        altura_img, largura_img = imagem_rgb.shape[:2]
+        if canal_alpha.shape[:2] != (altura_img, largura_img):
+            _log.info(
+                "Máscara %s difere da foto %s; redimensionando a máscara",
+                canal_alpha.shape[:2],
+                (altura_img, largura_img),
+            )
+            canal_alpha = cv2.resize(
+                canal_alpha, (largura_img, altura_img), interpolation=cv2.INTER_NEAREST
+            )
+
         _, silhueta = cv2.threshold(canal_alpha, 127, 255, cv2.THRESH_BINARY)
 
         area_mascara = float(np.count_nonzero(silhueta))
@@ -136,42 +195,34 @@ class HomographyLabelExtractor(LabelExtractor):
             _log.warning("Máscara vazia — sem frasco detectado em %s", mask_path)
             return None
 
-        # Bounding box do frasco para restringir a busca de bordas.
-        coords = cv2.findNonZero(silhueta)
-        x_bb, y_bb, w_bb, h_bb = cv2.boundingRect(coords)
+        x_bb, y_bb, w_bb, h_bb = cv2.boundingRect(cv2.findNonZero(silhueta))
+        recorte = imagem_rgb[y_bb : y_bb + h_bb, x_bb : x_bb + w_bb]
+        if recorte.size == 0:
+            return None
+        cinza = cv2.cvtColor(recorte, cv2.COLOR_BGR2GRAY)
+        silhueta_recorte = silhueta[y_bb : y_bb + h_bb, x_bb : x_bb + w_bb]
 
-        # Recorte da imagem original dentro da bounding box do frasco.
-        recorte_rgb = imagem_rgb[y_bb : y_bb + h_bb, x_bb : x_bb + w_bb]
-        recorte_cinza = cv2.cvtColor(recorte_rgb, cv2.COLOR_BGR2GRAY)
-
-        # Detecção de bordas Canny para realçar a label.
-        bordas = cv2.Canny(recorte_cinza, threshold1=50, threshold2=150)
-
-        # Dilatação leve para fechar lacunas nas bordas da label.
-        kernel = np.ones((3, 3), np.uint8)
-        bordas = cv2.dilate(bordas, kernel, iterations=1)
-
-        contornos, _ = cv2.findContours(bordas, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        candidato = self._selecionar_candidato(
-            contornos,
-            area_mascara=area_mascara,
-            largura_frasco=w_bb,
-            offset_x=x_bb,
-            offset_y=y_bb,
-            silhueta=silhueta,
+        melhor = self._melhor_candidato(
+            cinza, silhueta_recorte, area_mascara=area_mascara, largura_frasco=w_bb
         )
-
-        if candidato is None:
+        if melhor is None:
             _log.info("Nenhuma label plausível encontrada em %s", image_path)
             return None
 
-        contorno_label, area_contorno = candidato
-        # Converte para float32 exigido por getPerspectiveTransform.
-        pontos = contorno_label.reshape(4, 2).astype(np.float32)
-        cantos_ordenados = _ordenar_cantos(pontos)
+        score, contorno = melhor
 
-        # Dimensões do retângulo de saída.
+        # Altura relativa do centro da label dentro da silhueta do frasco.
+        # Preservada para o projetor posicionar o decal na altura correta.
+        _, y_c, _, h_c = cv2.boundingRect(contorno)
+        posicao_vertical = min(max((y_c + h_c / 2.0) / max(h_bb, 1), 0.0), 1.0)
+
+        # `minAreaRect` devolve sempre 4 cantos, mesmo com contorno irregular —
+        # ao contrário de `approxPolyDP`, que só às vezes fecha em quadrilátero.
+        cantos = cv2.boxPoints(cv2.minAreaRect(contorno)).astype(np.float32)
+        cantos[:, 0] += x_bb
+        cantos[:, 1] += y_bb
+        cantos_ordenados = _ordenar_cantos(cantos)
+
         largura_label = float(
             max(
                 np.linalg.norm(cantos_ordenados[1] - cantos_ordenados[0]),
@@ -184,13 +235,12 @@ class HomographyLabelExtractor(LabelExtractor):
                 np.linalg.norm(cantos_ordenados[2] - cantos_ordenados[1]),
             )
         )
-
-        if altura_label == 0:
+        if altura_label <= 0 or largura_label <= 0:
             return None
 
         proporcao = largura_label / altura_label
-        altura_alvo = int(round(self.target_width / proporcao))
         largura_alvo = self.target_width
+        altura_alvo = max(int(round(largura_alvo / proporcao)), 1)
 
         destino = np.array(
             [
@@ -202,119 +252,110 @@ class HomographyLabelExtractor(LabelExtractor):
             dtype=np.float32,
         )
 
-        # Transformação de perspectiva para achatar a label.
         matriz = cv2.getPerspectiveTransform(cantos_ordenados, destino)
-        label_plana = cv2.warpPerspective(imagem_rgb, matriz, (largura_alvo, altura_alvo))
-
+        label_plana = cv2.warpPerspective(
+            imagem_rgb, matriz, (largura_alvo, altura_alvo)
+        )
         cv2.imwrite(str(output_path), label_plana)
 
-        confianca = min(1.0, area_contorno / area_mascara)
         _log.info(
-            "Label extraída: proporção=%.2f, confiança=%.2f, saída=%s",
+            "Label extraída: proporção=%.2f, score=%.3f, altura=%.2f, saída=%s",
             proporcao,
-            confianca,
+            score,
+            posicao_vertical,
             output_path,
         )
         return ExtractedLabel(
             image_path=output_path,
-            confidence=confianca,
+            confidence=score,
             aspect_ratio=proporcao,
+            vertical_position=posicao_vertical,
         )
 
-    def _selecionar_candidato(
-        self,
-        contornos: list,
-        *,
-        area_mascara: float,
-        largura_frasco: int,
-        offset_x: int,
-        offset_y: int,
-        silhueta=None,
-        min_overlap_ratio: float = 0.70,
-    ):
-        """Filtra e escolhe o melhor contorno quadrilateral candidato a label.
+    # -------------------------------------------------------------- detecção
 
-        Retorna (contorno, area) ou None se nenhum candidato passar os filtros.
+    def _binarizacoes(self, cinza) -> dict[str, object]:
+        """Hipóteses de "a label se destaca do corpo do frasco".
 
-        `silhueta` (opcional) é a máscara binária em coordenadas da imagem completa.
-        Quando fornecida, rejeita candidatos cuja bounding-box tenha menos de
-        `min_overlap_ratio` de sobreposição com a silhueta — descarta etiquetas
-        pendentes (tags físicas) que ficam fora do corpo do frasco.
+        Duas polaridades porque a label tanto pode ser clara sobre corpo escuro
+        (placa prateada) quanto escura sobre corpo claro. Os fechamentos unem
+        letras soltas num bloco — sem isso, texto impresso vira dezenas de
+        regiões minúsculas em vez de uma região só.
         """
         import cv2
-        import numpy as np
 
-        area_min = self.min_area_ratio * area_mascara
-        area_max = self.max_area_ratio * area_mascara
-        centro_frasco_x = offset_x + largura_frasco / 2.0
+        saida: dict[str, object] = {}
+        for nome, flag in (
+            ("claro", cv2.THRESH_BINARY),
+            ("escuro", cv2.THRESH_BINARY_INV),
+        ):
+            _, base = cv2.threshold(cinza, 0, 255, flag + cv2.THRESH_OTSU)
+            saida[f"otsu_{nome}"] = base
+            for k in (15, 31):
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
+                saida[f"otsu_{nome}_close{k}"] = cv2.morphologyEx(
+                    base, cv2.MORPH_CLOSE, kernel
+                )
+        return saida
+
+    def _melhor_candidato(
+        self, cinza, silhueta_recorte, *, area_mascara: float, largura_frasco: int
+    ):
+        """Percorre o ensemble e devolve (score, contorno) do melhor candidato."""
+        import cv2
 
         melhor = None
-        maior_area = 0.0
-
-        for contorno in contornos:
-            perimetro = cv2.arcLength(contorno, closed=True)
-            # Margem de 5% para tolerar leve distorção de perspectiva.
-            aproximacao = cv2.approxPolyDP(contorno, epsilon=0.05 * perimetro, closed=True)
-
-            if len(aproximacao) != 4:
-                continue
-
-            area = float(cv2.contourArea(aproximacao))
-            if not area_min <= area <= area_max:
-                continue
-
-            # Calcula proporção a partir do rect envolvente (mais estável que
-            # as dimensões reais do quadrilátero sob perspectiva severa).
-            x_r, y_r, w_r, h_r = cv2.boundingRect(aproximacao)
-            if h_r == 0:
-                continue
-            proporcao = w_r / h_r
-            if not 0.3 <= proporcao <= 3.0:
-                continue
-
-            # A label deve estar horizontalmente centrada no frasco (±25%).
-            # Tolerância reduzida de 35% → 25% para rejeitar tags pendentes
-            # que ficam deslocadas lateralmente no gargalo do frasco.
-            centro_contorno_x = offset_x + x_r + w_r / 2.0
-            desvio_relativo = abs(centro_contorno_x - centro_frasco_x) / max(largura_frasco, 1)
-            if desvio_relativo > 0.25:
-                continue
-
-            # Translada o contorno de volta para coordenadas da imagem completa.
-            contorno_global = aproximacao.copy()
-            contorno_global[:, :, 0] += offset_x
-            contorno_global[:, :, 1] += offset_y
-
-            # Rejeita regiões que ficam predominantemente fora do corpo do frasco.
-            # Tags físicas penduradas passam pelo filtro de centralização mas
-            # têm grande parte da sua área fora da silhueta do frasco.
-            if silhueta is not None:
-                x_g = offset_x + x_r
-                y_g = offset_y + y_r
-                h_sil, w_sil = silhueta.shape[:2]
-                x_g = max(0, min(x_g, w_sil - 1))
-                y_g = max(0, min(y_g, h_sil - 1))
-                x2_g = max(0, min(x_g + w_r, w_sil))
-                y2_g = max(0, min(y_g + h_r, h_sil))
-                if x2_g > x_g and y2_g > y_g:
-                    regiao_sil = silhueta[y_g:y2_g, x_g:x2_g]
-                    pixels_dentro = float(np.count_nonzero(regiao_sil))
-                    pixels_total = float((y2_g - y_g) * (x2_g - x_g))
-                    overlap = pixels_dentro / pixels_total if pixels_total > 0 else 0.0
-                    if overlap < min_overlap_ratio:
-                        _log.debug(
-                            "Candidato rejeitado: sobreposição com silhueta=%.2f < %.2f "
-                            "(provável tag pendente)",
-                            overlap,
-                            min_overlap_ratio,
-                        )
-                        continue
-
-            if area > maior_area:
-                maior_area = area
-                melhor = (contorno_global, area)
-
+        for binaria in self._binarizacoes(cinza).values():
+            # Restringe ao interior do frasco: fundo removido não gera candidato.
+            dentro = cv2.bitwise_and(binaria, silhueta_recorte)
+            contornos, _ = cv2.findContours(
+                dentro, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            for contorno in contornos:
+                area = float(cv2.contourArea(contorno))
+                if area <= 0:
+                    continue
+                x, y, w, h = cv2.boundingRect(contorno)
+                if w == 0 or h == 0:
+                    continue
+                score = self._pontuar(
+                    area_pct=100.0 * area / area_mascara,
+                    proporcao=w / h,
+                    desvio_centro=abs((x + w / 2.0) - largura_frasco / 2.0)
+                    / max(largura_frasco, 1),
+                    retangularidade=area / (w * h),
+                )
+                if score >= self.min_score and (melhor is None or score > melhor[0]):
+                    melhor = (score, contorno)
         return melhor
+
+    def _pontuar(
+        self,
+        *,
+        area_pct: float,
+        proporcao: float,
+        desvio_centro: float,
+        retangularidade: float,
+    ) -> float:
+        """Score 0..1 de quanto a região parece uma label de perfume.
+
+        Zera fora dos limites duros; dentro deles, combina quatro sinais. A
+        proporção ideal 2.0 reflete que labels de perfume são tipicamente mais
+        largas que altas.
+        """
+        if not (self.min_area_ratio * 100 <= area_pct <= self.max_area_ratio * 100):
+            return 0.0
+        if not (0.4 <= proporcao <= 4.0):
+            return 0.0
+        if desvio_centro > 0.22:
+            return 0.0
+        if retangularidade < 0.55:
+            return 0.0
+
+        s_area = 1.0 - min(abs(area_pct - self._AREA_IDEAL_PCT) / 20.0, 1.0)
+        s_prop = 1.0 - min(abs(proporcao - 2.0) / 2.0, 1.0)
+        s_centro = 1.0 - desvio_centro / 0.22
+        return 0.35 * s_area + 0.25 * s_prop + 0.15 * s_centro + 0.25 * retangularidade
 
 
 def _ordenar_cantos(pontos):

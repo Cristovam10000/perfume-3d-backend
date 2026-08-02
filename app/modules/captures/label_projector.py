@@ -32,6 +32,10 @@ class LabelProjectionInput:
     label_image: Path
     output_glb: Path
     front_axis: str = "front_y_neg"
+    # Altura do centro da label na silhueta do frasco (0=topo, 1=base), vinda
+    # do `LabelExtractor`. Sem ela o decal cai no centroide do corpo, que fica
+    # abaixo da label real na maioria dos frascos.
+    vertical_position: float | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +113,8 @@ class BlenderLabelProjector(LabelProjector):
             "--output", str(input.output_glb),
             "--front-axis", input.front_axis,
         ]
+        if input.vertical_position is not None:
+            args.extend(["--vertical-position", str(input.vertical_position)])
 
         returncode, stdout, stderr = await self._run_blender(args)
 
