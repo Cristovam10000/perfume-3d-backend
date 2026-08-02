@@ -22,7 +22,7 @@ A geração 3D usa um **pipeline integrado** baseado em IA generativa:
 5. **Pós-processamento** no Blender headless: limpeza conservadora, shader de vidro PBR, extração da label real da foto e projeção como decal frontal.
 6. **Persistência** do GLB final + embedding + metadados na tabela `modelos_3d_universais` (cache global, compartilhado entre todos os usuários). Se o `POST /captures` veio com `productId` opcional, também faz UPSERT em `modelos_3d_produto` para vincular o produto comercial daquele tenant ao molde universal.
 
-O **`TemplateProcessor`** (caminho de templates Blender pré-existentes, usado em versões anteriores do MVP) continua disponível como **fallback** quando o Hunyuan está offline ou indisponível, e como *seed* opcional do cache.
+O **`TemplateProcessor`** (caminho de templates Blender pré-existentes, usado em versões anteriores do MVP) foi **removido em 2026-08** junto com o fallback — ver [16 - Auditoria do Blender](16-auditoria-blender.md). Falha do Hunyuan agora marca o job como `error`.
 
 Esse fluxo está documentado em detalhe em [09f - Pipeline integrado](09f-pipeline-integrado.md) e [09g - Cache de similaridade CLIP](09g-cache-similaridade-clip.md).
 
@@ -59,8 +59,8 @@ Esse fluxo está documentado em detalhe em [09f - Pipeline integrado](09f-pipeli
    │
    └── MISS:
        (4) Hunyuan3DProcessor   → raw.glb  (~3-5min, GPU)
-       (5) BlenderMeshCleaner   → cleaned.glb (no-op por default)
-       (6) BlenderMeshRefiner   → refined.glb (shader de vidro PBR)
+       (5) TransparencyClassifier → body_mode (glass | keep | auto)
+       (6) BlenderMeshRefiner   → refined.glb (segmenta corpo/tampa + vidro PBR)
        (7) LabelExtractor + Upscaler + Projector
                                 → with_label.glb (degrade se não achou label)
        (8) ModelCache.store     → persiste GLB + embedding + metadata
@@ -110,16 +110,16 @@ Esse fluxo está documentado em detalhe em [09f - Pipeline integrado](09f-pipeli
 ## Premissas e simplificações deliberadas
 
 - **Worker único in-process**: bom o bastante para MVP de TCC e demo local. Trocar por Celery/RQ é uma linha em `main.py` (substituir `ProcessingQueue` por outra implementação que respeite a mesma assinatura `submit/start/stop`).
-- **Pipeline como Strategy plugável**: `FakeProcessor` (cubo sintético, ~3s, zero deps), `TemplateProcessor` (Blender headless, ~5-15s) ou `IntegratedPipeline` (cache + Hunyuan + pós-proc). Configurado por `PIPELINE_MODE` no `.env`.
-- **Cada stage do pipeline também é Strategy**: `BackgroundRemover`, `ImagePreprocessor`, `MeshCleaner`, `MeshRefiner`, `LabelExtractor`, `LabelUpscaler`, `LabelProjector` — cada um com um `Disabled*` para teste e uma implementação real configurada por `.env`.
-- **CLIP repurposado**: o `CLIPClassifier` legado, que escolhia o `template_id` entre 6 frascos, vira `ImageEmbedder` que produz o embedding usado pelo `ModelCache`. Mesmo modelo (`CLIP_MODEL`), uso diferente.
+- **Pipeline como Strategy plugável**: `FakeProcessor` (cubo sintético, ~3s, zero deps) ou `IntegratedPipeline` (cache + Hunyuan + pós-proc). Configurado por `PIPELINE_MODE` no `.env`.
+- **Cada stage do pipeline também é Strategy**: `BackgroundRemover`, `ImagePreprocessor`, `TransparencyClassifier`, `MeshRefiner`, `LabelExtractor`, `LabelUpscaler`, `LabelProjector` — cada um com um `Disabled*` para teste e uma implementação real configurada por `.env`.
+- **CLIP repurposado**: o `CLIPClassifier` legado, que escolhia o `template_id` entre 6 frascos, foi removido; o mesmo checkpoint serve hoje a três usos — `ImageEmbedder` (cache), `CLIPViewRouter` (rotulagem de vistas) e `ClipTransparencyClassifier` (vidro vs opaco).
 - **`ColorDetector`**: mantido no código como histórico mas **não usado** pelo pipeline integrado (o Hunyuan infere cor das fotos). Pode ser ativado para preencher `liquid_color` como metadado se você quiser usar essa informação no `/sales/*`.
 - **Falha graciosa em cada stage**:
   - Pré-processamento falha → segue com a foto original.
   - Remoção de fundo falha → segue com a foto preprocessada (qualidade do Hunyuan cai, mas o job termina).
   - Cache lookup falha → comporta como miss.
   - Label extraction falha → degrade, mantém `refined.glb` sem label.
-  - **Hunyuan offline ou timeout** → cai no `TemplateProcessor` (se configurado como fallback) ou marca o job como `error`.
+  - **Hunyuan offline ou timeout** → marca o job como `error`. Não há fallback.
 - **Schema criado no startup**: `create_all()` no `production_lifespan` cria as tabelas se faltarem, incluindo a `modelos_3d_universais`. Adequado para o MVP, mas não substitui Alembic em produção.
 - **Threshold de similaridade do cache** inicia em `0.92` (cosine); precisa ser calibrado com fotos reais antes da defesa.
 
@@ -148,7 +148,7 @@ O backend está em fase de **integração** do pipeline IA com cache. Evoluçõe
 | **Blender via subprocess + thread** | `bpy` é difícil de subir como lib em servidor; subprocess é o jeito padrão e isolado. `subprocess.run` em `asyncio.to_thread` evita `NotImplementedError` no Windows. |
 | **Single async worker in-process** | Suficiente para 1 usuário fazendo 1 job por vez (cenário de demo de TCC). Trocar por Celery é local em 1 ponto. |
 | **`request.base_url` para montar `modelUrl`** | Mesmo banco funciona em emulador (`10.0.2.2`) e device físico (IP da LAN) sem reconfig. |
-| **TemplateProcessor como fallback** | Hunyuan depende de container Docker + GPU; quando offline, o backend ainda devolve algo (template paramétrico) em vez de derrubar o job. |
+| **Sem fallback de template** | Mascarar a falha do Hunyuan poluía a medição do pipeline de IA — um job entregue por template contava como sucesso. Falhar explicitamente preserva o sinal. |
 
 ## Próximas leituras
 

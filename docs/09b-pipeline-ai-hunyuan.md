@@ -14,7 +14,7 @@ Esse processor **não** é mais usado como Strategy raiz solta — ele é um *st
 
 ## Por que Hunyuan3D-2mv
 
-- `TemplateProcessor` gera modelos de alta qualidade para frascos conhecidos, mas exige um GLB normalizado para cada formato — não generaliza.
+- O antigo `TemplateProcessor` gerava modelos de alta qualidade para frascos conhecidos, mas exigia um GLB normalizado para cada formato — não generalizava. Foi removido em 2026-08.
 - Hunyuan3D-2mv aceita até 6 vistas, infere geometria + textura PBR sem template, e funciona em GPUs domésticas (testado em RTX 5050 8GB com `mmgp profile 4`).
 - Para perfumes recorrentes (mesmo frasco fotografado de novo), o **cache de similaridade CLIP** evita pagar o custo de inferência novamente — ver [09g](09g-cache-similaridade-clip.md).
 
@@ -111,9 +111,11 @@ O `IntegratedPipeline` garante isto, mas se você instanciar o processor solo:
 - `liquid_color`: a cor é inferida pelo Hunyuan a partir das fotos; persistida como metadado em `modelos_3d_universais.liquid_color` se você quiser.
 - `label_image`: o `IntegratedPipeline` extrai a label real via `LabelExtractor` e a projeta com `LabelProjector` no GLB do Hunyuan.
 
-## Trade-offs: Hunyuan3D vs TemplateProcessor
+## Trade-offs: Hunyuan3D vs o antigo caminho de templates
 
-| | `TemplateProcessor` (fallback) | `Hunyuan3DProcessor` (default) |
+> Comparação histórica. O `TemplateProcessor` foi removido em 2026-08; a tabela documenta por que o caminho de IA venceu.
+
+| | `TemplateProcessor` (removido) | `Hunyuan3DProcessor` (único) |
 |---|---|---|
 | Tempo por job (miss) | ~10s (Blender headless) | 3–8min (IA na GPU) |
 | Tempo por job (hit do cache) | n/a | ~5s (cópia do GLB) |
@@ -134,7 +136,7 @@ Dentro do `IntegratedPipeline`, falhas do Hunyuan caem em duas categorias:
    (`PipelineSemMalhaError`). O `/health` revela quando o fallback de checkpoint
    foi usado.
 2. **Não recuperáveis** (`/health` não responde, timeout do cliente, GLB inválido): o pipeline integrado decide entre:
-   - Fallback para `TemplateProcessor` se `PIPELINE_FALLBACK_TO_TEMPLATE=true` (default `false` — preserva a falha como sinal de problema operacional).
+   - Sem fallback: a falha é preservada como sinal de problema operacional e o job vai para `error`.
    - Marcar o job como `error` com mensagem específica.
 
 ## Limitações conhecidas
@@ -147,7 +149,7 @@ Dentro do `IntegratedPipeline`, falhas do Hunyuan caem em duas categorias:
 
 ## Leituras relacionadas
 
-- [09 — Pipeline 3D (TemplateProcessor e Blender — fallback)](09-pipeline-3d.md)
+- [09 — Pipeline 3D (abstração `Processor`)](09-pipeline-3d.md)
 - [09c — Refinamento de malha (shader de vidro PBR)](09c-refinamento-mesh.md)
 - [09d — Pré-processamento e cleanup](09d-preprocessamento-e-cleanup.md)
 - [09e — Aplicação de label](09e-aplicacao-label.md)

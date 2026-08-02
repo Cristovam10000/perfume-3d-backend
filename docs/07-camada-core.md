@@ -30,11 +30,8 @@ Referência de variáveis de ambiente (ficheiro de código: [`app/config.py`](..
 
 | Campo (Python) | Variável env típica | Papel |
 |----------------|--------------------|--------|
-| `pipeline_mode` | `PIPELINE_MODE` | `fake` \| `template` \| `integrated` (default) |
-| `pipeline_fallback_to_template` | `PIPELINE_FALLBACK_TO_TEMPLATE` | Se `true`, cai no `TemplateProcessor` quando o Hunyuan falha |
+| `pipeline_mode` | `PIPELINE_MODE` | `fake` \| `integrated` (default) |
 | `blender_executable` | `BLENDER_EXECUTABLE` | Caminho do `blender.exe` / binário |
-| `templates_dir` | `TEMPLATES_DIR` | Pasta dos GLBs normalizados (fallback + seed) |
-| `default_template_id` | `DEFAULT_TEMPLATE_ID` | Template do fallback |
 
 ### Hunyuan (cliente HTTP)
 
@@ -63,8 +60,6 @@ Referência de variáveis de ambiente (ficheiro de código: [`app/config.py`](..
 |----------------|--------------------|--------|
 | `image_preprocessor_type` | `IMAGE_PREPROCESSOR_TYPE` | `disabled` \| `standard` |
 | `background_remover_type` | `BACKGROUND_REMOVER_TYPE` | `disabled` \| `rembg` |
-| `mesh_cleaner_type` | `MESH_CLEANER_TYPE` | `disabled` \| `blender` (default `disabled`/no-op) |
-| `mesh_min_island_ratio` | `MESH_MIN_ISLAND_RATIO` | Limiar de ilhas; 0.0 desliga o cleanup mesmo com Blender ativo |
 | `mesh_refiner_type` | `MESH_REFINER_TYPE` | `disabled` \| `blender` (default `blender` — shader de vidro PBR) |
 | `label_extractor_type` | `LABEL_EXTRACTOR_TYPE` | `disabled` \| `homography` |
 | `label_upscaler_type` | `LABEL_UPSCALER_TYPE` | `disabled` \| `lanczos` |
@@ -77,10 +72,10 @@ Referência de variáveis de ambiente (ficheiro de código: [`app/config.py`](..
 
 | Campo (Python) | Variável env típica | Papel |
 |----------------|--------------------|--------|
-| `color_detector_type` | `COLOR_DETECTOR_TYPE` | `disabled` (default) \| `average`. Não usado pelo `IntegratedPipeline`; usado pelo `TemplateProcessor`. |
+| `color_detector_type` | `COLOR_DETECTOR_TYPE` | `disabled` (default) \| `average`. Legado do `TemplateProcessor` (removido); nenhum stage lê essa chave hoje. |
 | `clip_model` | `CLIP_MODEL` | Mantido por compatibilidade. Equivalente a `CACHE_EMBEDDING_MODEL` quando `cache_embedder_type=clip`. |
 | `classifier_type` | `CLASSIFIER_TYPE` | Legado. Lido com aviso de deprecation; substituído por `cache_embedder_type`. |
-| `processor_type` | `PROCESSOR_TYPE` | Legado. Lido com aviso de deprecation; substituído por `pipeline_mode`. |
+| `processor_type` | `PROCESSOR_TYPE` | Legado. Lido com aviso de deprecation; só `fake`/`integrated` são mapeados — `template` caiu para o default. |
 
 - `cors_origin_list` — propriedade que expande `*` em lista usada pelo `CORSMiddleware`.
 - `uploads_dir` / `models_dir` / `cache_dir` — derivados de `storage_root`.

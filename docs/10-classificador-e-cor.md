@@ -11,10 +11,10 @@ Dois componentes que vinham juntos no MVP de templates: **classificação de for
 
 | Componente | Estado | Função |
 |---|---|---|
-| `CLIPClassifier` → `ClipImageEmbedder` | **Repurposado** | CLIP deixa de escolher entre os 6 templates e passa a produzir embedding 512-d usado pelo `ModelCache` (similaridade visual). |
+| `CLIPClassifier` → `ClipImageEmbedder` | **Repurposado e removido** | CLIP deixou de escolher entre os 6 templates e passou a produzir embedding 512-d usado pelo `ModelCache`. O `classifier.py` foi apagado em 2026-08. |
 | `AverageColorDetector` | **Deprecado do fluxo principal** | Hunyuan infere cor das fotos automaticamente. Mantido como componente histórico; pode ser ativado para persistir cor como metadado. |
 
-A ABC raiz `Classifier` continua existindo no código (`app/modules/captures/classifier.py`), mas o `CaptureService` não a chama mais. O `IntegratedPipeline` usa `ImageEmbedder` (em `embeddings.py`) no lugar.
+A ABC raiz `Classifier` **foi removida em 2026-08** junto com o `TemplateProcessor` — nada mais a chamava. O `IntegratedPipeline` usa `ImageEmbedder` (em `embeddings.py`). Hoje o mesmo checkpoint CLIP serve a tres usos: embeddings do cache, `CLIPViewRouter` e `ClipTransparencyClassifier`.
 
 ## Embedder CLIP — `ImageEmbedder`
 
@@ -55,12 +55,9 @@ A solução é repurposar: **mesmo modelo, mesma carga, uso diferente**. Em vez 
 
 ## `templates_catalog` ainda existe?
 
-Sim, em `app/modules/captures/templates_catalog.py`. Continua sendo usado por:
+**Não.** Foi removido em 2026-08 junto com o `TemplateProcessor` e o `classifier.py`. O mapa `template_id → descrição em inglês` só servia ao CLIP zero-shot para escolher entre os 6 templates, e nenhum código restante faz essa escolha.
 
-- `TemplateProcessor` (fallback do pipeline integrado): se o backend cair no fallback, precisa escolher um template. Por enquanto, escolhe `default_template_id` direto (sem CLIP). Numa evolução, o `templates_catalog` poderia voltar a alimentar o CLIP só para o caminho de fallback.
-- Documentação histórica do MVP de templates.
-
-Se você apagar `templates_catalog.py`, o fallback ainda funciona usando `default_template_id`. A escolha é manter como referência.
+Os GLBs em `assets/templates/normalized/` continuam versionados, mas agora com um único consumidor: `eval/synthetic_dataset.py`. Ver [11 - Templates 3D](11-templates-3d.md).
 
 ## Detector de cor — `ColorDetector`
 
@@ -84,9 +81,8 @@ No pipeline integrado, a cor do líquido vem do Hunyuan (que infere do conjunto 
 
 Cenários onde ainda faz sentido:
 
-1. **`PIPELINE_MODE=template`** (caminho legado de templates): aí a cor é aplicada no shader `water` do template via `--liquid-color` no Blender. O detector continua sendo o jeito de obter essa cor.
+1. **`MeshRefiner`**: o refiner aceita `--liquid-color` e aplica no material `water`/`Liquid` quando ele existe no GLB. O detector continua sendo o jeito de obter essa cor a partir das fotos — falta apenas liga-lo no `IntegratedPipeline`.
 2. **Metadado em `modelos_3d_universais.liquid_color`**: se você quiser registrar a cor inferida das fotos junto com o GLB cacheado (útil para o módulo `sales` exibir "perfume azul" no card), o `IntegratedPipeline` pode chamar o detector antes do `cache.store(...)`. Está fora do MVP do cache, mas é a forma de manter a feature viva.
-3. **Substituto barato quando Hunyuan offline + fallback de template ativo**.
 
 Não utiliza **OpenCV**; seria possível trocar a implementação no futuro mantendo a mesma ABC.
 
@@ -105,11 +101,12 @@ COLOR_DETECTOR_TYPE=disabled                   # disabled | average
 
 - **Embedder falhou** durante o stage (3) do pipeline integrado: `ModelCache.lookup` trata como miss; loga warning. Job segue para Hunyuan.
 - **Cache desligado** (`CACHE_ENABLED=false`): todos os jobs viram miss. Equivalente a não ter cache.
-- **Color detector falhou** (se estiver ativo): loga warning; o pipeline segue sem `liquid_color`. Hunyuan ignora; `TemplateProcessor` usa cor padrão do template.
+- **Color detector falhou** (se estiver ativo): loga warning; o pipeline segue sem `liquid_color`. Hunyuan ignora; o refiner mantem o material original.
 
 ## Leituras relacionadas
 
 - [09g — Cache de similaridade CLIP](09g-cache-similaridade-clip.md) (consumidor do embedder)
 - [09f — Pipeline integrado](09f-pipeline-integrado.md)
 - [02 — Stack tecnológico](02-stack-tecnologico.md) (deps do CLIP)
-- Código: [`app/modules/captures/embeddings.py`](../app/modules/captures/embeddings.py), [`app/modules/captures/classifier.py`](../app/modules/captures/classifier.py) (legado), [`app/modules/captures/color_detector.py`](../app/modules/captures/color_detector.py), [`app/modules/captures/templates_catalog.py`](../app/modules/captures/templates_catalog.py)
+- [16 — Auditoria do papel do Blender](16-auditoria-blender.md) (por que `classifier.py` e `templates_catalog.py` sairam)
+- Código: [`app/modules/captures/embeddings.py`](../app/modules/captures/embeddings.py), [`app/modules/captures/color_detector.py`](../app/modules/captures/color_detector.py)

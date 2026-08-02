@@ -10,11 +10,12 @@
 | **GLB** | Formato glTF 2.0 binário; único ficheiro com geometria, materiais e texturas embutidas. Saída do pipeline 3D. |
 | **Pipeline integrado** | A composição `IntegratedPipeline` que executa preprocess → rembg → cache → Hunyuan → cleaner → refiner → label → store dentro do worker do `CaptureService`. Caminho default do backend. Ver [09f](09f-pipeline-integrado.md). |
 | **Stage** | Cada etapa do `IntegratedPipeline`. Cada stage é uma ABC com `Disabled*` e implementação real. |
-| **Processor** | ABC raiz que `IntegratedPipeline`, `TemplateProcessor` e `FakeProcessor` implementam. Trocar entre eles é uma decisão de `PIPELINE_MODE` no `.env`. |
+| **Processor** | ABC raiz que `IntegratedPipeline` e `FakeProcessor` implementam. Trocar entre eles é uma decisão de `PIPELINE_MODE` no `.env`. |
 | **FakeProcessor** | Gera GLB mínimo (cubo) sem Blender; usado com `PIPELINE_MODE=fake`. |
-| **TemplateProcessor** | Invoca Blender com `customize_template.py` em cima de um GLB pré-existente. Hoje é caminho de **fallback** quando o Hunyuan está offline. |
+| **TemplateProcessor** | *(removido em 2026-08)* Invocava Blender com `customize_template.py` em cima de um GLB pré-existente. Ver [16 - Auditoria](16-auditoria-blender.md). |
+| **Segmentação corpo/tampa** | Separação do mesh único do Hunyuan em dois materiais, pelo pico de densidade de faces no ombro do frasco. Ver [09h](09h-segmentacao-corpo-tampa.md). |
 | **Hunyuan3DProcessor** | Cliente HTTP do contêiner Docker Hunyuan3D-2mv. Stage (4) do pipeline integrado. |
-| **Template (3D)** | Ficheiro `.glb` em `assets/templates/normalized/`, com convenção de nós (Bottle, Cap, Liquid, Label) e materiais conhecidos pelo `customize_template.py`. |
+| **Template (3D)** | Ficheiro `.glb` em `assets/templates/normalized/`. Hoje usado apenas por `eval/synthetic_dataset.py` como referência do dataset sintético. |
 | **Template ID** | Nome do ficheiro sem extensão, ex.: `feeling_rectangular_blue`. Usado no caminho de fallback. |
 | **Normalize (template)** | Processo *offline* no Blender: converter raw Sketchfab em GLB com nós e escala padrão. |
 | **Procedural (Feelin' Flame)** | Script offline que gera o template `feeling_rectangular_blue` sem ser fotogrametria. |

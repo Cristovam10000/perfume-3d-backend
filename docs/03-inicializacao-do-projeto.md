@@ -16,7 +16,7 @@ Como sair de um clone novo até o servidor respondendo `200` no `/health`. Coman
 - **Docker Desktop** (necessário para Postgres e — no `PIPELINE_MODE=integrated` — para o serviço Hunyuan3D)
 - **NVIDIA Container Toolkit** (somente para `PIPELINE_MODE=integrated`: o Hunyuan exige GPU NVIDIA, ~6-8GB VRAM com `mmgp` profile 4)
 - **Git**
-- **Blender 5.1+** — necessário em `PIPELINE_MODE=integrated` (refiner, cleaner, label projector) ou `template` (TemplateProcessor). Para o `FakeProcessor` (cubo sintético) não precisa.
+- **Blender 5.1+** — necessário em `PIPELINE_MODE=integrated` (refiner com segmentação, label projector). Para o `FakeProcessor` (cubo sintético) não precisa.
 
 ## 1. Postgres + Hunyuan via docker-compose
 
@@ -37,7 +37,7 @@ Invoke-RestMethod http://localhost:7860/health
 # sucesso completo: status=ready, shape_mode=multi-view, fallback=False
 ```
 
-Para desenvolvimento sem GPU, é possível subir só o postgres e usar `PIPELINE_MODE=fake` ou `PIPELINE_MODE=template` no backend.
+Para desenvolvimento sem GPU, é possível subir só o postgres e usar `PIPELINE_MODE=fake` no backend.
 
 > **Por que porta 5433** no Postgres e não a default 5432? Para não conflitar com instalações nativas de Postgres. Se já roda outro Postgres na 5432, o backend assume 5433 por convenção. O Hunyuan fica na porta 7860 (default do gradio_app upstream, mantido).
 
@@ -93,7 +93,6 @@ O `.env.example` já vem com valores de desenvolvimento. Pontos que talvez você
 | `CACHE_SIMILARITY_THRESHOLD` | `0.92` | Calibre com dataset real — mais alto = mais cache miss (conservador); mais baixo = mais hits mas risco de falso positivo. |
 | `CACHE_EMBEDDER_TYPE` | `clip` | Mude para `disabled` em ambientes sem `torch`/transformers; o cache opera apenas com cold-store. |
 | `COLOR_DETECTOR_TYPE` | `disabled` | Mude para `average` se quer persistir cor do líquido como metadado (Hunyuan já infere; opcional). |
-| `PIPELINE_FALLBACK_TO_TEMPLATE` | `false` | Ative se quer que o backend gere via `TemplateProcessor` quando o Hunyuan estiver offline. |
 | `POSTGRES_PASSWORD` | placeholder local | Troque e mantenha a mesma senha dentro de `DATABASE_URL`. |
 | `DATABASE_URL` | aponta para o Postgres local na 5433 | Mude se seu Postgres está em outro host/porta. |
 
@@ -118,7 +117,7 @@ O `production_lifespan` em [`app/main.py`](../app/main.py) executa, em ordem:
 3. `ensure_sales_schema(engine)` — `ALTER TABLE IF EXISTS` no schema do módulo `sales`.
 4. `ensure_captures_schema(engine)` — migração incremental do captures: adiciona `modelo_universal_id` (+FK) em `modelos_3d_produto`, `product_id` em `capture_jobs` e `view` em `capture_images`. Idempotente (não faz nada se as colunas já existem).
 5. `LocalStorage().ensure_dirs()` — garante `storage/uploads/`, `storage/models/` e `storage/cache/`.
-6. `build_pipeline()` — instancia `FakeProcessor`, `TemplateProcessor` ou `IntegratedPipeline` (com cada stage configurado via factories internas), conforme `PIPELINE_MODE`.
+6. `build_pipeline()` — instancia `FakeProcessor` ou `IntegratedPipeline` (com cada stage configurado via factories internas), conforme `PIPELINE_MODE`.
 7. `ProcessingQueue().start(handler=service.process_job)` — sobe o worker async.
 8. Loga `Backend pronto em 0.0.0.0:8000 (pipeline=<mode>, cache_enabled=<bool>, hunyuan_url=<url>)`.
 
@@ -255,7 +254,7 @@ docker compose exec hunyuan python -c "import server; print(server.DEFAULT_MC_AL
 # → mc
 ```
 
-Se a inferência continuar inviável, mantenha `PIPELINE_FALLBACK_TO_TEMPLATE=true` no `.env` para que o backend caia no `TemplateProcessor` quando o Hunyuan falhar.
+Se a inferência continuar inviável, use `PIPELINE_MODE=fake` para destravar o desenvolvimento do restante do sistema — não há mais fallback de template.
 
 ## Próximas leituras
 

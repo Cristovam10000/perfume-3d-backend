@@ -96,7 +96,7 @@ O serviço `hunyuan` do Compose (build em [`docker/hunyuan`](../docker/hunyuan))
 
 ## Ferramentas externas (não-Python)
 
-- **Blender 5.1+** — invocado como subprocess pelo `TemplateProcessor`, `BlenderMeshCleaner`, `BlenderMeshRefiner` e `BlenderLabelProjector`. Caminho default em Windows: `C:\Program Files\Blender Foundation\Blender 5.1\blender.exe`. Configurável via `BLENDER_EXECUTABLE` no `.env`.
+- **Blender 5.1+** — invocado como subprocess pelo `BlenderMeshRefiner` (que também segmenta corpo/tampa) e pelo `BlenderLabelProjector`. Caminho default em Windows: `C:\Program Files\Blender Foundation\Blender 5.1\blender.exe`. Configurável via `BLENDER_EXECUTABLE` no `.env`.
 - **PostgreSQL 16** — container Docker oficial (`tcc-postgres`). Configurado em `DATABASE_URL`.
 - **Docker + NVIDIA Container Toolkit** — usado para Postgres e para o serviço Hunyuan3D-2mv (serviço `hunyuan` do Compose, GPU NVIDIA, ~6-8GB VRAM com profile mmgp 4). O backend em si não é containerizado.
 
@@ -114,8 +114,7 @@ O serviço `hunyuan` do Compose (build em [`docker/hunyuan`](../docker/hunyuan))
 | Worker | `asyncio.Queue` (stdlib) | [`app/modules/captures/queue.py`](../app/modules/captures/queue.py) |
 | Pipeline 3D (orquestração) | `IntegratedPipeline` (Python) | [`app/modules/captures/pipeline.py`](../app/modules/captures/pipeline.py) |
 | Geração 3D (IA) | Hunyuan3D-2mv via container Docker + GPU | [`docker/hunyuan/server.py`](../docker/hunyuan/server.py), cliente HTTP em [`app/modules/captures/processor.py`](../app/modules/captures/processor.py) |
-| Geração 3D (fallback) | Blender 5.1 headless via subprocess | [`app/modules/captures/processor.py`](../app/modules/captures/processor.py) (`TemplateProcessor`) + [`app/modules/captures/blender_scripts/customize_template.py`](../app/modules/captures/blender_scripts/customize_template.py) |
-| Embedder CLIP (cache) | OpenAI CLIP via transformers | [`app/modules/captures/embeddings.py`](../app/modules/captures/embeddings.py), reutilizando o modelo do legado [`app/modules/captures/classifier.py`](../app/modules/captures/classifier.py) |
+| Embedder CLIP (cache) | OpenAI CLIP via transformers | [`app/modules/captures/embeddings.py`](../app/modules/captures/embeddings.py) |
 | Cache de modelos | Cosine vs embedding CLIP | [`app/modules/captures/cache.py`](../app/modules/captures/cache.py), [`app/modules/captures/modelos_universais.py`](../app/modules/captures/modelos_universais.py) |
 | Remoção de fundo | `rembg` + ONNX | [`app/modules/captures/background_remover.py`](../app/modules/captures/background_remover.py) |
 | Extração de label | OpenCV (Canny + warpPerspective) | [`app/modules/captures/label_extractor.py`](../app/modules/captures/label_extractor.py) |

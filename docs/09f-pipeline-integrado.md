@@ -57,13 +57,7 @@ ProcessingInput (job_id, image_paths, output_path)
             │
             ▼
         ┌───────────────────────────────────────────────────────────┐
-        │ (5) MeshCleaner                                            │
-        │     raw.glb → cleaned.glb  (no-op default)                 │
-        └───────────────────────────────────────────────────────────┘
-            │
-            ▼
-        ┌───────────────────────────────────────────────────────────┐
-        │ (5.5) TransparencyClassifier                               │
+        │ (5) TransparencyClassifier                                 │
         │     preprocessed_paths → body_mode (glass | keep | auto)   │
         │     [CLIP zero-shot: frasco transparente ou opaco?]        │
         └───────────────────────────────────────────────────────────┘
@@ -71,8 +65,9 @@ ProcessingInput (job_id, image_paths, output_path)
             ▼
         ┌───────────────────────────────────────────────────────────┐
         │ (6) MeshRefiner                                            │
-        │     cleaned.glb → refined.glb                              │
-        │     [vidro PBR se body_mode=glass; intacto se keep]        │
+        │     raw.glb → refined.glb                                  │
+        │     [segmenta corpo/tampa e aplica vidro PBR só no corpo   │
+        │      se body_mode=glass; intacto se keep]                  │
         └───────────────────────────────────────────────────────────┘
             │
             ▼
@@ -113,7 +108,6 @@ class IntegratedPipeline(Processor):
         embedder: ImageEmbedder,
         cache: ModelCache,
         hunyuan: Hunyuan3DProcessor,
-        mesh_cleaner: MeshCleaner,
         mesh_refiner: MeshRefiner,
         label_extractor: LabelExtractor,
         label_upscaler: LabelUpscaler,
@@ -122,9 +116,7 @@ class IntegratedPipeline(Processor):
         *,
         view_router: ViewRouter | None = None,        # rotula vistas p/ o Hunyuan
         transparency_classifier: TransparencyClassifier | None = None,  # vidro ou opaco
-        fallback_processor: Processor | None = None,  # TemplateProcessor
         front_axis: str = "front_y_neg",
-        min_island_ratio: float = 0.0,
         label_min_confidence: float = 0.3,
         label_target_size: int = 2048,
     ): ...
@@ -145,14 +137,15 @@ Comportamento por stage quando algo falha. Em todos os casos o pipeline **loga**
 | (1) Preprocess | Cai para `DisabledImagePreprocessor` (cópia). Loga warning. Hunyuan recebe foto crua. |
 | (2) Background remove | Mesma coisa: cópia byte-a-byte. Hunyuan recebe foto preprocessada sem máscara — qualidade cai mas job conclui. |
 | (3) Cache lookup | Trata como miss. Loga warning. |
-| (4) Hunyuan | **Crítico.** Se `fallback_processor` configurado (`PIPELINE_FALLBACK_TO_TEMPLATE=true`), tenta o `TemplateProcessor`. Caso contrário, levanta `ProcessingError` e o service marca `error`. |
-| (5) Mesh cleaner | Cópia. Refiner recebe `raw.glb`. |
-| (5.5) Transparência | Trata como desconhecido — refiner roda em `body_mode=auto` (heurística legada). |
-| (6) Mesh refiner | Cópia. Label projector recebe `cleaned.glb` (ou `raw.glb`). |
-| (7) Label extract | Tenta fallback por recorte; senão, degrade total — devolve `refined.glb` direto, sem label. |
+| (4) Hunyuan | **Crítico e terminal.** Levanta `ProcessingError` e o service marca o job como `error`. Não há fallback — mascarar a falha poluía a medição do pipeline de IA. |
+| (5) Transparência | Trata como desconhecido — refiner roda em `body_mode=auto` (heurística legada). |
+| (6) Mesh refiner | Cópia. Label projector recebe `raw.glb`. Se o refiner rodar mas não achar o ombro, aplica vidro no material único (comportamento anterior à segmentação). |
+| (7) Label extract | Degrade total — devolve `refined.glb` direto, sem label. **Atenção:** hoje este é o caminho de 100% dos jobs; ver [16 - Auditoria](16-auditoria-blender.md). |
 | (8) Cache store | Loga warning mas **não** falha o job. O GLB já está disponível no `output_path`. |
 
-A propriedade chave: **um GLB sempre é entregue, exceto se o Hunyuan falhar e não houver fallback de template**.
+A propriedade chave: **um GLB sempre é entregue, exceto se o Hunyuan falhar**.
+
+> **Degradação silenciosa.** Os stages opcionais logam em INFO/WARNING e seguem. Isso permitiu que o extrator de rótulo ficasse quebrado por meses sem ninguém notar — nenhum job jamais produziu `with_label.glb`. Ao investigar qualidade de saída, verifique nos logs quais stages **efetivamente agiram**, não apenas se o job concluiu.
 
 ## Configuração (`.env`)
 
@@ -161,7 +154,6 @@ Variáveis novas e renomeadas em relação ao layout anterior:
 ```bash
 # ---- Modo do pipeline ----
 # fake       = FakeProcessor (cubo sintetico, ~3s, sem deps externas)
-# template   = TemplateProcessor (Blender headless, ~5-15s, sem cache)
 # integrated = IntegratedPipeline (cache CLIP + Hunyuan + pos-proc) - default
 PIPELINE_MODE=integrated
 
@@ -182,8 +174,7 @@ CACHE_EMBEDDING_MODEL=openai/clip-vit-base-patch32
 # ---- Stages auxiliares ----
 IMAGE_PREPROCESSOR_TYPE=standard      # disabled | standard
 BACKGROUND_REMOVER_TYPE=rembg         # disabled | rembg
-MESH_CLEANER_TYPE=disabled            # disabled | blender (default disabled — bypass)
-MESH_REFINER_TYPE=blender             # disabled | blender
+MESH_REFINER_TYPE=blender             # disabled | blender (segmenta corpo/tampa antes do vidro)
 TRANSPARENCY_CLASSIFIER_TYPE=clip     # disabled | clip (decide vidro vs opaco p/ o refiner)
 TRANSPARENCY_THRESHOLD=0.30           # prob. media minima p/ classificar transparente
 LABEL_EXTRACTOR_TYPE=homography       # disabled | homography
@@ -193,14 +184,13 @@ LABEL_FRONT_AXIS=front_y_neg
 LABEL_MIN_CONFIDENCE=0.3
 LABEL_TARGET_SIZE=2048
 
-# ---- Fallback ----
-PIPELINE_FALLBACK_TO_TEMPLATE=false   # se true, usa TemplateProcessor quando Hunyuan falha
-DEFAULT_TEMPLATE_ID=rectangular_basic
-TEMPLATES_DIR=./assets/templates/normalized
+# ---- Blender ----
 BLENDER_EXECUTABLE=C:\Program Files\Blender Foundation\Blender 5.1\blender.exe
 ```
 
-Compat: o valor antigo `PROCESSOR_TYPE` é lido como `PIPELINE_MODE` se estiver presente (com *deprecation warning*) — ver `_apply_legacy_aliases` em `config.py`. Valores legados `fake`/`template`/`integrated` são mapeados; valores desconhecidos (ex.: `template_fitting`, que apareceu por engano em `.env` antigos) caem no default `integrated` sem quebrar o startup.
+> Removidas em 2026-08 junto com o caminho de templates: `PIPELINE_FALLBACK_TO_TEMPLATE`, `DEFAULT_TEMPLATE_ID`, `TEMPLATES_DIR`. Também removidas `MESH_CLEANER_TYPE` e `MESH_MIN_ISLAND_RATIO` — ver [16 - Auditoria](16-auditoria-blender.md).
+
+Compat: o valor antigo `PROCESSOR_TYPE` é lido como `PIPELINE_MODE` se estiver presente (com *deprecation warning*) — ver `_apply_legacy_aliases` em `config.py`. Apenas `fake`/`integrated` são mapeados; valores desconhecidos — incluindo `template`, agora inválido — caem no default `integrated` sem quebrar o startup.
 
 ## Factory (`app/main.py`)
 
@@ -212,8 +202,6 @@ def build_pipeline(
     storage = storage or LocalStorage()
     if config.pipeline_mode == "fake":
         return FakeProcessor()
-    if config.pipeline_mode == "template":
-        return build_template_processor(config)
     # integrated (default)
     return IntegratedPipeline(
         preprocessor=build_image_preprocessor(config),
@@ -221,18 +209,14 @@ def build_pipeline(
         embedder=build_embedder(config),
         cache=build_model_cache(config),
         hunyuan=build_hunyuan(config),
-        mesh_cleaner=build_mesh_cleaner(config),
         mesh_refiner=build_mesh_refiner(config),
         label_extractor=build_label_extractor(config),
         label_upscaler=build_label_upscaler(config),
         label_projector=build_label_projector(config),
         storage=storage,
         view_router=build_view_router(config),
-        fallback_processor=(
-            build_template_processor(config) if config.pipeline_fallback_to_template else None
-        ),
+        transparency_classifier=build_transparency_classifier(config),
         front_axis=config.label_front_axis,
-        min_island_ratio=config.mesh_min_island_ratio,
         label_min_confidence=config.label_min_confidence,
         label_target_size=config.label_target_size,
     )
@@ -243,9 +227,9 @@ def build_pipeline(
 | Cenário | Tempo |
 |---|---|
 | Cache HIT | ~3–8 s (preprocess + rembg + lookup + cópia) |
-| Cache MISS, Hunyuan rápido | ~4 min (preprocess + rembg + Hunyuan + cleaner + refiner + label + store) |
+| Cache MISS, Hunyuan rápido | ~4 min (preprocess + rembg + Hunyuan + refiner + label + store) |
 | Cache MISS, Hunyuan lento | ~10 min |
-| Fallback para `TemplateProcessor` | ~30 s (preprocess + rembg + template + label) |
+| Falha do Hunyuan | job marcado como `error` (sem fallback) |
 
 ## Diferença para o smoke histórico
 
@@ -266,16 +250,17 @@ O smoke continuará útil para depurar etapas isoladas; o pipeline é o caminho 
   - Ausência de label: confirma a degradação graciosa sem interromper o pipeline.
   - Transparência: confirma os modos transparente, opaco e automático do refiner.
   - Falha do classificador de transparência: confirma a degradação para modo automático.
-  - Falha do Hunyuan com fallback ativo: confirma que o `TemplateProcessor` é chamado.
-  - Falha do Hunyuan sem fallback: confirma `ProcessingError` propagada.
+  - Falha do Hunyuan: confirma `ProcessingError` propagada e job encerrado.
 
 ## Leituras relacionadas
 
-- [09 — Pipeline 3D (TemplateProcessor — fallback)](09-pipeline-3d.md)
+- [09 — Pipeline 3D (abstração `Processor`)](09-pipeline-3d.md)
 - [09b — Pipeline IA Hunyuan3D-2mv](09b-pipeline-ai-hunyuan.md)
 - [09c — Refinamento de Malha](09c-refinamento-mesh.md)
-- [09d — Pré-processamento e Cleanup](09d-preprocessamento-e-cleanup.md)
+- [09d — Pré-processamento de imagem](09d-preprocessamento-e-cleanup.md)
 - [09e — Aplicação de Label Real](09e-aplicacao-label.md)
 - [09g — Cache de similaridade CLIP](09g-cache-similaridade-clip.md)
+- [09h — Segmentação corpo/tampa](09h-segmentacao-corpo-tampa.md)
+- [16 — Auditoria do papel do Blender](16-auditoria-blender.md)
 - [05 — Arquitetura](05-arquitetura.md)
 - [08 — Módulo `captures`](08-modulo-captures.md)

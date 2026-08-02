@@ -62,7 +62,7 @@ app/
     │   │
     │   │   # ── Pipeline raiz + IA ──
     │   ├── pipeline.py        # IntegratedPipeline — composição de stages (default: PIPELINE_MODE=integrated)
-    │   ├── processor.py       # ABC Processor + FakeProcessor + TemplateProcessor + Hunyuan3DProcessor
+    │   ├── processor.py       # ABC Processor + FakeProcessor + Hunyuan3DProcessor
     │   ├── view_router.py     # ViewRouter ABC + Labeled/CLIP/Positional (rotula vistas pro Hunyuan)
     │   │
     │   │   # ── Cache de modelos por similaridade CLIP ──
@@ -74,24 +74,20 @@ app/
     │   ├── background_remover.py # ABC + DisabledBackgroundRemover + RembgBackgroundRemover
     │   ├── label_extractor.py    # ABC + DisabledLabelExtractor + HomographyLabelExtractor
     │   ├── image_preprocessor.py # ABC + DisabledImagePreprocessor + StandardImagePreprocessor
-    │   ├── mesh_cleaner.py       # ABC + DisabledMeshCleaner + BlenderMeshCleaner
     │   ├── mesh_refiner.py       # ABC + DisabledMeshRefiner + BlenderMeshRefiner
     │   ├── label_upscaler.py     # ABC + DisabledLabelUpscaler + LanczosLabelUpscaler
     │   ├── label_projector.py    # ABC + DisabledLabelProjector + BlenderLabelProjector
-    │   ├── top_projector.py      # ABC + DisabledTopProjector + BlenderTopProjector (presente, NÃO plugado no pipeline default)
+    │   ├── top_projector.py      # ABC + DisabledTopProjector + BlenderTopProjector (NÃO plugado no pipeline; ver 16-auditoria-blender.md)
     │   │
     │   │   # ── Legado / fallback ──
-    │   ├── classifier.py      # ABC Classifier + CLIPClassifier (depreciado — substituído por embeddings.py)
     │   ├── color_detector.py  # ABC ColorDetector + AverageColorDetector (depreciado do fluxo principal)
-    │   ├── templates_catalog.py  # template_id → descrição em inglês (usado no fallback do TemplateProcessor)
     │   │
     │   └── blender_scripts/
     │       ├── __init__.py
-    │       ├── customize_template.py    # template paramétrico (fallback)
     │       ├── refine_ai_mesh.py        # shader de vidro PBR
-    │       ├── cleanup_mesh.py          # ilhas + furos + normais
+    │       ├── segment_bottle.py        # separa corpo/tampa por pico de densidade de faces
     │       ├── project_label.py         # decal frontal de label
-    │       └── project_top_texture.py   # textura da tampa (opcional)
+    │       └── project_top_texture.py   # textura da tampa (não plugado)
     │
     ├── sales/                 # API comercial — clientes, produtos, vendas, pagamentos
     │   ├── __init__.py
@@ -106,8 +102,8 @@ app/
 
 ### Pontos-chave da árvore
 
-- **`main.py` é o único lugar onde tudo se encontra**. As factories `build_pipeline()` (que escolhe entre `FakeProcessor`, `TemplateProcessor` e `IntegratedPipeline` conforme `PIPELINE_MODE`) e os helpers de cada stage (`build_image_preprocessor`, `build_background_remover`, `build_mesh_refiner`, `build_embedder`, `build_model_cache`, etc.) ficam aqui — sem container DI, sem mágica.
-- **`modules/captures/` é o módulo principal de domínio 3D**. Reúne o pipeline integrado (`pipeline.py`), o cliente do Hunyuan, os stages auxiliares (preprocess, rembg, refiner, label extractor/upscaler/projector), o cache CLIP e a tabela `modelos_3d_universais` (cache global, cross-tenant — separada da `modelos_3d_produto` que já existe e amarra produto comercial a um molde). O caminho de templates (`TemplateProcessor` + `templates_catalog`) continua presente como **fallback**.
+- **`main.py` é o único lugar onde tudo se encontra**. As factories `build_pipeline()` (que escolhe entre `FakeProcessor` e `IntegratedPipeline` conforme `PIPELINE_MODE`) e os helpers de cada stage (`build_image_preprocessor`, `build_background_remover`, `build_mesh_refiner`, `build_embedder`, `build_model_cache`, etc.) ficam aqui — sem container DI, sem mágica.
+- **`modules/captures/` é o módulo principal de domínio 3D**. Reúne o pipeline integrado (`pipeline.py`), o cliente do Hunyuan, os stages auxiliares (preprocess, rembg, refiner, label extractor/upscaler/projector), o cache CLIP e a tabela `modelos_3d_universais` (cache global, cross-tenant — separada da `modelos_3d_produto` que já existe e amarra produto comercial a um molde). O caminho de templates (`TemplateProcessor` + `templates_catalog`) foi **removido** em 2026-08 — ver [16 - Auditoria](16-auditoria-blender.md).
 - **`modules/sales/` é o segundo módulo de domínio** (comercial); `health/` é só `/health`.
 - **Tudo abaixo de `modules/` segue o padrão Feature-First**: cada módulo carrega seu próprio router, service/repository, schemas. `sales/` é mais enxuto (sem `service.py` separado — a lógica fica no `repository.py` por ser CRUD direto sobre Postgres).
 - **`blender_scripts/` é especial**: rodam **dentro** do Blender via `--python`. Não importam nada do `app/` (não conseguiriam — Blender tem o próprio Python isolado). A convenção Blender↔wrapper usa uma única linha estruturada `STATS:...` em stdout para passar contagens (ilhas removidas, faces, índice da face frontal).
@@ -137,18 +133,15 @@ tests/
     ├── __init__.py
     └── captures/
         ├── __init__.py
-        ├── test_classifier.py         # 11 — DisabledClassifier + CLIPClassifier mockado (legado)
         ├── test_color_detector.py     # 12 — AverageColorDetector + edge cases (legado)
-        ├── test_customize_template.py # 6  — script Blender invocado com Blender real
         ├── test_processor.py          # 16 — Fake/Template/Hunyuan3DProcessor (FakeTransport)
         ├── test_queue.py              # 5  — ProcessingQueue assíncrona
         ├── test_router.py             # 11 — POST/GET via TestClient
         ├── test_service.py            # 7  — CaptureService (caminho feliz e erros)
-        ├── test_template_processor.py # 12 — TemplateProcessor (mocks + integração)
         ├── test_background_remover.py # 10 — Disabled/RembgBackgroundRemover (importorskip rembg)
         ├── test_label_extractor.py    # 12 — HomographyLabelExtractor + _ordenar_cantos
         ├── test_image_preprocessor.py # 15 — StandardImagePreprocessor (EXIF, WB, CLAHE, sharpen, resize)
-        ├── test_mesh_cleaner.py       # 13 — BlenderMeshCleaner mocked + integração Blender
+        ├── test_segment_bottle.py     # 10 — heurística de segmentação (bpy stubado)
         ├── test_mesh_refiner.py       # 13 — BlenderMeshRefiner mocked + integração Blender
         ├── test_label_upscaler.py     # 8  — LanczosLabelUpscaler
         ├── test_label_projector.py    # 9  — BlenderLabelProjector mocked + integração Blender
@@ -206,7 +199,7 @@ assets/
 ```
 
 - **`raw/` é gitignored** — esses arquivos são pesados (10-30MB cada) e têm licenças que requerem atribuição mas não permitem redistribuição em massa. Cada dev que precisar dos raws baixa de novo do Sketchfab seguindo o `ATTRIBUTIONS.md`.
-- **`normalized/` é versionado** — esses são os GLBs que o `TemplateProcessor` consome em runtime. Tamanho varia: ~150KB (procedural) até ~26MB (round_spherical).
+- **`normalized/` é versionado** — hoje consumidos apenas por `eval/synthetic_dataset.py` (dataset sintético do benchmark). Tamanho varia: ~150KB (procedural) até ~26MB (round_spherical).
 
 ## `storage/` — gerado em runtime
 
@@ -251,10 +244,10 @@ docs/
 ├── 06-bootstrap-e-lifespan.md
 ├── 07-camada-core.md
 ├── 08-modulo-captures.md
-├── 09-pipeline-3d.md                   # TemplateProcessor (fallback)
+├── 09-pipeline-3d.md                   # abstração Processor + FakeProcessor
 ├── 09b-pipeline-ai-hunyuan.md          # cliente HTTP do contêiner Hunyuan
 ├── 09c-refinamento-mesh.md             # shader de vidro PBR
-├── 09d-preprocessamento-e-cleanup.md   # ImagePreprocessor + MeshCleaner
+├── 09d-preprocessamento-e-cleanup.md   # ImagePreprocessor (cleanup removido)
 ├── 09e-aplicacao-label.md              # LabelUpscaler + LabelProjector
 ├── 09f-pipeline-integrado.md           # IntegratedPipeline (composição)
 ├── 09g-cache-similaridade-clip.md      # ModelCache + modelos_3d_universais (cross-tenant)
@@ -272,7 +265,7 @@ docs/
 - **Imports absolutos a partir de `app/`** dentro do código (`from ...core.logging import get_logger`). Os `..` relativos só aparecem quando o ganho de legibilidade é claro.
 - **Cada módulo expõe seu router via `from .router import router`**, e `main.py` faz `app.include_router(captures_router)`.
 - **Arquivos `__init__.py` ficam vazios** — o agrupamento é por nome, não por re-export. Procure pelo arquivo final, não por barril.
-- **Lazy imports para libs pesadas**: `transformers` em `classifier.py` e `Pillow` em `color_detector.py` são importados dentro dos métodos. Permite que o módulo seja importado mesmo sem essas deps instaladas (caso `CLASSIFIER_TYPE=disabled`).
+- **Lazy imports para libs pesadas**: `transformers` em `embeddings.py`/`view_router.py`/`transparency_classifier.py` e `Pillow` em `color_detector.py` são importados dentro dos métodos. Permite que o módulo seja importado mesmo sem essas deps instaladas.
 
 ## Próximas leituras
 

@@ -56,10 +56,9 @@ O backend isola trocas de implementação com **ABC** + fábricas em `main.py`:
 
 | Abstração | Implementações | Configuração (`.env`) |
 |-----------|----------------|----------------------|
-| `Processor` (raiz) | `FakeProcessor`, `TemplateProcessor`, `IntegratedPipeline` | `PIPELINE_MODE` = `fake` \| `template` \| `integrated` |
+| `Processor` (raiz) | `FakeProcessor`, `IntegratedPipeline` | `PIPELINE_MODE` = `fake` \| `integrated` |
 | `ImagePreprocessor` | `DisabledImagePreprocessor`, `StandardImagePreprocessor` | `IMAGE_PREPROCESSOR_TYPE` = `disabled` \| `standard` |
 | `BackgroundRemover` | `DisabledBackgroundRemover`, `RembgBackgroundRemover` | `BACKGROUND_REMOVER_TYPE` = `disabled` \| `rembg` |
-| `MeshCleaner` | `DisabledMeshCleaner`, `BlenderMeshCleaner` | `MESH_CLEANER_TYPE` = `disabled` \| `blender` |
 | `MeshRefiner` | `DisabledMeshRefiner`, `BlenderMeshRefiner` | `MESH_REFINER_TYPE` = `disabled` \| `blender` |
 | `LabelExtractor` | `DisabledLabelExtractor`, `HomographyLabelExtractor` | `LABEL_EXTRACTOR_TYPE` = `disabled` \| `homography` |
 | `LabelUpscaler` | `DisabledLabelUpscaler`, `LanczosLabelUpscaler` | `LABEL_UPSCALER_TYPE` = `disabled` \| `lanczos` |
@@ -123,7 +122,7 @@ sequenceDiagram
 
 - Erros de domínio: `AppError` e subclasses (`ValidationError` 422, `NotFoundError` 404) → JSON `{"error": "..."}`.
 - Falhas **dentro de stages opcionais** do pipeline (preprocess, rembg, label extraction) são logadas, o stage cai para bypass e o job continua. Documentado em [09f](09f-pipeline-integrado.md).
-- Falha do **Hunyuan** (container offline, timeout, GLB inválido): se há `TemplateProcessor` configurado como fallback, o backend tenta gerar um template paramétrico; senão, o job vai para `error` com mensagem.
+- Falha do **Hunyuan** (container offline, timeout, GLB inválido): o job vai para `error` com mensagem. Não há fallback desde 2026-08 — ver [16 - Auditoria](16-auditoria-blender.md).
 - Falha do **refiner** ou **projeção de label**: pipeline degrada — devolve o último GLB válido (`refined.glb` ou `cleaned.glb`).
 
 ## Onde achar cada conceito

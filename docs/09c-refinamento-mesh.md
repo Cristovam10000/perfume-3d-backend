@@ -75,6 +75,19 @@ No modo `glass` (e `auto`), o script tenta primeiro a heurística legada:
 - `auto`: exporta o GLB inalterado (comportamento legado — era o que acontecia em 100% dos jobs antes do classificador).
 - `glass`: cai para `identificar_corpo_texturizado()` — o maior mesh **com** material — e aplica `aplicar_vidro_preservando_textura()`: seta `Transmission=1`, `IOR=1.45`, `Roughness=0.05` no Principled BSDF existente **sem desconectar a textura**, que passa a atuar como tinte do vidro (o azulado pintado pela IA vira cor do vidro). `Alpha` fica em 1.0 — a transparência vem da transmissão (`KHR_materials_transmission` + `KHR_materials_ior` no glTF exportado; o `model_viewer_plus` do front suporta ambas), não de alpha blend, que somado à transmissão dobraria a transparência.
 
+### Segmentação corpo/tampa (desde 2026-08)
+
+Antes de aplicar a transmissão, o modo `glass` chama `segmentar_corpo()`, que usa a heurística de [`segment_bottle.py`](../app/modules/captures/blender_scripts/segment_bottle.py) para separar o mesh em dois slots de material — `[0]` corpo, `[1]` tampa — pelo **pico de densidade de faces** no ombro do frasco. O vidro é então aplicado **apenas ao material do corpo**.
+
+Sem isso, o mesh único do Hunyuan fazia a transmissão cobrir tampa, rótulo e líquido junto. Resultado no glTF exportado:
+
+```
+mat[0] Material_0        → transmission=1, IOR=1.45, roughness=0.05   (corpo)
+mat[1] Material_0_Tampa  → roughness=0.9036, sem transmission          (tampa)
+```
+
+Quando o ombro não é identificado (razão de pico abaixo de 1,5), o script **cai no comportamento anterior** — material único para o frasco inteiro — em vez de falhar. Detalhes da calibração e das alternativas descartadas em [09h](09h-segmentacao-corpo-tampa.md).
+
 ## Parâmetros do shader de vidro
 
 | Parâmetro | Valor | Justificativa |
@@ -97,10 +110,12 @@ Se a heurística for inconclusiva, o mesh é ignorado sem erro.
 
 ## Limitações
 
-- **Geometria não é alterada**: apenas materiais são substituídos. Imperfeições na malha (faces duplas, tampa fundida ao corpo) persistem após o refinamento. Limpeza geométrica é responsabilidade do pós-processamento no servidor Hunyuan e do `BlenderMeshCleaner` (ver [09d](09d-preprocessamento-e-cleanup.md)).
-- **Vidro no mesh inteiro**: no caminho texturizado (mesh único do Hunyuan), a transmissão é aplicada ao frasco inteiro, incluindo a região da tampa. A tampa pintada vira vidro tintado escuro — aceitável visualmente, mas não é plástico/metal correto. Separar tampa por segmentação de malha é evolução futura.
+- **Geometria não é alterada**: apenas materiais são substituídos. Imperfeições na malha (faces duplas, tampa fundida ao corpo) persistem após o refinamento. Limpeza geométrica é responsabilidade do pós-processamento no servidor Hunyuan (ver [09d](09d-preprocessamento-e-cleanup.md)).
+- ~~**Vidro no mesh inteiro**~~: **resolvido** pela segmentação corpo/tampa — ver seção acima e [09h](09h-segmentacao-corpo-tampa.md).
+- **Rótulo ainda recebe vidro**: a segmentação separa corpo de tampa, mas o rótulo fica **no corpo**. Aplicar transmissão ao corpo torna o rótulo translúcido junto. Separar o rótulo exigiria segmentação por região de textura, não por altura.
 - **Cap detection fraca**: em frascos com tampa integrada ou muito próxima ao corpo, a heurística de posição Z não é conclusiva e a tampa é ignorada (em GLBs de mesh único nem chega a rodar).
-- **Classificador zero-shot**: calibrado com 2 frascos reais; vidro fosco (frosted) e plástico translúcido são casos não testados. `TRANSPARENCY_THRESHOLD` ajusta o trade-off.
+- **Classificador zero-shot mal calibrado para vidro escuro**: medido nos 6 jobs reais, o GRAND (vidro âmbar) pontuou 0,146 e 0,072 — **abaixo** do ASAD opaco (0,089). As classes se sobrepõem, então nenhum valor de `TRANSPARENCY_THRESHOLD` acerta os dois. O problema está nos prompts, não no corte. Ver [16](16-auditoria-blender.md).
+- **Sem `KHR_materials_volume`**: o GLB exporta transmissão e IOR mas não espessura, então viewers PBR renderizam película fina, sem refração com profundidade. Medido: a transmissão acrescenta apenas 3,2 sobre o efeito do `roughness`.
 - **Dependência do Blender**: requer Blender 5.1+ instalado na mesma máquina que o backend. Use a variável `BLENDER_EXECUTABLE` para apontar para a instalação correta.
 - **Idempotência**: rodar o refinador duas vezes no mesmo GLB produz o mesmo resultado — tanto o caminho legado (recria a árvore de nós) quanto o texturizado (seta os mesmos valores no BSDF existente).
 
@@ -108,7 +123,7 @@ Se a heurística for inconclusiva, o mesh é ignorado sem erro.
 
 | Posição | Entrada | Saída | Falha |
 |---|---|---|---|
-| Stage (6) | `cleaned.glb` (do `BlenderMeshCleaner`) | `refined.glb` | Degrade: pipeline mantém `cleaned.glb` como entrada do stage (7) e loga warning. Não derruba o job. |
+| Stage (6) | `raw.glb` (do Hunyuan) | `refined.glb` | Degrade: pipeline mantém `raw.glb` como entrada do stage (7) e loga warning. Não derruba o job. |
 
 `liquid_color` pode ser passado para o refiner (`--liquid-color`) se o pipeline tiver essa informação (vindo do cache ou do `AverageColorDetector` se ele estiver ativo). Sem cor, o material `water` mantém o default do template/mesh.
 

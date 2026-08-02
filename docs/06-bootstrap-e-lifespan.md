@@ -29,8 +29,7 @@ Executado na subida do Uvicorn, **antes** de aceitar tráfego:
 5. `LocalStorage().ensure_dirs()` — `uploads/`, `models/`, `cache/`.
 6. `build_pipeline()` — fabrica o `Processor` raiz conforme `PIPELINE_MODE` no `.env`:
    - `fake` → `FakeProcessor()`
-   - `template` → `TemplateProcessor(blender_executable, templates_dir)`
-   - `integrated` → `IntegratedPipeline(...)` com todas as factories de stage (`build_image_preprocessor`, `build_background_remover`, `build_embedder`, `build_model_cache`, `build_hunyuan`, `build_mesh_cleaner`, `build_mesh_refiner`, `build_label_extractor`, `build_label_upscaler`, `build_label_projector`).
+   - `integrated` → `IntegratedPipeline(...)` com todas as factories de stage (`build_image_preprocessor`, `build_background_remover`, `build_embedder`, `build_model_cache`, `build_hunyuan`, `build_mesh_refiner`, `build_transparency_classifier`, `build_label_extractor`, `build_label_upscaler`, `build_label_projector`).
 7. `CaptureService(session_factory, storage, pipeline, queue)`.
 8. `app.state.capture_service` e `app.state.queue = queue`.
 9. `queue.start(service.process_job)` — inicia o worker assíncrono.

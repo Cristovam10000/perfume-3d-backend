@@ -115,7 +115,7 @@ Com `PIPELINE_MODE=integrated` (default), o backend usa o Hunyuan automaticament
 
 - Se `/sales/snapshot` falhar, o app pode abrir com dados locais/mockados; novas
   escritas comerciais exigem o backend disponível e exibem erro quando não forem confirmadas.
-- Em `PIPELINE_MODE=template` (ou nos stages Blender do `integrated`), o caminho `BLENDER_EXECUTABLE` precisa existir; caso contrario, o passo Blender falha antes de rodar (fontes: `.env.example`, `app/modules/captures/processor.py`).
+- Nos stages Blender do `PIPELINE_MODE=integrated`, o caminho `BLENDER_EXECUTABLE` precisa existir; caso contrario, o passo Blender falha antes de rodar (fontes: `.env.example`, `app/modules/captures/mesh_refiner.py`).
 - Se o Postgres nao estiver em `localhost:5433`, ajuste `DATABASE_URL` (fontes: `.env.example`, `docker-compose.yml`).
 - Se o dispositivo nao acessa o backend, ajuste `BACKEND_BASE_URL` no comando Flutter e confira firewall/rede local (fonte: `../perfume-3d-frontend/lib/core/constants/app_constants.dart`).
 - Hunyuan pode demorar para ficar `ready`, pois carrega modelos em background (fonte: `docker/hunyuan/server.py`).

@@ -57,7 +57,6 @@ O front deve fazer *polling* (ex. a cada 2–3 s) até `status` ser `completed` 
 | `GET /files/models/{job_id}.glb` | Modelo 3D final (o mesmo de `modelUrl` quando o host bate certo) |
 | `GET /files/uploads/...` | Possível acesso direto a uploads (tipicamente o app usa só a API) |
 | `GET /files/model_viewer.html` | Viewer local de depuração (model-viewer) |
-| `GET /templates/{nome}.glb` | Só se `TEMPLATES_DIR` existir; template normalizado puro, sem customização de job |
 
 ## Endpoints comerciais — `/sales/*`
 

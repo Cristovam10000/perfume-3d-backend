@@ -1,20 +1,19 @@
-# 09d — Pré-processamento de Imagem e Limpeza de Malha
+# 09d — Pré-processamento de Imagem (e o cleanup removido)
 
 > **O que você vai aprender neste doc**
-> - As duas "camadas defensivas" do pipeline: tratar a foto na entrada e a malha na saída do Hunyuan.
 > - Por que o pré-processamento clássico (EXIF, white-balance, CLAHE) ainda vale a pena, mesmo com o front comprimindo a imagem.
-> - Por que o cleanup de malha vem **desligado por padrão** (`min_island_ratio=0`) — uma decisão validada na prática.
+> - Por que o estágio de **limpeza de malha foi removido do backend** e para onde ele migrou.
 >
-> **Pré-requisitos:** [09f - Pipeline integrado](09f-pipeline-integrado.md). São os stages (1) e (5).
+> **Pré-requisitos:** [09f - Pipeline integrado](09f-pipeline-integrado.md). O pré-processamento é o stage (1).
 
-Duas camadas defensivas do `IntegratedPipeline`: uma na **entrada** (fotos de smartphone podem ter EXIF errado, luz mista, baixa nitidez) e outra **depois** do Hunyuan (a IA gera GLBs com pequenos artefatos geométricos). Ambas seguem o padrão Strategy: ABC + bypass `Disabled*` + implementação real.
+Camada defensiva na **entrada** do `IntegratedPipeline`: fotos de smartphone podem ter EXIF errado, luz mista e baixa nitidez. Segue o padrão Strategy: ABC + bypass `Disabled*` + implementação real.
 
 | Stage | Posição no pipeline | Componente |
 |---|---|---|
 | Pré-processamento de imagem | (1) — antes de tudo | `StandardImagePreprocessor` |
-| Limpeza de malha | (5) — depois do Hunyuan, antes do refiner | `BlenderMeshCleaner` |
+| ~~Limpeza de malha~~ | removida em 2026-08 | migrou para o servidor Hunyuan |
 
-A composição completa do pipeline está em [09f](09f-pipeline-integrado.md). Este doc explica os dois stages individualmente.
+A composição completa do pipeline está em [09f](09f-pipeline-integrado.md).
 
 ## ImagePreprocessor
 
@@ -60,56 +59,27 @@ Onde isto falha — iluminação muito heterogênea (parte da foto na sombra for
 
 Se as fotos forem usadas como referência para extração de label (stage 7), o pipeline usa estas mesmas fotos preprocessadas — não as originais — para garantir consistência com a máscara do `BackgroundRemover`.
 
-## MeshCleaner
+## MeshCleaner — removido em 2026-08
 
-Pós-processador entre `Hunyuan3DProcessor` e `BlenderMeshRefiner`. Remove artefatos típicos de saída de IA: ilhas soltas (a "bolinha" de canto), furos pequenos no topo da tampa, normais invertidas, polígonos com sombreamento flat.
+O estágio de limpeza de malha **não existe mais no backend**. `mesh_cleaner.py` e
+`blender_scripts/cleanup_mesh.py` foram apagados, junto com as chaves
+`MESH_CLEANER_TYPE` e `MESH_MIN_ISLAND_RATIO`.
 
-> **Primeira linha de defesa: o próprio servidor Hunyuan.** O `docker/hunyuan/server.py` aplica os pós-processadores nativos do hy3dgen (`FloaterRemover` + `DegenerateFaceRemover`) **entre a geração de forma e a texturização** (controlado por `HUNYUAN_SHAPE_POSTPROCESS`, default ligado). Limpar lá é melhor do que limpar aqui: os floaters somem antes de receber textura (não desperdiça paint) e a remoção usa a lógica do próprio Hunyuan. O `BlenderMeshCleaner` abaixo vira uma segunda camada opcional para o que escapar.
+A limpeza passou a ser responsabilidade exclusiva do **servidor Hunyuan**: o
+`docker/hunyuan/server.py` aplica os pós-processadores nativos do hy3dgen
+(`FloaterRemover` + `DegenerateFaceRemover`) **entre a geração de forma e a
+texturização**, controlado por `HUNYUAN_SHAPE_POSTPROCESS` (default ligado).
+Limpar lá é melhor do que limpar aqui: os floaters somem antes de receber
+textura (não desperdiça paint) e a remoção usa a lógica do próprio Hunyuan.
 
-### Heurística de ilhas
+O estágio local já vinha desligado (`MESH_CLEANER_TYPE=disabled`) porque a
+validação manual mostrou que limpeza cega abria microfuros visíveis: o Hunyuan
+pode gerar a superfície como milhares de "ilhas" adjacentes, e separar loose
+parts / preencher furos / recalcular normais degradava o resultado. Ver
+[16 - Auditoria do Blender](16-auditoria-blender.md).
 
-```
-1. Separa o mesh por componentes conexos (loose parts).
-2. Calcula o volume da bounding box de cada componente.
-3. Encontra o maior componente.
-4. Remove componentes cujo volume < min_island_ratio × maior_volume.
-5. Reagrupa o que sobrou em um único objeto (join).
-```
-
-`min_island_ratio` default = `0.0`. Nesse modo o wrapper copia o GLB byte-a-byte e **não invoca o Blender**. A decisão veio da validação manual: o Hunyuan pode gerar a superfície como milhares de "ilhas" adjacentes, e qualquer limpeza cega (separar loose parts, preencher furos, recalcular normais) abriu microfuros visíveis ou demorou demais em meshes reais.
-
-Para artefatos claramente soltos, use valores baixos como 0.005 ou 0.01 em smoke/debug. Qualquer valor maior que zero reativa o caminho Blender.
-
-Volume de bounding box é proxy barato. Usar volume real (soma de tetraedros) seria mais preciso, mas a diferença é inferior à variabilidade da heurística.
-
-### Limpeza por mesh
-
-Quando a limpeza Blender está ativada (`min_island_ratio > 0`), para cada mesh sobrevivente:
-
-| Etapa | Operador Blender | Comentário |
-|---|---|---|
-| Fechar furos | `mesh.fill_holes(sides=4)` | Só fecha furos de até 4 vértices — preserva aberturas legítimas (gargalo do frasco). |
-| Recalcular normais | `mesh.normals_make_consistent(inside=False)` | Orienta todas as faces para fora; corrige sombreamento invertido. |
-| Shade smooth | `object.shade_smooth()` | Suavização global. |
-| Auto Smooth 30° | `object.shade_auto_smooth(angle=30°)` (Blender ≥ 4.1) | Preserva arestas vivas em quinas. |
-
-O script **não faz remesh agressivo** (Voxel Remesh, Quad Remesher). Remesh muda topologia inteira e perderia detalhes da label. Limpeza aqui é conservadora.
-
-### Stats de retorno
-
-O wrapper Python parseia uma linha do stdout do Blender:
-
-```
-STATS:islands=N,holes=M,faces=K
-```
-
-E retorna `MeshCleanupResult(output_glb, islands_removed, holes_filled, final_face_count)`. Útil para logs do worker e para o smoke validar que a limpeza fez algo.
-
-### Encaixe no `IntegratedPipeline`
-
-| Posição | Entrada | Saída | Falha |
-|---|---|---|---|
-| Stage (5) | `raw.glb` (do Hunyuan) | `cleaned.glb` | Degrade: pipeline passa `raw.glb` como entrada do stage (6). Não derruba o job. |
+> O `IntegratedPipeline` agora vai do stage (4) Hunyuan direto para o (5)
+> `TransparencyClassifier`. O arquivo `cleaned.glb` deixou de ser produzido.
 
 ## Trade-offs
 
@@ -118,17 +88,12 @@ E retorna `MeshCleanupResult(output_glb, islands_removed, holes_filled, final_fa
 | Gray-world WB | Modelo de Retinex, AWB neural | Suficiente para luz mista comum; zero dependências adicionais. |
 | CLAHE em L do LAB | CLAHE em RGB | LAB preserva matiz; RGB satura cores em fotos quentes. |
 | Sharpen condicional via Laplacian | Sempre aplicar unsharp | Evita ruído amplificado em fotos já nítidas. |
-| Cleanup desativado por default (`min_island_ratio=0`) | Rodar Blender sempre | Preserva GLB cru do Hunyuan; evita timeout e microfuros quando a malha vem fragmentada. |
-| Min-island por bbox volume | Volume real (mesh) | Disponível quando `min_island_ratio > 0`; bbox é barato e suficiente para artefatos soltos claros. |
-| `fill_holes(sides=4)` | `fill_holes(sides=8)` ou genérico | Preserva o gargalo do frasco (loop de borda grande). |
-| Sem remesh | Voxel Remesh | Remesh apaga texturas e perde detalhes da label. |
+| Limpeza no servidor Hunyuan | Estágio Blender no backend | Remove floaters antes da texturização e elimina um subprocess de ~20 s por job. |
 
 ## Limitações
 
 - **Foto pré-processada não é foto de estúdio**: gray-world ainda erra em luz ambiente colorida (LED RGB, etc.). Para resultado profissional, usar AWB neural seria a evolução.
-- **`fill_holes(sides=4)` não fecha furos médios**: aberturas com 5–10 vértices ficam abertas. Aceitável para artefatos típicos do Hunyuan, mas não cobre todos os casos.
-- **Heurística de ilhas usa volume de bbox**: dois objetos sobrepostos na bbox podem ser fundidos em um cálculo errado (raro em saídas de Hunyuan).
-- **Dependência do Blender**: igual ao refiner — requer Blender 5.1+ via `BLENDER_EXECUTABLE`.
+- **A limpeza saiu do controle do backend**: se o `HUNYUAN_SHAPE_POSTPROCESS` for desligado no contêiner, não há segunda camada. O `docker/hunyuan/server.py` não é versionado neste repositório.
 
 ## Uso manual
 
@@ -146,11 +111,6 @@ async def main():
 asyncio.run(main())
 "
 
-# Limpeza de mesh standalone (Blender direto):
-blender --background --python app/modules/captures/blender_scripts/cleanup_mesh.py -- \
-    --input  raw.glb \
-    --output cleaned.glb \
-    --min-island-ratio 0
 ```
 
 Smoke histórico (cobertura legada, agora redundante com o pipeline integrado):
@@ -164,7 +124,7 @@ Salva os artefatos intermediários em `storage/smoke/`:
 - `preprocessed/*.jpg` — fotos após pré-processamento
 - `masked/*.png` — após rembg
 - `raw.glb` — saída do Hunyuan
-- `cleaned.glb` — após mesh cleaner
+- `cleaned.glb` — **cópia** de `raw.glb`; o passo `limpar_mesh()` virou passthrough quando o estágio foi removido, e o nome foi mantido só para preservar a numeração das fases do smoke
 - `refined.glb` — após mesh refiner
 
 Útil para abrir no model_viewer e validar etapa por etapa quando estiver depurando o pipeline.
@@ -172,14 +132,12 @@ Salva os artefatos intermediários em `storage/smoke/`:
 ## Leituras relacionadas
 
 - [09b — Pipeline IA: Hunyuan3D-2mv](09b-pipeline-ai-hunyuan.md) (gera o `raw.glb`)
-- [09c — Refinamento de Malha (shader de vidro)](09c-refinamento-mesh.md) (stage seguinte ao cleaner)
+- [09c — Refinamento de Malha (shader de vidro)](09c-refinamento-mesh.md) (stage seguinte ao Hunyuan)
 - [09e — Aplicação de Label](09e-aplicacao-label.md)
 - [09f — Pipeline integrado](09f-pipeline-integrado.md) (composição)
 - [10b — Segmentação e Label](10b-segmentacao-e-label.md) (`RembgBackgroundRemover` é stage 2)
+- [16 — Auditoria do papel do Blender](16-auditoria-blender.md) (por que o cleaner saiu)
 - Código:
-  [`app/modules/captures/image_preprocessor.py`](../app/modules/captures/image_preprocessor.py),
-  [`app/modules/captures/mesh_cleaner.py`](../app/modules/captures/mesh_cleaner.py)
-- Script Blender:
-  [`app/modules/captures/blender_scripts/cleanup_mesh.py`](../app/modules/captures/blender_scripts/cleanup_mesh.py)
+  [`app/modules/captures/image_preprocessor.py`](../app/modules/captures/image_preprocessor.py)
 - Smoke histórico:
   [`scripts/smoke_phase4.py`](../scripts/smoke_phase4.py)

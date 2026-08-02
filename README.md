@@ -15,8 +15,8 @@ serviço e depois busca o modelo `.glb` gerado para renderizar no visualizador 3
 | Pipeline 3D (default) | `IntegratedPipeline` — preprocess + rembg + cache CLIP + Hunyuan3D + refiner + label |
 | Geração 3D (IA) | Hunyuan3D-2mv (container Docker + GPU) via cliente `httpx` |
 | Cache de modelos | similaridade CLIP (cosine) sobre `modelos_3d_universais` |
-| Pós-processamento | Blender 5.1 headless (vidro PBR, limpeza, decal da label) |
-| Modos alternativos | `FakeProcessor` (cubo, p/ testes) · `TemplateProcessor` (Blender + GLB pronto) |
+| Pós-processamento | Blender 5.1 headless (segmentação corpo/tampa + vidro PBR, decal da label) |
+| Modo alternativo | `FakeProcessor` (cubo, p/ testes) |
 | Armazenamento | Disco local (`storage/uploads/`, `storage/models/`, `storage/cache/`) |
 | Módulo comercial | `/sales/*` (clientes, produtos, vendas) sobre o mesmo Postgres |
 | Testes | pytest, pytest-asyncio, httpx, aiosqlite |
@@ -39,7 +39,7 @@ app/
       service.py          # orquestração (magra) das use cases
       router.py           # endpoints HTTP
       queue.py            # ProcessingQueue + worker
-      processor.py        # ABC Processor + Fake/Template/Hunyuan3DProcessor
+      processor.py        # ABC Processor + FakeProcessor + Hunyuan3DProcessor
       pipeline.py         # IntegratedPipeline (composição dos stages — default)
       cache.py            # ClipSimilarityCache + embeddings.py / modelos_universais.py
       *_remover/refiner/extractor/projector.py  # stages do pipeline IA
@@ -51,7 +51,7 @@ tests/                    # pytest suite
 ```
 
 **Separação de camadas:** `router → service → pipeline → storage/DB`. O `Processor`
-é uma ABC plugável: `PIPELINE_MODE` (`fake` | `template` | `integrated`) escolhe a
+é uma ABC plugável: `PIPELINE_MODE` (`fake` | `integrated`) escolhe a
 implementação raiz em `build_pipeline()`, e **cada stage** do pipeline IA também é uma
 Strategy ligada/desligada pelo `.env`. Documentação detalhada e didática em [`docs/`](docs/README.md).
 
@@ -225,13 +225,16 @@ o `.glb` via este path. Não precisa ser chamado diretamente pelo app.
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Suíte atual: **320 testes em 29 arquivos** (`pytest`, 2026-07-23),
-distribuídos entre o módulo `captures` (pipeline, cache, stages, router, service e fila —
-215), a suíte de avaliação `tests/eval/` (métricas geométricas — 52), os templates
-normalizados (25), a configuração do servidor Hunyuan em Docker (5), a integração
-real opt-in com o Hunyuan (1) e os testes end-to-end
-(`test_main.py` — 11), além de **9 testes comerciais** para contratos,
-pagamentos parciais/totais, excesso e idempotência.
+Suíte atual: **293 testes em 26 arquivos** (`pytest`, 2026-08-02), distribuídos entre o
+módulo `captures` (pipeline, cache, stages, router, service e fila), a suíte de avaliação
+`tests/eval/` (métricas geométricas), os templates normalizados, a configuração do servidor
+Hunyuan em Docker, a integração real opt-in com o Hunyuan e os testes end-to-end
+(`test_main.py`), além dos testes comerciais para contratos, pagamentos parciais/totais,
+excesso e idempotência.
+
+A contagem caiu de 320 porque os testes de `TemplateProcessor`, `customize_template`,
+`MeshCleaner` e `Classifier` saíram junto com os componentes; entrou
+`test_segment_bottle.py` (10 testes da heurística de segmentação, sem exigir Blender).
 
 Os testes usam SQLite (`aiosqlite`) em arquivo temporário, sem exigir Postgres rodando;
 componentes que dependem de Blender/rembg/CLIP/Hunyuan são **pulados** quando essas
@@ -279,12 +282,16 @@ Os nomes são **idênticos** ao que o parser do Flutter reconhece em
 ## Roadmap
 
 - [x] MVP ponta a ponta com `FakeProcessor` (cubo sintético).
-- [x] Caminho de templates Blender (`TemplateProcessor`) — hoje usado como **fallback**.
+- [x] ~~Caminho de templates Blender (`TemplateProcessor`)~~ — **removido em 2026-08** após auditoria medir efeito zero em produção (ver [docs/16](docs/16-auditoria-blender.md)).
+- [x] **Segmentação corpo/tampa** por pico de densidade de faces — destrava vidro só no corpo (ver [docs/09h](docs/09h-segmentacao-corpo-tampa.md)).
 - [x] **Pipeline de IA integrado** (`IntegratedPipeline`): Hunyuan3D + pré-proc + rembg + refiner + label.
 - [x] **Cache global** por similaridade CLIP (`modelos_3d_universais`, cross-tenant) + `productId` opcional.
 - [x] Módulo comercial `/sales/*` (clientes, produtos, vendas).
 - [x] Suíte de **avaliação quantitativa** comparando IA × templates × fotogrametria (ver [eval/](eval/README.md)).
 - [ ] Calibrar `CACHE_SIMILARITY_THRESHOLD` com dataset real.
+- [ ] Corrigir o `HomographyLabelExtractor` — 0 detecções em 21 fotos reais (ver [docs/16](docs/16-auditoria-blender.md)).
+- [ ] Recalibrar os prompts do `ClipTransparencyClassifier` — vidro âmbar escuro pontua abaixo de frasco opaco.
+- [ ] Alinhamento rotacional da projeção do topo.
 - [ ] Migrações com Alembic (hoje é `create_all` + `ensure_*_schema` no startup).
 - [ ] Endpoint `GET /captures/history` + endpoints admin do cache.
 - [ ] Migrar storage local para object storage (S3/Firebase).

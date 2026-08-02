@@ -28,8 +28,7 @@ Todo o domínio de **captura de fotos → job → modelo 3D** vive em `app/modul
 | Arquivo | Função | Doc dedicada |
 |---------|--------|--------------|
 | `pipeline.py` | `IntegratedPipeline`: compõe os stages (preprocess → rembg → cache → hunyuan → cleaner → refiner → label → store) | [09f](09f-pipeline-integrado.md) |
-| `processor.py` | `Processor` ABC + `FakeProcessor` + `TemplateProcessor` + `Hunyuan3DProcessor` | [09](09-pipeline-3d.md), [09b](09b-pipeline-ai-hunyuan.md) |
-| `blender_scripts/customize_template.py` | Roda dentro do Blender — customiza template paramétrico (fallback) | [09](09-pipeline-3d.md) |
+| `processor.py` | `Processor` ABC + `FakeProcessor` + `Hunyuan3DProcessor` | [09](09-pipeline-3d.md), [09b](09b-pipeline-ai-hunyuan.md) |
 
 ### Cache de modelos (similaridade CLIP)
 
@@ -47,14 +46,13 @@ Cada stage tem um bypass `Disabled*` (zero deps, útil para testes) e uma implem
 |---------|--------|--------------|
 | `image_preprocessor.py` | `ImagePreprocessor` ABC + `StandardImagePreprocessor` (EXIF, gray-world, CLAHE, sharpen condicional, resize ≤2048) | [09d](09d-preprocessamento-e-cleanup.md) |
 | `background_remover.py` | `BackgroundRemover` ABC + `RembgBackgroundRemover` (modelo `isnet-general-use`) | [10b](10b-segmentacao-e-label.md) |
-| `mesh_cleaner.py` | `MeshCleaner` ABC + `BlenderMeshCleaner` (loose parts → bbox volume → fill_holes 4 → normais → smooth; default `min_island_ratio=0`) | [09d](09d-preprocessamento-e-cleanup.md) |
 | `mesh_refiner.py` | `MeshRefiner` ABC + `BlenderMeshRefiner` (shader de vidro PBR no corpo do frasco) | [09c](09c-refinamento-mesh.md) |
 | `label_extractor.py` | `LabelExtractor` ABC + `HomographyLabelExtractor` (OpenCV: Canny + approxPolyDP + warpPerspective) | [10b](10b-segmentacao-e-label.md) |
 | `label_upscaler.py` | `LabelUpscaler` ABC + `LanczosLabelUpscaler` (Pillow LANCZOS, default 2048 px) | [09e](09e-aplicacao-label.md) |
 | `label_projector.py` | `LabelProjector` ABC + `BlenderLabelProjector` (decal frontal via UV planar) | [09e](09e-aplicacao-label.md) |
 | `view_router.py` | `ViewRouter` ABC + `LabeledViewRouter` / `CLIPViewRouter` / `PositionalViewRouter` — decide qual vista (front/left/back/right/extra) cada foto representa antes de enviar ao Hunyuan | [09f](09f-pipeline-integrado.md) |
 | `top_projector.py` | `TopProjector` ABC + `BlenderTopProjector` (textura da tampa via foto do topo) — **presente, não plugado no pipeline default** | (sem doc dedicada) |
-| `blender_scripts/cleanup_mesh.py` | Script Blender — limpeza conservadora | [09d](09d-preprocessamento-e-cleanup.md) |
+| `blender_scripts/segment_bottle.py` | Script Blender — separa corpo/tampa por pico de densidade de faces | [09h](09h-segmentacao-corpo-tampa.md) |
 | `blender_scripts/refine_ai_mesh.py` | Script Blender — shader de vidro PBR | [09c](09c-refinamento-mesh.md) |
 | `blender_scripts/project_label.py` | Script Blender — decal de label | [09e](09e-aplicacao-label.md) |
 | `blender_scripts/project_top_texture.py` | Script Blender — textura da tampa | (sem doc dedicada) |
@@ -63,9 +61,9 @@ Cada stage tem um bypass `Disabled*` (zero deps, útil para testes) e uma implem
 
 | Arquivo | Estado |
 |---------|--------|
-| `classifier.py` (`CLIPClassifier`) | **Deprecado**. Lógica de zero-shot por descrição em inglês foi substituída pelo `ClipImageEmbedder` em `embeddings.py`. O arquivo é mantido para referência. |
+| `classifier.py` (`CLIPClassifier`) | **Removido em 2026-08**. A lógica de zero-shot por descrição em inglês foi substituída pelo `ClipImageEmbedder` em `embeddings.py`. |
 | `color_detector.py` (`AverageColorDetector`) | **Deprecado** do fluxo principal. O Hunyuan infere cor das fotos. Pode ser ativado se você quiser persistir cor como metadado. |
-| `templates_catalog.py` | **Apenas seed/fallback**. Mantém o dicionário `template_id → descrição` para o `TemplateProcessor` (fallback quando o Hunyuan está offline). |
+| `templates_catalog.py` | **Removido em 2026-08** junto com o `TemplateProcessor`. |
 
 > **Convenção comum** dos scripts Blender da trilha IA: emitem `STATS:<chave1>=<v1>,<chave2>=<v2>,...` em uma única linha de stdout para parsing tolerante por regex no wrapper Python.
 

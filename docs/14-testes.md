@@ -23,10 +23,7 @@ A suíte tem **320 testes coletados em 29 arquivos** (`pytest`, 2026-07-23). Na 
 | `tests/modules/captures/test_service.py` | `CaptureService` (job, classificador, processador) | Mocks de processor/classifier/detectors |
 | `tests/modules/captures/test_router.py` | Rotas com `TestClient` | — |
 | `tests/modules/captures/test_queue.py` | `ProcessingQueue` | — |
-| `tests/modules/captures/test_processor.py` | `FakeProcessor` + `TemplateProcessor` + `Hunyuan3DProcessor` (com `_FakeTransport`) | cliente HTTP do Hunyuan testado sem container |
-| `tests/modules/captures/test_template_processor.py` | `TemplateProcessor` | Mocks de subprocess + integração real se Blender no path |
-| `tests/modules/captures/test_customize_template.py` | Script Blender de customize | Pula se sem Blender |
-| `tests/modules/captures/test_classifier.py` | Classificador CLIP | Mocks de `transformers`; sem download em CI |
+| `tests/modules/captures/test_processor.py` | `FakeProcessor` + `Hunyuan3DProcessor` (com `_FakeTransport`) | cliente HTTP do Hunyuan testado sem container |
 | `tests/modules/captures/test_color_detector.py` | `AverageColorDetector` | Imagens em memória / temporárias |
 | `tests/assets/test_normalized_templates.py` | GLBs normalizados (magic, estrutura, nodes obrigatórios) | Parametrizado nos 6 templates em `assets/templates/normalized/` |
 
@@ -37,7 +34,7 @@ A suíte tem **320 testes coletados em 29 arquivos** (`pytest`, 2026-07-23). Na 
 | `tests/modules/captures/test_background_remover.py` | `RembgBackgroundRemover` | `rembg` não instalado |
 | `tests/modules/captures/test_label_extractor.py` | `HomographyLabelExtractor` + `_ordenar_cantos` | `cv2` não instalado |
 | `tests/modules/captures/test_image_preprocessor.py` | `StandardImagePreprocessor` (EXIF, WB, CLAHE, sharpen, resize, JPEG quality) | `cv2`/`PIL` ausente |
-| `tests/modules/captures/test_mesh_cleaner.py` | `BlenderMeshCleaner` mocked + integração Blender | Blender ausente |
+| `tests/modules/captures/test_segment_bottle.py` | Heurística de segmentação corpo/tampa (10 testes) | `bpy`/`mathutils` stubados em `sys.modules`; **não** exige Blender |
 | `tests/modules/captures/test_mesh_refiner.py` | `BlenderMeshRefiner` mocked + integração Blender | Blender ausente |
 | `tests/modules/captures/test_label_upscaler.py` | `LanczosLabelUpscaler` | Pillow ausente |
 | `tests/modules/captures/test_label_projector.py` | `BlenderLabelProjector` mocked + integração | Blender ausente |
