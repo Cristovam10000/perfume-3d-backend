@@ -35,7 +35,6 @@ if str(BACK_ROOT) not in sys.path:
 
 from app.modules.captures.background_remover import RembgBackgroundRemover
 from app.modules.captures.image_preprocessor import StandardImagePreprocessor
-from app.modules.captures.mesh_cleaner import BlenderMeshCleaner, MeshCleanupInput
 from app.modules.captures.mesh_refiner import BlenderMeshRefiner, RefinementInput
 from app.modules.captures.processor import Hunyuan3DProcessor, ProcessingInput
 
@@ -180,18 +179,17 @@ async def gerar_hunyuan(
 
 
 async def limpar_mesh(input_glb: Path, output_glb: Path) -> None:
-    cleaner = BlenderMeshCleaner(timeout_seconds=180.0)
-    resultado = await cleaner.clean(
-        MeshCleanupInput(
-            input_glb=input_glb,
-            output_glb=output_glb,
-        )
-    )
-    log(
-        f"  ilhas removidas={resultado.islands_removed}, "
-        f"furos preenchidos={resultado.holes_filled}, "
-        f"faces finais={resultado.final_face_count}"
-    )
+    """Passthrough: a limpeza de malha migrou para o servidor Hunyuan.
+
+    O `BlenderMeshCleaner` foi removido do backend (FloaterRemover +
+    DegenerateFaceRemover rodam no container, HUNYUAN_SHAPE_POSTPROCESS=1).
+    Mantido como copia para preservar a numeracao das fases do smoke.
+    """
+    import shutil
+
+    output_glb.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(input_glb, output_glb)
+    log("  limpeza delegada ao servidor Hunyuan — GLB copiado sem alteracao")
 
 
 async def refinar_mesh(input_glb: Path, output_glb: Path) -> None:

@@ -34,7 +34,6 @@ from app.modules.captures.label_projector import (
     LabelProjectionInput,
 )
 from app.modules.captures.label_upscaler import LanczosLabelUpscaler
-from app.modules.captures.mesh_cleaner import BlenderMeshCleaner, MeshCleanupInput
 from app.modules.captures.mesh_refiner import BlenderMeshRefiner, RefinementInput
 from app.modules.captures.processor import Hunyuan3DProcessor, ProcessingInput
 from app.modules.captures.top_projector import BlenderTopProjector, TopProjectionInput
@@ -340,18 +339,19 @@ async def gerar_hunyuan(
 
 
 async def limpar_mesh(input_glb: Path, output_glb: Path, min_island_ratio: float) -> None:
-    cleaner = BlenderMeshCleaner(timeout_seconds=240.0)
-    resultado = await cleaner.clean(
-        MeshCleanupInput(
-            input_glb=input_glb,
-            output_glb=output_glb,
-            min_island_ratio=min_island_ratio,
-        )
-    )
+    """Passthrough: a limpeza de malha migrou para o servidor Hunyuan.
+
+    O `BlenderMeshCleaner` foi removido do backend (FloaterRemover +
+    DegenerateFaceRemover rodam no container, HUNYUAN_SHAPE_POSTPROCESS=1).
+    `min_island_ratio` fica no argparse so para nao quebrar invocacoes antigas.
+    """
+    import shutil
+
+    output_glb.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(input_glb, output_glb)
     log(
-        f"  ilhas removidas={resultado.islands_removed}, "
-        f"furos preenchidos={resultado.holes_filled}, "
-        f"faces finais={resultado.final_face_count}"
+        "  limpeza delegada ao servidor Hunyuan — GLB copiado sem alteracao "
+        f"(--min-island-ratio={min_island_ratio} ignorado)"
     )
 
 

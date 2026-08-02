@@ -47,11 +47,6 @@ from .modules.captures.label_upscaler import (
     LabelUpscaler,
     LanczosLabelUpscaler,
 )
-from .modules.captures.mesh_cleaner import (
-    BlenderMeshCleaner,
-    DisabledMeshCleaner,
-    MeshCleaner,
-)
 from .modules.captures.mesh_refiner import (
     BlenderMeshRefiner,
     DisabledMeshRefiner,
@@ -63,7 +58,6 @@ from .modules.captures.processor import (
     FakeProcessor,
     Hunyuan3DProcessor,
     Processor,
-    TemplateProcessor,
 )
 from .modules.captures.queue import ProcessingQueue
 from .modules.captures.transparency_classifier import (
@@ -98,12 +92,6 @@ def build_background_remover(config: Settings = settings) -> BackgroundRemover:
     if config.background_remover_type == "disabled":
         return DisabledBackgroundRemover()
     return RembgBackgroundRemover(model_name=config.background_remover_model)
-
-
-def build_mesh_cleaner(config: Settings = settings) -> MeshCleaner:
-    if config.mesh_cleaner_type == "disabled":
-        return DisabledMeshCleaner()
-    return BlenderMeshCleaner(blender_executable=config.blender_executable)
 
 
 def build_mesh_refiner(config: Settings = settings) -> MeshRefiner:
@@ -188,14 +176,6 @@ def build_hunyuan(config: Settings = settings) -> Hunyuan3DProcessor:
     )
 
 
-def build_template_processor(config: Settings = settings) -> TemplateProcessor:
-    return TemplateProcessor(
-        blender_executable=config.blender_executable,
-        templates_dir=config.templates_dir,
-        default_template_id=config.default_template_id,
-    )
-
-
 # --------------------------------------------------------------- root factory
 
 
@@ -206,7 +186,6 @@ def build_pipeline(
     """Materializa o `Processor` raiz conforme `PIPELINE_MODE`.
 
     `fake`       -> FakeProcessor (sintetico, sem deps)
-    `template`   -> TemplateProcessor (Blender + template paramétrico)
     `integrated` -> IntegratedPipeline (preprocess + rembg + cache CLIP + Hunyuan + pos-proc)
     """
     storage = storage or LocalStorage()
@@ -214,22 +193,12 @@ def build_pipeline(
     if config.pipeline_mode == "fake":
         return FakeProcessor()
 
-    if config.pipeline_mode == "template":
-        return build_template_processor(config)
-
-    fallback = (
-        build_template_processor(config)
-        if config.pipeline_fallback_to_template
-        else None
-    )
-
     return IntegratedPipeline(
         preprocessor=build_image_preprocessor(config),
         background_remover=build_background_remover(config),
         embedder=build_embedder(config),
         cache=build_model_cache(config, storage),
         hunyuan=build_hunyuan(config),
-        mesh_cleaner=build_mesh_cleaner(config),
         mesh_refiner=build_mesh_refiner(config),
         label_extractor=build_label_extractor(config),
         label_upscaler=build_label_upscaler(config),
@@ -237,9 +206,7 @@ def build_pipeline(
         storage=storage,
         view_router=build_view_router(config),
         transparency_classifier=build_transparency_classifier(config),
-        fallback_processor=fallback,
         front_axis=config.label_front_axis,
-        min_island_ratio=config.mesh_min_island_ratio,
         label_min_confidence=config.label_min_confidence,
         label_target_size=config.label_target_size,
     )
@@ -328,17 +295,6 @@ def create_app(
         StaticFiles(directory=static_root),
         name="files",
     )
-
-    # Templates normalizados expostos para o viewer local poder visualizar
-    # cada template "puro" (sem customizacao do liquido/label do job). Util
-    # para inspecionar a saida do `generate_*_template.py` sem precisar
-    # disparar uma captura nova pelo app.
-    if settings.templates_dir.exists():
-        app.mount(
-            "/templates",
-            StaticFiles(directory=settings.templates_dir),
-            name="templates",
-        )
 
     return app
 

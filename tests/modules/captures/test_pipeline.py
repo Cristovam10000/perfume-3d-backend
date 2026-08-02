@@ -6,8 +6,8 @@ copias byte-a-byte). Valida tres caminhos:
 1. **Cache HIT**: lookup retorna entrada -> pula Hunyuan e pos-proc, serve GLB
    cacheado.
 2. **Cache MISS**: roda toda a cadeia ate label projector e persiste no cache.
-3. **Hunyuan falha + fallback**: levanta no Hunyuan, IntegratedPipeline cai no
-   TemplateProcessor injetado.
+3. **Hunyuan falha**: levanta no Hunyuan e o job morre com ProcessingError —
+   nao ha mais fallback de template.
 """
 
 from __future__ import annotations
@@ -35,11 +35,6 @@ from app.modules.captures.label_projector import (
     LabelProjector,
 )
 from app.modules.captures.label_upscaler import LabelUpscaler
-from app.modules.captures.mesh_cleaner import (
-    MeshCleaner,
-    MeshCleanupInput,
-    MeshCleanupResult,
-)
 from app.modules.captures.mesh_refiner import (
     MeshRefiner,
     RefinementInput,
@@ -48,7 +43,6 @@ from app.modules.captures.mesh_refiner import (
 from app.modules.captures.pipeline import IntegratedPipeline
 from app.modules.captures.processor import (
     Hunyuan3DProcessor,
-    Processor,
     ProcessingError,
     ProcessingInput,
     ProcessingResult,
@@ -147,18 +141,6 @@ class FailingHunyuan(Hunyuan3DProcessor):
         raise ProcessingError("hunyuan offline (stub)")
 
 
-class CopyMeshCleaner(MeshCleaner):
-    async def clean(self, input: MeshCleanupInput) -> MeshCleanupResult:
-        input.output_glb.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(input.input_glb, input.output_glb)
-        return MeshCleanupResult(
-            output_glb=input.output_glb,
-            islands_removed=0,
-            holes_filled=0,
-            final_face_count=0,
-        )
-
-
 class CopyMeshRefiner(MeshRefiner):
     def __init__(self):
         self.inputs: list[RefinementInput] = []
@@ -230,22 +212,6 @@ class CopyLabelProjector(LabelProjector):
         )
 
 
-class StubTemplate(Processor):
-    """TemplateProcessor de fallback que escreve um GLB sintetico."""
-
-    def __init__(self):
-        self.called = 0
-
-    async def process(self, input: ProcessingInput) -> ProcessingResult:
-        self.called += 1
-        input.output_path.parent.mkdir(parents=True, exist_ok=True)
-        input.output_path.write_bytes(b"glTF\x02\x00\x00\x00template")
-        return ProcessingResult(
-            output_path=input.output_path,
-            message="stub template fallback",
-        )
-
-
 # ----------------------------------------------------------------- fixtures
 
 
@@ -273,7 +239,6 @@ def _make_pipeline(
     *,
     cache: ModelCache,
     hunyuan: Hunyuan3DProcessor,
-    fallback: Processor | None = None,
     label_extractor: LabelExtractor | None = None,
     mesh_refiner: MeshRefiner | None = None,
     transparency_classifier: TransparencyClassifier | None = None,
@@ -284,14 +249,12 @@ def _make_pipeline(
         embedder=DisabledEmbedder(),
         cache=cache,
         hunyuan=hunyuan,
-        mesh_cleaner=CopyMeshCleaner(),
         mesh_refiner=mesh_refiner or CopyMeshRefiner(),
         label_extractor=label_extractor or FakeLabelExtractor(),
         label_upscaler=CopyLabelUpscaler(),
         label_projector=CopyLabelProjector(),
         storage=storage,
         transparency_classifier=transparency_classifier,
-        fallback_processor=fallback,
     )
 
 
@@ -508,42 +471,15 @@ async def test_default_classifier_is_disabled_and_uses_auto(
 
 
 @pytest.mark.asyncio
-async def test_hunyuan_failure_uses_fallback(
+async def test_hunyuan_failure_raises(
     storage: LocalStorage, fotos: list[Path], tmp_path: Path
 ):
-    cache = FakeCache(hit=None)
-    fallback = StubTemplate()
-    pipe = _make_pipeline(
-        storage,
-        cache=cache,
-        hunyuan=FailingHunyuan(),
-        fallback=fallback,
-    )
-
-    output = tmp_path / "out.glb"
-    result = await pipe.process(
-        ProcessingInput(
-            job_id="job-fallback",
-            image_paths=fotos,
-            output_path=output,
-        )
-    )
-
-    assert fallback.called == 1
-    assert result.origem == "template-fallback"
-    assert output.exists()
-
-
-@pytest.mark.asyncio
-async def test_hunyuan_failure_without_fallback_raises(
-    storage: LocalStorage, fotos: list[Path], tmp_path: Path
-):
+    """Sem fallback de template, falha do Hunyuan mata o job."""
     cache = FakeCache(hit=None)
     pipe = _make_pipeline(
         storage,
         cache=cache,
         hunyuan=FailingHunyuan(),
-        fallback=None,
     )
 
     with pytest.raises(ProcessingError):

@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import struct
-import subprocess
 from abc import ABC, abstractmethod
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -194,137 +192,6 @@ def _build_cube_glb() -> bytes:
     bin_chunk = struct.pack("<II", len(bin_data), _CHUNK_BIN) + bin_data
 
     return header + json_chunk + bin_chunk
-
-
-# --------------------------------------------------------------------------
-# TemplateProcessor: invoca Blender headless para customizar um template GLB.
-
-# Caminho default do script de customização (irmão do diretório deste módulo).
-_DEFAULT_SCRIPT_PATH = Path(__file__).resolve().parent / "blender_scripts" / "customize_template.py"
-
-
-class TemplateProcessor(Processor):
-    """Customiza um template GLB normalizado via Blender headless.
-
-    Chama o script `app/modules/captures/blender_scripts/customize_template.py`
-    como subprocess, passando template + label + cor do líquido. O script faz
-    o trabalho pesado e exporta o GLB final em `input.output_path`.
-
-    Não conhece classificação de forma — recebe `template_id` via
-    `ProcessingInput`. Quando vier `None`, usa `default_template_id` (definido
-    no construtor). A Etapa 14 (CLIP) preencherá o `template_id` no service.
-    """
-
-    def __init__(
-        self,
-        blender_executable: Path,
-        templates_dir: Path,
-        *,
-        script_path: Path | None = None,
-        default_template_id: str = "rectangular_basic",
-        timeout_seconds: float = 180.0,
-    ):
-        self.blender_executable = Path(blender_executable)
-        self.templates_dir = Path(templates_dir)
-        self.script_path = Path(script_path) if script_path else _DEFAULT_SCRIPT_PATH
-        self.default_template_id = default_template_id
-        self.timeout_seconds = timeout_seconds
-
-    async def process(self, input: ProcessingInput) -> ProcessingResult:
-        self._assert_runtime_assets()
-
-        template_id = input.template_id or self.default_template_id
-        template_path = self.templates_dir / f"{template_id}.glb"
-        if not template_path.exists():
-            raise ProcessingError(
-                f"Template '{template_id}' não existe em {template_path}"
-            )
-
-        # Label só é aplicada quando o caller fornece uma imagem já extraída.
-        # Colar a foto inteira do produto no plano de label gera artefatos ruins.
-        label_image = input.label_image
-        args = [
-            str(self.blender_executable),
-            "--background",
-            "--python", str(self.script_path),
-            "--",
-            "--template", str(template_path),
-            "--output", str(input.output_path),
-        ]
-        if label_image is not None and label_image.exists():
-            args.extend(["--label-image", str(label_image)])
-        if input.liquid_color is not None:
-            args.extend(["--liquid-color", input.liquid_color])
-
-        returncode, stdout, stderr = await self._run_blender(args)
-
-        if returncode != 0:
-            tail = stderr.decode("utf-8", errors="replace")[-500:]
-            raise ProcessingError(
-                f"Blender retornou {returncode} ao customizar template "
-                f"'{template_id}': {tail}"
-            )
-
-        if not input.output_path.exists():
-            raise ProcessingError(
-                "Blender concluiu sem erros mas o GLB de saída não foi criado: "
-                f"{input.output_path}"
-            )
-
-        return ProcessingResult(
-            output_path=input.output_path,
-            message=f"Modelo gerado a partir do template '{template_id}'",
-        )
-
-    def _assert_runtime_assets(self) -> None:
-        if not self.blender_executable.exists():
-            raise ProcessingError(
-                f"Executável do Blender não encontrado: {self.blender_executable}"
-            )
-        if not self.script_path.exists():
-            raise ProcessingError(
-                f"Script do Blender não encontrado: {self.script_path}"
-            )
-        if not self.templates_dir.exists():
-            raise ProcessingError(
-                f"Diretório de templates não existe: {self.templates_dir}"
-            )
-
-    async def _run_blender(self, args: list[str]) -> tuple[int, bytes, bytes]:
-        """Roda o subprocess Blender de forma assíncrona.
-
-        Isolado em método pra permitir override em testes (evita custo de
-        invocar o Blender real em cada caso). Retorna (returncode, stdout, stderr).
-        """
-        return await asyncio.to_thread(self._run_blender_sync, args)
-
-    def _run_blender_sync(self, args: list[str]) -> tuple[int, bytes, bytes]:
-        """Executa o Blender em uma thread.
-
-        No Windows, alguns event loops não implementam subprocess assíncrono
-        nativo. `subprocess.run` dentro de `asyncio.to_thread` mantém o servidor
-        responsivo e evita `NotImplementedError` em runtime.
-        """
-        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-        try:
-            completed = subprocess.run(
-                args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=env,
-                timeout=self.timeout_seconds,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            raise ProcessingError(
-                f"Blender excedeu timeout de {self.timeout_seconds}s"
-            ) from None
-
-        return (
-            completed.returncode,
-            completed.stdout or b"",
-            completed.stderr or b"",
-        )
 
 
 # --------------------------------------------------------------------------

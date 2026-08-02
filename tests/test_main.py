@@ -19,7 +19,7 @@ from app.config import Settings
 from app.database import Base
 from app.main import build_pipeline, create_app
 from app.modules.captures.pipeline import IntegratedPipeline
-from app.modules.captures.processor import FakeProcessor, TemplateProcessor
+from app.modules.captures.processor import FakeProcessor
 from app.modules.captures.queue import ProcessingQueue
 from app.modules.captures.service import CaptureService
 from app.storage.local_storage import LocalStorage
@@ -140,26 +140,12 @@ class TestBuildPipelineFactory:
         processor = build_pipeline(cfg, LocalStorage(root=tmp_path))
         assert isinstance(processor, FakeProcessor)
 
-    def test_template_pipeline_returns_template_processor(self, tmp_path: Path):
-        cfg = Settings(
-            pipeline_mode="template",
-            storage_root=tmp_path,
-            blender_executable=tmp_path / "blender.exe",
-            templates_dir=tmp_path / "templates",
-        )
-        processor = build_pipeline(cfg, LocalStorage(root=tmp_path))
-        assert isinstance(processor, TemplateProcessor)
-        assert processor.blender_executable == cfg.blender_executable
-        assert processor.templates_dir == cfg.templates_dir
-
     def test_integrated_pipeline_compose_stages(self, tmp_path: Path):
         cfg = Settings(
             pipeline_mode="integrated",
             cache_enabled=False,
-            pipeline_fallback_to_template=False,
             storage_root=tmp_path,
             blender_executable=tmp_path / "blender.exe",
-            templates_dir=tmp_path / "templates",
         )
         processor = build_pipeline(cfg, LocalStorage(root=tmp_path))
         assert isinstance(processor, IntegratedPipeline)
@@ -169,25 +155,16 @@ class TestBuildPipelineFactory:
 
         assert isinstance(processor.embedder, DisabledEmbedder)
         assert isinstance(processor.cache, DisabledModelCache)
-        assert processor.fallback_processor is None
-
-    def test_integrated_with_fallback_template(self, tmp_path: Path):
-        cfg = Settings(
-            pipeline_mode="integrated",
-            pipeline_fallback_to_template=True,
-            cache_enabled=False,
-            storage_root=tmp_path,
-            blender_executable=tmp_path / "blender.exe",
-            templates_dir=tmp_path / "templates",
-        )
-        processor = build_pipeline(cfg, LocalStorage(root=tmp_path))
-        assert isinstance(processor, IntegratedPipeline)
-        assert isinstance(processor.fallback_processor, TemplateProcessor)
 
     def test_invalid_pipeline_mode_rejected_by_pydantic(self, tmp_path: Path):
-        # Literal["fake","template","integrated"] no Settings barra valores invalidos.
+        # Literal["fake","integrated"] no Settings barra valores invalidos.
         with pytest.raises(Exception):  # pydantic.ValidationError
             Settings(pipeline_mode="meshroom", storage_root=tmp_path)
+
+    def test_template_mode_removido_e_rejeitado(self, tmp_path: Path):
+        # TemplateProcessor foi removido; 'template' deixou de ser valor valido.
+        with pytest.raises(Exception):  # pydantic.ValidationError
+            Settings(pipeline_mode="template", storage_root=tmp_path)
 
     def test_legacy_processor_type_template_fitting_falls_back_to_integrated(
         self, tmp_path: Path, caplog

@@ -7,8 +7,7 @@ Sequencia executada por process(input):
             HIT  -> copia GLB cacheado -> output_path -> retorna
             MISS -> continua
     (4) Hunyuan3DProcessor  -> raw.glb
-    (5) MeshCleaner         -> cleaned.glb (no-op default)
-    (5.5) TransparencyClassifier -> body_mode (glass | keep | auto)
+    (5) TransparencyClassifier -> body_mode (glass | keep | auto)
     (6) MeshRefiner         -> refined.glb (vidro PBR se transparente)
     (7) LabelExtractor + Upscaler + Projector
                             -> with_label.glb (degrade se nao achou label)
@@ -16,8 +15,7 @@ Sequencia executada por process(input):
                                opcional em modelos_3d_produto
 
 Falhas em stages opcionais sao logadas e o pipeline degrada (usa o GLB do
-stage anterior). Falha do Hunyuan tenta o TemplateProcessor (se configurado
-como fallback); caso contrario propaga ProcessingError.
+stage anterior). Falha do Hunyuan propaga ProcessingError.
 
 A composicao concreta dos stages e responsabilidade do main.build_pipeline().
 """
@@ -40,7 +38,6 @@ from .label_projector import (
     LabelProjector,
 )
 from .label_upscaler import LabelUpscaler
-from .mesh_cleaner import MeshCleaner, MeshCleanupInput
 from .mesh_refiner import MeshRefiner, RefinementInput
 from .processor import (
     Hunyuan3DProcessor,
@@ -72,7 +69,6 @@ class IntegratedPipeline(Processor):
         embedder: ImageEmbedder,
         cache: ModelCache,
         hunyuan: Hunyuan3DProcessor,
-        mesh_cleaner: MeshCleaner,
         mesh_refiner: MeshRefiner,
         label_extractor: LabelExtractor,
         label_upscaler: LabelUpscaler,
@@ -81,9 +77,7 @@ class IntegratedPipeline(Processor):
         *,
         view_router: ViewRouter | None = None,
         transparency_classifier: TransparencyClassifier | None = None,
-        fallback_processor: Processor | None = None,
         front_axis: str = "front_y_neg",
-        min_island_ratio: float = 0.0,
         label_min_confidence: float = 0.3,
         label_target_size: int = 2048,
     ):
@@ -92,7 +86,6 @@ class IntegratedPipeline(Processor):
         self.embedder = embedder
         self.cache = cache
         self.hunyuan = hunyuan
-        self.mesh_cleaner = mesh_cleaner
         self.mesh_refiner = mesh_refiner
         self.label_extractor = label_extractor
         self.label_upscaler = label_upscaler
@@ -102,9 +95,7 @@ class IntegratedPipeline(Processor):
         self.transparency_classifier = (
             transparency_classifier or DisabledTransparencyClassifier()
         )
-        self.fallback_processor = fallback_processor
         self.front_axis = front_axis
-        self.min_island_ratio = min_island_ratio
         self.label_min_confidence = label_min_confidence
         self.label_target_size = label_target_size
 
@@ -145,14 +136,12 @@ class IntegratedPipeline(Processor):
             )
         except Exception as exc:
             _log.exception("Hunyuan falhou para job %s: %s", input.job_id, exc)
-            return await self._fallback_or_raise(input, exc)
+            raise ProcessingError(f"Hunyuan falhou: {exc}") from exc
 
-        # (5) mesh cleaner
-        cleaned = await self._safe_clean(raw_glb, workspace)
-        # (5.5) transparencia: decide o body_mode do refiner pelas fotos
+        # (5) transparencia: decide o body_mode do refiner pelas fotos
         body_mode = await self._safe_classify_transparency(preprocessed)
         # (6) mesh refiner
-        refined = await self._safe_refine(cleaned, input, workspace, body_mode)
+        refined = await self._safe_refine(raw_glb, input, workspace, body_mode)
         # (7) label extract + upscale + project
         final_glb = await self._safe_apply_label(
             refined,
@@ -299,24 +288,6 @@ class IntegratedPipeline(Processor):
             similarity=hit.similarity,
         )
 
-    async def _safe_clean(self, raw: Path, workspace: Path) -> Path:
-        cleaned = workspace / "cleaned.glb"
-        try:
-            await self.mesh_cleaner.clean(
-                MeshCleanupInput(
-                    input_glb=raw,
-                    output_glb=cleaned,
-                    min_island_ratio=self.min_island_ratio,
-                )
-            )
-            return cleaned
-        except Exception as exc:
-            _log.warning(
-                "Mesh cleaner falhou (%s); seguindo com raw.glb",
-                exc,
-            )
-            return raw
-
     async def _safe_classify_transparency(self, fotos: list[Path]) -> str:
         """Traduz o veredito de transparencia para o body_mode do refiner.
 
@@ -443,24 +414,6 @@ class IntegratedPipeline(Processor):
                 exc,
             )
             return refined
-
-    async def _fallback_or_raise(
-        self, input: ProcessingInput, exc_original: Exception
-    ) -> ProcessingResult:
-        if self.fallback_processor is None:
-            raise ProcessingError(
-                f"Hunyuan falhou e fallback nao configurado: {exc_original}"
-            ) from exc_original
-        _log.warning(
-            "Hunyuan falhou para job %s; caindo no TemplateProcessor",
-            input.job_id,
-        )
-        result = await self.fallback_processor.process(input)
-        return ProcessingResult(
-            output_path=result.output_path,
-            message=f"{result.message} (fallback de template)",
-            origem="template-fallback",
-        )
 
 
 # ruff/pyright nao usa BlenderLabelProjector na ABC, mas o import esta acima

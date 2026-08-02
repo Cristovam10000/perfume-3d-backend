@@ -28,19 +28,12 @@ class Settings(BaseSettings):
 
     # ---- Pipeline 3D ----
     # fake       = FakeProcessor (cubo sintetico, ~3s, sem deps externas)
-    # template   = TemplateProcessor (Blender headless customiza GLB, ~5-15s)
     # integrated = IntegratedPipeline (preprocess + rembg + cache CLIP + Hunyuan + refiner + label)
-    pipeline_mode: Literal["fake", "template", "integrated"] = "integrated"
-
-    # Se True, em falha do Hunyuan o IntegratedPipeline tenta o TemplateProcessor
-    # antes de marcar o job como erro.
-    pipeline_fallback_to_template: bool = False
+    pipeline_mode: Literal["fake", "integrated"] = "integrated"
 
     blender_executable: Path = Field(
         default=Path(r"C:\Program Files\Blender Foundation\Blender 5.1\blender.exe")
     )
-    templates_dir: Path = Field(default=Path("./assets/templates/normalized"))
-    default_template_id: str = "rectangular_basic"
 
     # ---- Hunyuan3D-2mv (cliente HTTP) ----
     hunyuan_url: str = "http://localhost:7860"
@@ -72,8 +65,6 @@ class Settings(BaseSettings):
     # `isnet-general-use` é mais leve (~178MB) e suficiente pra fotos
     # comuns. `u2net` é o default histórico do rembg (qualidade menor).
     background_remover_model: str = "isnet-general-use"
-    mesh_cleaner_type: Literal["disabled", "blender"] = "disabled"
-    mesh_min_island_ratio: float = 0.0
     mesh_refiner_type: Literal["disabled", "blender"] = "blender"
     # Classifica o frasco como transparente/opaco (CLIP zero-shot) para o
     # refiner decidir entre shader de vidro e preservar a textura do corpo.
@@ -91,13 +82,15 @@ class Settings(BaseSettings):
     label_target_size: int = 2048
 
     # ---- Legado (compat) ----
-    # COLOR_DETECTOR_TYPE so faz sentido em PIPELINE_MODE=template.
+    # COLOR_DETECTOR_TYPE servia ao TemplateProcessor (removido). Mantido
+    # apenas para nao quebrar .env antigos; nao e lido por nenhum stage.
     color_detector_type: Literal["disabled", "average"] = "disabled"
     # CLIP_MODEL e mantido como sinonimo de CACHE_EMBEDDING_MODEL (lido se presente).
     clip_model: str = "openai/clip-vit-base-patch32"
-    # CLASSIFIER_TYPE e PROCESSOR_TYPE vinham do MVP de templates. Lidos
-    # apenas para preservar .env antigos sem quebrar; sao mapeados em
-    # apply_legacy_aliases() abaixo.
+    # CLASSIFIER_TYPE e PROCESSOR_TYPE vinham do MVP de templates. O
+    # Classifier foi removido junto com o TemplateProcessor; as chaves ficam
+    # apenas para nao quebrar .env antigos (PROCESSOR_TYPE ainda e mapeado em
+    # _apply_legacy_aliases; CLASSIFIER_TYPE nao e lido por nenhum stage).
     classifier_type: Literal["disabled", "clip"] = "disabled"
     processor_type: str | None = None
 
@@ -123,15 +116,16 @@ class Settings(BaseSettings):
 def _apply_legacy_aliases(config: Settings) -> Settings:
     """Mapeia chaves antigas do .env para os nomes novos com warning.
 
-    PROCESSOR_TYPE → PIPELINE_MODE (apenas se o valor for fake/template; valores
-    desconhecidos como 'template_fitting' caem para o default 'integrated').
+    PROCESSOR_TYPE → PIPELINE_MODE (apenas se o valor for fake/integrated).
+    Valores desconhecidos — incluindo 'template', removido junto com o
+    TemplateProcessor — caem para o default 'integrated'.
     """
     import logging
 
     log = logging.getLogger("app.config")
     legacy = (config.processor_type or "").strip().lower()
     if legacy and legacy != config.pipeline_mode:
-        if legacy in {"fake", "template"}:
+        if legacy == "fake":
             log.warning(
                 "PROCESSOR_TYPE=%r esta depreciado; renomeie para PIPELINE_MODE no .env. "
                 "Aplicando %s.",
@@ -143,7 +137,7 @@ def _apply_legacy_aliases(config: Settings) -> Settings:
             config.pipeline_mode = "integrated"
         else:
             log.warning(
-                "PROCESSOR_TYPE=%r nao e um valor valido (esperado fake|template|integrated). "
+                "PROCESSOR_TYPE=%r nao e um valor valido (esperado fake|integrated). "
                 "Mantendo PIPELINE_MODE=%s.",
                 legacy,
                 config.pipeline_mode,
