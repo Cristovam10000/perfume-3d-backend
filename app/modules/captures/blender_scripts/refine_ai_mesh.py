@@ -36,6 +36,17 @@ from pathlib import Path
 import bpy  # noqa: E402  (só existe dentro do Blender)
 from mathutils import Vector  # noqa: E402
 
+# `segment_bottle.py` é irmão deste arquivo. Rodando via `blender --python`, o
+# diretório do script não entra no sys.path automaticamente.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from segment_bottle import (  # noqa: E402
+    MATERIAL_CORPO,
+    alturas_das_faces,
+    encontrar_corte,
+    garantir_dois_materiais,
+)
+
 
 # === Constantes do shader de vidro (calibradas para perfume) ===
 GLASS_PARAMS = {
@@ -178,6 +189,41 @@ def identificar_corpo_vidro(
     candidatos.sort(key=lambda t: t[0], reverse=True)
     _, obj_corpo, mat_corpo = candidatos[0]
     return obj_corpo, mat_corpo
+
+
+def segmentar_corpo(obj: bpy.types.Object) -> bpy.types.Material | None:
+    """Separa corpo e tampa por material_index e devolve o material do corpo.
+
+    O Hunyuan entrega um mesh com material unico, entao aplicar vidro atinge
+    tampa e rotulo junto. `segment_bottle.encontrar_corte` acha o ombro pelo
+    pico de densidade de faces (ver docstring de la para a calibracao).
+
+    Retorna None quando nao ha ombro discernivel — nesse caso o chamador deve
+    cair no comportamento antigo (material unico para o frasco inteiro).
+    """
+    zs = alturas_das_faces(obj)
+    z_corte, diag = encontrar_corte(zs)
+    if z_corte is None:
+        log(f"  ombro nao identificado ({diag.get('motivo')}) — vidro no frasco inteiro")
+        return None
+
+    garantir_dois_materiais(obj, debug=False)
+
+    matriz = obj.matrix_world
+    n_tampa = 0
+    for poly in obj.data.polygons:
+        if (matriz @ poly.center).z > z_corte:
+            poly.material_index = 1
+            n_tampa += 1
+        else:
+            poly.material_index = MATERIAL_CORPO
+    n_corpo = len(obj.data.polygons) - n_tampa
+
+    log(
+        f"  segmentado no ombro z_rel={diag['z_rel_pico']:.2f} "
+        f"(razao {diag['razao']:.2f}x): corpo={n_corpo}, tampa={n_tampa}"
+    )
+    return obj.data.materials[MATERIAL_CORPO]
 
 
 def get_principled_bsdf(mat: bpy.types.Material) -> bpy.types.Node | None:
@@ -463,7 +509,10 @@ def main() -> int:
                     f"Corpo texturizado identificado: '{corpo_obj.name}' "
                     f"(mat='{corpo_mat.name}')"
                 )
-                aplicar_vidro_preservando_textura(corpo_mat)
+                # Segmenta antes de aplicar: sem isso o vidro cobre tampa e
+                # rótulo junto, porque o Hunyuan entrega material único.
+                mat_segmentado = segmentar_corpo(corpo_obj)
+                aplicar_vidro_preservando_textura(mat_segmentado or corpo_mat)
         else:
             log("AVISO: nenhum corpo de vidro identificado — exportando GLB inalterado")
 

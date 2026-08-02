@@ -32,6 +32,12 @@ from pathlib import Path
 import bpy  # noqa: E402
 from mathutils import Vector  # noqa: E402
 
+# `segment_bottle.py` é irmão deste arquivo; rodando via `blender --python`, o
+# diretório do script não entra no sys.path automaticamente.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from segment_bottle import alturas_das_faces, encontrar_corte  # noqa: E402
+
 UP_AXIS = Vector((0.0, 0.0, 1.0))
 
 
@@ -77,19 +83,84 @@ def identificar_tampa(meshes: list[bpy.types.Object]) -> bpy.types.Object | None
 def coletar_faces_topo(
     obj: bpy.types.Object,
     threshold: float,
+    z_minimo: float | None = None,
 ) -> list[bpy.types.MeshPolygon]:
-    faces = [p for p in obj.data.polygons if normal_mundo(obj, p).dot(UP_AXIS) >= threshold]
+    """Faces voltadas para cima, opcionalmente restritas a acima de `z_minimo`.
+
+    Sem `z_minimo` a coleta pega TODA face voltada para cima do frasco — ombro,
+    ressaltos do corpo, tudo. Como o Hunyuan entrega um mesh unico, isso fazia a
+    projecao ortografica usar a bounding box XY do frasco inteiro e a foto do
+    topo saia esticada e deslocada. `z_minimo` vem da segmentacao (o ombro) e
+    limita a coleta a tampa.
+    """
+    matriz = obj.matrix_world
+
+    def elegivel(p: bpy.types.MeshPolygon, t: float) -> bool:
+        if normal_mundo(obj, p).dot(UP_AXIS) < t:
+            return False
+        return z_minimo is None or (matriz @ p.center).z > z_minimo
+
+    faces = [p for p in obj.data.polygons if elegivel(p, threshold)]
     # Fallback progressivo se threshold alto demais
     for t in (0.35, 0.20, 0.0):
         if faces:
             break
-        faces = [p for p in obj.data.polygons if normal_mundo(obj, p).dot(UP_AXIS) >= t]
+        faces = [p for p in obj.data.polygons if elegivel(p, t)]
         if faces and t < threshold:
             log(f"AVISO: threshold relaxado para {t} ({len(faces)} faces)")
     return faces
 
 
 # ------------------------------------------------------------------ UV + material
+
+def recortar_para_alpha(img_path: Path, destino: Path) -> Path:
+    """Recorta a imagem para a bounding box dos pixels opacos.
+
+    A foto do topo vem do BackgroundRemover: o frasco ocupa uma parte do quadro
+    e o resto e alpha=0. A projecao ortografica mapeia a imagem INTEIRA (UV 0..1)
+    sobre a tampa, entao sem recorte a tampa recebe majoritariamente area
+    transparente e o conteudo util sai deslocado e fora de escala.
+
+    Devolve o caminho recortado, ou o original quando nao ha alpha utilizavel.
+    """
+    import numpy as np
+
+    origem = bpy.data.images.load(str(img_path))
+    largura, altura = origem.size
+    if largura == 0 or altura == 0:
+        return img_path
+
+    px = np.array(origem.pixels[:], dtype=np.float32).reshape(altura, largura, 4)
+    opacos = px[:, :, 3] > 0.1
+    if not opacos.any():
+        log("AVISO: imagem do topo sem pixels opacos — usando original")
+        return img_path
+
+    linhas = np.where(opacos.any(axis=1))[0]
+    colunas = np.where(opacos.any(axis=0))[0]
+    y0, y1 = int(linhas[0]), int(linhas[-1]) + 1
+    x0, x1 = int(colunas[0]), int(colunas[-1]) + 1
+
+    if (x1 - x0) < 8 or (y1 - y0) < 8:
+        log("AVISO: recorte alpha degenerado — usando original")
+        return img_path
+
+    pct = 100.0 * (x1 - x0) * (y1 - y0) / (largura * altura)
+    log(
+        f"recorte alpha: {largura}x{altura} -> {x1 - x0}x{y1 - y0} "
+        f"({pct:.1f}% do quadro original)"
+    )
+
+    recorte = px[y0:y1, x0:x1, :]
+    nova = bpy.data.images.new(
+        "TopTextureCropped", width=x1 - x0, height=y1 - y0, alpha=True
+    )
+    nova.pixels = recorte.ravel().tolist()
+    nova.filepath_raw = str(destino)
+    nova.file_format = "PNG"
+    nova.save()
+    return destino
+
 
 def criar_material_topo(img_path: Path) -> bpy.types.Material:
     """Cria material com Image Texture RGBA (transparencia preservada)."""
@@ -237,13 +308,29 @@ def main() -> int:
         raise RuntimeError("tampa nao identificada")
     log(f"tampa: '{tampa.name}' (max_z={max_z_bbox(tampa):.4f})")
 
-    faces_topo = coletar_faces_topo(tampa, args.cosine_threshold)
+    # Sem segmentacao, `identificar_tampa` devolve o frasco inteiro (o Hunyuan
+    # entrega mesh unico) e a projecao se espalha pelo corpo. O corte no ombro
+    # restringe a coleta e, por consequencia, a bounding box da projecao.
+    z_corte, diag = encontrar_corte(alturas_das_faces(tampa))
+    if z_corte is None:
+        log(f"AVISO: ombro nao identificado ({diag.get('motivo')}) — projetando sem recorte")
+    else:
+        log(
+            f"ombro em z_rel={diag['z_rel_pico']:.2f} (razao {diag['razao']:.2f}x); "
+            f"limitando projecao a z > {z_corte:.4f}"
+        )
+
+    faces_topo = coletar_faces_topo(tampa, args.cosine_threshold, z_minimo=z_corte)
     log(f"faces do topo: {len(faces_topo)}")
+
+    imagem_topo = recortar_para_alpha(
+        args.top, args.output.parent / f"{args.output.stem}_top_crop.png"
+    )
 
     if not faces_topo:
         raise RuntimeError("nenhuma face superior encontrada na tampa")
 
-    aplicar_uv_projecao_topo(tampa, faces_topo, args.top)
+    aplicar_uv_projecao_topo(tampa, faces_topo, imagem_topo)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     log(f"exportando: {args.output}")
