@@ -128,9 +128,21 @@ class TestCreateCaptureEndpoint:
     @pytest.mark.asyncio
     async def test_rejects_unknown_view_label(self, harness: _Harness):
         files = [("images", ("01.jpg", b"a", "image/jpeg"))]
-        data = {"views": ["top"]}  # 'top' não é cardinal nem 'extra'.
+        data = {"views": ["diagonal"]}  # não é cardinal, nem 'top', nem 'extra'.
         response = await harness.client.post("/captures", files=files, data=data)
         assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_accepts_top_view_label(self, harness: _Harness):
+        """`top` virou rótulo válido quando o TopProjector foi ligado.
+
+        A foto de cima não vai para o Hunyuan (que só usa as 4 cardeais) — ela
+        alimenta o `TopProjector`, que cola a textura na tampa do GLB.
+        """
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        data = {"views": ["top"]}
+        response = await harness.client.post("/captures", files=files, data=data)
+        assert response.status_code == 201
 
     @pytest.mark.asyncio
     async def test_views_omitted_falls_back_to_null(self, harness: _Harness):

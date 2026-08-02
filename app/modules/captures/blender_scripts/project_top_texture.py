@@ -37,8 +37,13 @@ from mathutils import Vector  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from segment_bottle import alturas_das_faces, encontrar_corte  # noqa: E402
+from top_alignment import estimar_rotacao  # noqa: E402
 
 UP_AXIS = Vector((0.0, 0.0, 1.0))
+
+# Resolucao das mascaras usadas na estimativa de rotacao. Precisa ser suficiente
+# para a forma da tampa (triangular, quadrada, circular) sem custar tempo.
+_RES_MASCARA = 128
 
 
 def log(msg: str) -> None:
@@ -57,6 +62,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top",    required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--cosine-threshold", type=float, default=0.45)
+    parser.add_argument(
+        "--sem-alinhar-rotacao",
+        dest="alinhar_rotacao",
+        action="store_false",
+        help="desliga a estimativa de rotacao por silhueta (util para comparar)",
+    )
     return parser.parse_args(get_argv_after_double_dash())
 
 
@@ -162,6 +173,45 @@ def recortar_para_alpha(img_path: Path, destino: Path) -> Path:
     return destino
 
 
+def mascara_da_malha(
+    obj: bpy.types.Object, faces_topo: list[bpy.types.MeshPolygon]
+) -> "object":
+    """Silhueta da tampa vista de cima, rasterizada numa grade booleana."""
+    import numpy as np
+
+    matriz = obj.matrix_world
+    verts = obj.data.vertices
+    pontos = [
+        (matriz @ verts[vi].co)[:2] for face in faces_topo for vi in face.vertices
+    ]
+    if not pontos:
+        return np.zeros((_RES_MASCARA, _RES_MASCARA), dtype=bool)
+
+    arr = np.asarray(pontos, dtype=np.float64)
+    minimo, maximo = arr.min(axis=0), arr.max(axis=0)
+    span = np.maximum(maximo - minimo, 1e-9)
+    idx = ((arr - minimo) / span * (_RES_MASCARA - 1)).astype(np.int32)
+
+    grade = np.zeros((_RES_MASCARA, _RES_MASCARA), dtype=bool)
+    grade[idx[:, 1], idx[:, 0]] = True  # linha = Y, coluna = X
+    return grade
+
+
+def mascara_da_foto(img_path: Path) -> "object":
+    """Silhueta da foto do topo, a partir do canal alpha."""
+    import numpy as np
+
+    imagem = bpy.data.images.load(str(img_path))
+    largura, altura = imagem.size
+    px = np.array(imagem.pixels[:], dtype=np.float32).reshape(altura, largura, 4)
+    opacos = px[:, :, 3] > 0.1
+
+    # Subamostra para a mesma resolucao da grade da malha.
+    ys = np.linspace(0, altura - 1, _RES_MASCARA).astype(np.int32)
+    xs = np.linspace(0, largura - 1, _RES_MASCARA).astype(np.int32)
+    return opacos[np.ix_(ys, xs)]
+
+
 def criar_material_topo(img_path: Path) -> bpy.types.Material:
     """Cria material com Image Texture RGBA (transparencia preservada)."""
     nome = "TopTextureMaterial"
@@ -218,31 +268,55 @@ def aplicar_uv_projecao_topo(
     obj: bpy.types.Object,
     faces_topo: list[bpy.types.MeshPolygon],
     img_path: Path,
+    angulo_graus: float = 0.0,
 ) -> None:
     """
     Projeta UV ortograficamente nas faces do topo via coordenadas mundo XY.
     Cria material novo e o atribui apenas a essas faces.
+
+    `angulo_graus` gira o sistema de coordenadas da projeção antes de calcular
+    a bounding box e os UVs, corrigindo a diferença de orientação entre a foto
+    e a malha (ver `top_alignment.py`).
     """
+    import math
+
     mat_world = obj.matrix_world
     verts = obj.data.vertices
 
+    rad = math.radians(angulo_graus)
+    cos_a, sen_a = math.cos(rad), math.sin(rad)
+
     # Coleta todos os vértices das faces do topo em coordenadas mundo
     indices_faces = {p.index for p in faces_topo}
-    xs, ys = [], []
+    brutos = []
     for face in faces_topo:
         for vi in face.vertices:
             p = mat_world @ verts[vi].co
-            xs.append(p.x)
-            ys.append(p.y)
+            brutos.append((p.x, p.y))
 
-    if not xs:
+    if not brutos:
         raise RuntimeError("nenhum vértice nas faces do topo")
+
+    # Centro da tampa: a rotação precisa ser em torno dele, não da origem.
+    centro_x = sum(x for x, _ in brutos) / len(brutos)
+    centro_y = sum(y for _, y in brutos) / len(brutos)
+
+    def girar(x: float, y: float) -> tuple[float, float]:
+        dx, dy = x - centro_x, y - centro_y
+        return (dx * cos_a - dy * sen_a, dx * sen_a + dy * cos_a)
+
+    girados = [girar(x, y) for x, y in brutos]
+    xs = [p[0] for p in girados]
+    ys = [p[1] for p in girados]
 
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
     span_x = max(max_x - min_x, 1e-6)
     span_y = max(max_y - min_y, 1e-6)
-    log(f"bbox XY do topo: x=[{min_x:.3f},{max_x:.3f}] y=[{min_y:.3f},{max_y:.3f}]")
+    log(
+        f"bbox XY do topo (rotacao {angulo_graus:.1f}deg): "
+        f"x=[{min_x:.3f},{max_x:.3f}] y=[{min_y:.3f},{max_y:.3f}]"
+    )
 
     # Cria ou substitui UV map "TopProjectionUV"
     uv_nome = "TopProjectionUV"
@@ -256,8 +330,9 @@ def aplicar_uv_projecao_topo(
         if face.index in indices_faces:
             for loop_i, vi in zip(face.loop_indices, face.vertices):
                 p = mat_world @ verts[vi].co
-                u = (p.x - min_x) / span_x
-                v = (p.y - min_y) / span_y
+                gx, gy = girar(p.x, p.y)
+                u = (gx - min_x) / span_x
+                v = (gy - min_y) / span_y
                 uv_layer.data[loop_i].uv = (u, v)
         else:
             for loop_i in face.loop_indices:
@@ -327,10 +402,36 @@ def main() -> int:
         args.top, args.output.parent / f"{args.output.stem}_top_crop.png"
     )
 
+    # Estimativa de rotacao pela silhueta. `permitir_espelho` fica desligado:
+    # a projecao ortografica e a foto de cima tem a mesma lateralidade, e num
+    # frasco quase simetrico o espelho seria escolhido por ruido, produzindo um
+    # logo invertido — pior do que um logo girado.
+    angulo = 0.0
+    if args.alinhar_rotacao:
+        estimativa = estimar_rotacao(
+            mascara_da_malha(tampa, faces_topo),
+            mascara_da_foto(imagem_topo),
+            permitir_espelho=False,
+        )
+        if estimativa is None:
+            log("AVISO: mascaras insuficientes para estimar rotacao — usando 0deg")
+        elif not estimativa.confiavel:
+            log(
+                f"rotacao ambigua (IoU={estimativa.iou:.3f}, "
+                f"confianca={estimativa.confianca:.3f}) — tampa provavelmente "
+                "circular; nao aplicando rotacao"
+            )
+        else:
+            angulo = estimativa.angulo_graus
+            log(
+                f"rotacao estimada: {angulo:.1f}deg "
+                f"(IoU={estimativa.iou:.3f}, confianca={estimativa.confianca:.3f})"
+            )
+
     if not faces_topo:
         raise RuntimeError("nenhuma face superior encontrada na tampa")
 
-    aplicar_uv_projecao_topo(tampa, faces_topo, imagem_topo)
+    aplicar_uv_projecao_topo(tampa, faces_topo, imagem_topo, angulo_graus=angulo)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     log(f"exportando: {args.output}")

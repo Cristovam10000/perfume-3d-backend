@@ -66,6 +66,8 @@ Referência de variáveis de ambiente (ficheiro de código: [`app/config.py`](..
 | `label_projector_type` | `LABEL_PROJECTOR_TYPE` | `disabled` \| `blender` |
 | `label_front_axis` | `LABEL_FRONT_AXIS` | `front_y_neg` (default), etc. |
 | `label_min_confidence` | `LABEL_MIN_CONFIDENCE` | 0.0–1.0 (default 0.3) |
+| `top_projector_type` | `TOP_PROJECTOR_TYPE` | `disabled` \| `blender` (default). Só dispara quando o app rotula uma foto como `top`. |
+| `top_cosine_threshold` | `TOP_COSINE_THRESHOLD` | Cosseno mínimo entre a normal da face e o eixo Z para contar como topo (default 0.45). |
 | `label_target_size` | `LABEL_TARGET_SIZE` | Pixels do Lanczos (default 2048) |
 
 ### Legado / opcional

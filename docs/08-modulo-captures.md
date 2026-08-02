@@ -77,7 +77,7 @@ A diferença em relação a versões anteriores: o service **deixou de orquestra
 
 ## `IncomingImage`
 
-- Dataclass com `filename`, `content: bytes` e `view: str | None` (rótulo de vista opcional do app guiado) — o router lê cada `UploadFile` + o campo `views` paralelo e monta a lista.
+- Dataclass com `filename`, `content: bytes` e `view: str | None` (rótulo de vista opcional do app guiado) — o router lê cada `UploadFile` + o campo `views` paralelo e monta a lista. Rótulos aceitos: `front`, `left`, `back`, `right`, `top`, `extra`; qualquer outro devolve 422.
 
 ## `CaptureRepository`
 

@@ -89,6 +89,29 @@ Quando o ombro não é identificado, o script cai no comportamento anterior (mat
 
 `project_top_texture.py` usa o corte como `z_minimo` para restringir a coleta de faces, e recorta a foto do topo pela bounding box dos pixels opacos antes de projetar. A foto vem do `BackgroundRemover`, então o frasco ocupa só parte do quadro — sem recorte, a tampa recebia majoritariamente área transparente esticada.
 
+## O estágio no pipeline
+
+O `TopProjector` é o **stage (7.5)** do `IntegratedPipeline`, entre a projeção do rótulo e o `ModelCache.store`.
+
+**Por que ele existe:** o Hunyuan3D-2mv reconstrói a partir de 4 vistas cardeais (frente, esquerda, trás, direita). Nenhuma delas enxerga o topo do frasco, então a tampa sai como um **disco liso sem textura**. Este estágio cola a foto real de cima sobre as faces da tampa.
+
+**Como a foto do topo chega até ele:**
+
+1. O app envia `views=["front","left","back","right","top"]` no `POST /captures`
+2. `LabeledViewRouter` reconhece `top` e o coloca em `assignments["top"]` — **fora** de `ordered`, porque o Hunyuan só consome as 4 cardeais e ignoraria a quinta
+3. O pipeline lê `routing.assignments.get("top")` e passa a foto **mascarada** (pós-rembg) ao projetor — o recorte por alpha depende do canal de transparência
+
+**Degradação:** sem foto rotulada como `top`, o estágio é no-op e loga em INFO — não é erro. Se o Blender falhar, o GLB do estágio anterior segue e loga warning.
+
+**Configuração:**
+
+| Chave | Default | Papel |
+|---|---|---|
+| `TOP_PROJECTOR_TYPE` | `blender` | `disabled` desliga o estágio |
+| `TOP_COSINE_THRESHOLD` | `0.45` | Cosseno mínimo entre a normal da face e o eixo Z |
+
+> **Mudança de contrato HTTP:** `top` passou a ser um rótulo de vista válido. Antes o endpoint rejeitava com 422 — havia inclusive um teste afirmando isso, que foi atualizado. Rótulos desconhecidos continuam sendo rejeitados.
+
 ## Medições
 
 Método: render pareado no Blender (mesma câmera, luz e engine) e diferença pixel a pixel restrita à máscara do objeto. Escala de referência: **dois frascos completamente diferentes medem 27,3**.
@@ -112,13 +135,50 @@ O número cai porque a alteração atinge menos área. O ganho aqui é de **corr
 
 O recorte reduziu a imagem de 1200×1600 para 685×644 — a foto tinha apenas **23% de conteúdo útil**.
 
-## Limitação conhecida: alinhamento rotacional
+## Alinhamento rotacional: implementado, mas bloqueado pelo gerador
 
-Com segmentação e recorte, a foto do topo cai na região certa e na escala certa, mas ainda **girada**. A projeção ortográfica mapeia XY do mundo para UV e não há nada que amarre a rotação da foto em torno de Z à rotação da malha — o logo aparece deslocado em vez de centralizado.
+A projeção ortográfica mapeia XY do mundo para UV e nada amarra a **rotação em torno de Z**: a foto foi tirada numa orientação qualquer e a malha tem a sua. Sem corrigir, o logo da tampa sai girado.
 
-Resolver isso exige estimar o ângulo entre foto e malha (casamento de features, ou uma convenção de captura imposta pelo app). **Não é ajuste de constante** e está fora do escopo desta etapa.
+### A abordagem
+
+[`top_alignment.py`](../app/modules/captures/blender_scripts/top_alignment.py) estima o ângulo por **máxima sobreposição (IoU) entre silhuetas**: a da foto (canal alpha do rembg) contra a da tampa projetada em XY. A silhueta da tampa raramente é circular — a do ASAD é um triângulo arredondado, a do La vivacité é quadrada —, então em princípio há sinal suficiente.
+
+O módulo é numpy puro (não importa `bpy`) e normaliza translação e escala, sobrando só a rotação. Reporta `confianca` = razão entre o melhor IoU e a mediana de todos os ângulos testados: **1,0 significa curva plana**, ou seja, rotação indeterminada.
+
+Validado por 16 testes com formas sintéticas de rotação conhecida — recupera o ângulo em triângulos e quadrados dentro de 4°, é invariante a escala, detecta espelhamento em formas quirais e identifica corretamente a ambiguidade do círculo.
+
+### Por que não funciona nos dados atuais
+
+No único job com foto de topo (ASAD), o estimador **recusa aplicar rotação** — e está certo. As duas silhuetas não têm a mesma forma:
+
+```
+MALHA (tampa vista de cima)          FOTO (alpha do rembg)
+   .........########.........          ..............##..............
+   ....##################....          .........###########..........
+   ..######################..          ......#################.......
+   ##########################          ...#######################....
+   ##########################          #########################.....
+   ..######################..          ###########################...
+   ....##################....          ..########################....
+   .........########.........          .......################.......
+        (círculo)                          (triângulo arredondado)
+```
+
+**O Hunyuan arredondou a seção triangular da tampa.** Testei limiares de normal de 0,45 a 0,99 e faixas de 2%, 5% e 10% do topo em altura: a silhueta da malha é um círculo em todos. A informação de forma simplesmente não está no mesh.
+
+Resultado medido: `IoU=0,881`, `confiança=1,009` → abaixo do limiar de 1,08, rotação não aplicada.
+
+Isso é uma limitação de **fidelidade do gerador**, não do algoritmo. E o comportamento é seguro: na dúvida, não gira, em vez de girar aleatoriamente.
+
+### Caminho para resolver
+
+A alternativa que não depende da fidelidade do mesh é uma **convenção de captura**: o app instrui o usuário a fotografar o topo com a frente do frasco apontando para uma direção conhecida (a base do enquadramento, por exemplo). Aí a rotação é dada por construção — zero estimativa. Custa uma mudança no fluxo guiado do app, mas é robusta e gratuita.
+
+O estimador por silhueta continua útil como caminho automático para frascos cuja tampa o gerador reconstrua com forma fiel, e a `confiança` decide qual dos dois vale em cada job.
 
 ## Testes
+
+`tests/modules/captures/test_top_alignment.py` — 16 testes da estimativa de rotação, com formas sintéticas de ângulo conhecido. Documenta duas armadilhas encontradas ao escrever os testes: espelhar um **polígono regular** equivale a girá-lo (simetria diedral), e espelhar um **"L" de braços iguais** também (simetria diagonal) — só uma forma de braços desiguais é quiral de verdade.
 
 `tests/modules/captures/test_segment_bottle.py` — 10 testes.
 

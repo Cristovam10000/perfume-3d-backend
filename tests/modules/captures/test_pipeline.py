@@ -35,6 +35,12 @@ from app.modules.captures.label_projector import (
     LabelProjector,
 )
 from app.modules.captures.label_upscaler import LabelUpscaler
+from app.modules.captures.top_projector import (
+    TopProjectionInput,
+    TopProjectionResult,
+    TopProjector,
+)
+from app.modules.captures.view_router import LabeledViewRouter, ViewRouter
 from app.modules.captures.mesh_refiner import (
     MeshRefiner,
     RefinementInput,
@@ -212,6 +218,22 @@ class CopyLabelProjector(LabelProjector):
         )
 
 
+class SpyTopProjector(TopProjector):
+    """Registra as chamadas para os testes verificarem se o stage disparou."""
+
+    def __init__(self, falhar: bool = False):
+        self.chamadas: list[TopProjectionInput] = []
+        self.falhar = falhar
+
+    async def project(self, input: TopProjectionInput) -> TopProjectionResult:
+        self.chamadas.append(input)
+        if self.falhar:
+            raise RuntimeError("blender morreu (stub)")
+        input.output_glb.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(input.input_glb, input.output_glb)
+        return TopProjectionResult(output_glb=input.output_glb)
+
+
 # ----------------------------------------------------------------- fixtures
 
 
@@ -242,6 +264,8 @@ def _make_pipeline(
     label_extractor: LabelExtractor | None = None,
     mesh_refiner: MeshRefiner | None = None,
     transparency_classifier: TransparencyClassifier | None = None,
+    top_projector: TopProjector | None = None,
+    view_router: "ViewRouter | None" = None,
 ):
     return IntegratedPipeline(
         preprocessor=CopyPreprocessor(),
@@ -255,6 +279,8 @@ def _make_pipeline(
         label_projector=CopyLabelProjector(),
         storage=storage,
         transparency_classifier=transparency_classifier,
+        top_projector=top_projector,
+        view_router=view_router,
     )
 
 
@@ -490,3 +516,104 @@ async def test_hunyuan_failure_raises(
                 output_path=tmp_path / "out.glb",
             )
         )
+
+
+# ------------------------------------------------- projecao da textura do topo
+
+
+@pytest.fixture
+def fotos_com_topo(tmp_path: Path) -> list[Path]:
+    """5 fotos: 4 cardeais + 1 do topo, na ordem que o app enviaria."""
+    pasta = tmp_path / "uploads_topo"
+    pasta.mkdir(parents=True, exist_ok=True)
+    caminhos = []
+    for i in range(5):
+        p = pasta / f"{i:02d}.jpg"
+        p.write_bytes(b"\xff\xd8jpeg-stub")
+        caminhos.append(p)
+    return caminhos
+
+
+_HINTS_COM_TOPO = ["front", "left", "back", "right", "top"]
+
+
+@pytest.mark.asyncio
+async def test_top_projector_dispara_quando_app_rotula_topo(
+    storage: LocalStorage, fotos_com_topo: list[Path], tmp_path: Path
+):
+    espiao = SpyTopProjector()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        top_projector=espiao,
+        view_router=LabeledViewRouter(),
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="job-topo",
+            image_paths=fotos_com_topo,
+            output_path=tmp_path / "out.glb",
+            views=_HINTS_COM_TOPO,
+        )
+    )
+
+    assert len(espiao.chamadas) == 1
+    # Recebe a foto MASCARADA (pos-rembg), nao a original — o recorte por alpha
+    # depende do canal de transparencia.
+    assert espiao.chamadas[0].top_image.suffix == ".png"
+    assert espiao.chamadas[0].top_image.stem.endswith("04")
+
+
+@pytest.mark.asyncio
+async def test_top_projector_pulado_sem_rotulo_top(
+    storage: LocalStorage, fotos: list[Path], tmp_path: Path
+):
+    """Sem foto marcada como `top`, o stage e no-op — nao e erro."""
+    espiao = SpyTopProjector()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        top_projector=espiao,
+    )
+
+    resultado = await pipe.process(
+        ProcessingInput(
+            job_id="job-sem-topo",
+            image_paths=fotos,
+            output_path=tmp_path / "out.glb",
+        )
+    )
+
+    assert espiao.chamadas == []
+    assert resultado.output_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_top_projector_falha_degrada_sem_derrubar_job(
+    storage: LocalStorage, fotos_com_topo: list[Path], tmp_path: Path
+):
+    espiao = SpyTopProjector(falhar=True)
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        top_projector=espiao,
+        view_router=LabeledViewRouter(),
+    )
+
+    saida = tmp_path / "out.glb"
+    resultado = await pipe.process(
+        ProcessingInput(
+            job_id="job-topo-falha",
+            image_paths=fotos_com_topo,
+            output_path=saida,
+            views=_HINTS_COM_TOPO,
+        )
+    )
+
+    assert len(espiao.chamadas) == 1
+    assert resultado.output_path == saida
+    assert saida.exists()  # GLB do stage anterior foi entregue

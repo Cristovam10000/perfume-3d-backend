@@ -95,7 +95,9 @@ A transmissão rende pouco por dois motivos verificáveis no arquivo: o GLB decl
 
 ## Resultado 5 — o `TopProjector` era o de maior potencial, e estava desligado
 
-O `TopProjector` não estava conectado a `main.py`, `pipeline.py` nem `config.py` — código morto, sem variável de ambiente. Executado manualmente no job `e2e-teste2` (único com foto de topo):
+> **Resolvido.** O `TopProjector` foi ligado ao pipeline como stage (7.5) — ver [09h](09h-segmentacao-corpo-tampa.md#o-estágio-no-pipeline).
+
+Na época da auditoria o `TopProjector` não estava conectado a `main.py`, `pipeline.py` nem `config.py` — código morto, sem variável de ambiente. Executado manualmente no job `e2e-teste2` (único com foto de topo):
 
 | Comparação | dif. média |
 |---|---|
@@ -126,6 +128,8 @@ Total: **1.571 linhas apagadas**.
 | Componente | Ver |
 |---|---|
 | `blender_scripts/segment_bottle.py` | [09h](09h-segmentacao-corpo-tampa.md) |
+| `blender_scripts/top_alignment.py` | [09h](09h-segmentacao-corpo-tampa.md) |
+| Stage (7.5) `TopProjector` no `IntegratedPipeline` | [09f](09f-pipeline-integrado.md) |
 | Segmentação no `refine_ai_mesh.py` e no `project_top_texture.py` | [09h](09h-segmentacao-corpo-tampa.md) |
 | `tests/modules/captures/test_segment_bottle.py` | [14](14-testes.md) |
 

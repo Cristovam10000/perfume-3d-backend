@@ -141,6 +141,7 @@ Comportamento por stage quando algo falha. Em todos os casos o pipeline **loga**
 | (5) Transparência | Trata como desconhecido — refiner roda em `body_mode=auto` (heurística legada). |
 | (6) Mesh refiner | Cópia. Label projector recebe `raw.glb`. Se o refiner rodar mas não achar o ombro, aplica vidro no material único (comportamento anterior à segmentação). |
 | (7) Label extract | Degrade total — devolve `refined.glb` direto, sem label. **Atenção:** hoje este é o caminho de 100% dos jobs; ver [16 - Auditoria](16-auditoria-blender.md). |
+| (7.5) Top projector | No-op quando o app não rotula nenhuma foto como `top`. Se o Blender falhar, mantém o GLB anterior e loga warning. |
 | (8) Cache store | Loga warning mas **não** falha o job. O GLB já está disponível no `output_path`. |
 
 A propriedade chave: **um GLB sempre é entregue, exceto se o Hunyuan falhar**.
@@ -183,6 +184,8 @@ LABEL_PROJECTOR_TYPE=blender          # disabled | blender
 LABEL_FRONT_AXIS=front_y_neg
 LABEL_MIN_CONFIDENCE=0.3
 LABEL_TARGET_SIZE=2048
+TOP_PROJECTOR_TYPE=blender            # disabled | blender — cola a foto do topo na tampa
+TOP_COSINE_THRESHOLD=0.45             # cosseno minimo p/ a face contar como topo
 
 # ---- Blender ----
 BLENDER_EXECUTABLE=C:\Program Files\Blender Foundation\Blender 5.1\blender.exe
@@ -216,7 +219,9 @@ def build_pipeline(
         storage=storage,
         view_router=build_view_router(config),
         transparency_classifier=build_transparency_classifier(config),
+        top_projector=build_top_projector(config),
         front_axis=config.label_front_axis,
+        top_cosine_threshold=config.top_cosine_threshold,
         label_min_confidence=config.label_min_confidence,
         label_target_size=config.label_target_size,
     )

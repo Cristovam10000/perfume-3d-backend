@@ -81,6 +81,14 @@ class Settings(BaseSettings):
     label_min_confidence: float = 0.3
     label_target_size: int = 2048
 
+    # Projeta a foto do topo na tampa. O Hunyuan nao reconstroi o topo (as 4
+    # vistas cardeais nao o enxergam) e entrega um disco liso sem textura.
+    # So dispara quando o app rotula uma foto como `top` no POST /captures.
+    top_projector_type: Literal["disabled", "blender"] = "blender"
+    # Cosseno minimo entre a normal da face e o eixo Z para a face contar como
+    # "topo". 0.45 aceita a curvatura do ombro da tampa sem pegar as laterais.
+    top_cosine_threshold: float = 0.45
+
     # ---- Legado (compat) ----
     # COLOR_DETECTOR_TYPE servia ao TemplateProcessor (removido). Mantido
     # apenas para nao quebrar .env antigos; nao e lido por nenhum stage.

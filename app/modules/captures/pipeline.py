@@ -11,6 +11,8 @@ Sequencia executada por process(input):
     (6) MeshRefiner         -> refined.glb (vidro PBR se transparente)
     (7) LabelExtractor + Upscaler + Projector
                             -> with_label.glb (degrade se nao achou label)
+    (7.5) TopProjector      -> with_top.glb (so quando o app rotula uma foto
+                               como `top`; o Hunyuan nao reconstroi o topo)
     (8) ModelCache.store    -> persiste em modelos_3d_universais + UPSERT
                                opcional em modelos_3d_produto
 
@@ -46,11 +48,16 @@ from .processor import (
     ProcessingInput,
     ProcessingResult,
 )
+from .top_projector import (
+    DisabledTopProjector,
+    TopProjectionInput,
+    TopProjector,
+)
 from .transparency_classifier import (
     DisabledTransparencyClassifier,
     TransparencyClassifier,
 )
-from .view_router import PositionalViewRouter, ViewRouter
+from .view_router import TOP_VIEW, PositionalViewRouter, ViewRouter
 
 _log = get_logger("captures.pipeline")
 
@@ -77,7 +84,9 @@ class IntegratedPipeline(Processor):
         *,
         view_router: ViewRouter | None = None,
         transparency_classifier: TransparencyClassifier | None = None,
+        top_projector: TopProjector | None = None,
         front_axis: str = "front_y_neg",
+        top_cosine_threshold: float = 0.45,
         label_min_confidence: float = 0.3,
         label_target_size: int = 2048,
     ):
@@ -95,7 +104,9 @@ class IntegratedPipeline(Processor):
         self.transparency_classifier = (
             transparency_classifier or DisabledTransparencyClassifier()
         )
+        self.top_projector = top_projector or DisabledTopProjector()
         self.front_axis = front_axis
+        self.top_cosine_threshold = top_cosine_threshold
         self.label_min_confidence = label_min_confidence
         self.label_target_size = label_target_size
 
@@ -143,10 +154,16 @@ class IntegratedPipeline(Processor):
         # (6) mesh refiner
         refined = await self._safe_refine(raw_glb, input, workspace, body_mode)
         # (7) label extract + upscale + project
-        final_glb = await self._safe_apply_label(
+        com_label = await self._safe_apply_label(
             refined,
             preprocessed,
             masked,
+            workspace,
+        )
+        # (7.5) textura do topo — só quando o app rotulou uma foto como `top`
+        final_glb = await self._safe_apply_top(
+            com_label,
+            routing.assignments.get(TOP_VIEW),
             workspace,
         )
 
@@ -414,6 +431,42 @@ class IntegratedPipeline(Processor):
                 exc,
             )
             return refined
+
+    async def _safe_apply_top(
+        self,
+        entrada: Path,
+        foto_topo: Path | None,
+        workspace: Path,
+    ) -> Path:
+        """Cola a foto do topo na tampa. No-op quando nao ha foto rotulada.
+
+        O Hunyuan nao reconstroi o topo do frasco — as 4 vistas cardeais nao o
+        enxergam, e ele entrega um disco liso sem textura. Este stage so roda
+        quando o app marca uma foto como `top` no `POST /captures`; sem isso,
+        `routing.assignments` nao traz a chave e o GLB anterior passa direto.
+        """
+        if foto_topo is None:
+            _log.info("Sem foto de topo rotulada; pulando projecao da tampa")
+            return entrada
+
+        with_top = workspace / "with_top.glb"
+        try:
+            await self.top_projector.project(
+                TopProjectionInput(
+                    input_glb=entrada,
+                    top_image=foto_topo,
+                    output_glb=with_top,
+                    cosine_threshold=self.top_cosine_threshold,
+                )
+            )
+            _log.info("Textura do topo aplicada a partir de %s", foto_topo.name)
+            return with_top
+        except Exception as exc:
+            _log.warning(
+                "Top projector falhou (%s); seguindo com o GLB anterior",
+                exc,
+            )
+            return entrada
 
 
 # ruff/pyright nao usa BlenderLabelProjector na ABC, mas o import esta acima

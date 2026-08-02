@@ -59,8 +59,8 @@ Strategy ligada/desligada pelo `.env`. Documentação detalhada e didática em [
 
 ### Testes automatizados
 
-Na execução de referência de 2026-07-23, o backend coletou **320 testes em 29
-arquivos**: **319 passaram** e **1 foi pulado**. O único skip é a integração real
+Na execução de referência de 2026-08-02, o backend coletou **313 testes em 29
+arquivos**: **312 passaram** e **1 foi pulado**. O único skip é a integração real
 com o Hunyuan, desabilitada por padrão porque exige o container de IA ativo.
 
 ### Benchmark dos pipelines 3D
@@ -225,16 +225,18 @@ o `.glb` via este path. Não precisa ser chamado diretamente pelo app.
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Suíte atual: **293 testes em 26 arquivos** (`pytest`, 2026-08-02), distribuídos entre o
+Suíte atual: **313 testes em 29 arquivos** (`pytest`, 2026-08-02), distribuídos entre o
 módulo `captures` (pipeline, cache, stages, router, service e fila), a suíte de avaliação
 `tests/eval/` (métricas geométricas), os templates normalizados, a configuração do servidor
 Hunyuan em Docker, a integração real opt-in com o Hunyuan e os testes end-to-end
 (`test_main.py`), além dos testes comerciais para contratos, pagamentos parciais/totais,
 excesso e idempotência.
 
-A contagem caiu de 320 porque os testes de `TemplateProcessor`, `customize_template`,
-`MeshCleaner` e `Classifier` saíram junto com os componentes; entrou
-`test_segment_bottle.py` (10 testes da heurística de segmentação, sem exigir Blender).
+A composição mudou em relação aos 320 de julho: saíram os testes de `TemplateProcessor`,
+`customize_template`, `MeshCleaner` e `Classifier`, junto com os componentes; entraram
+`test_segment_bottle.py` (10 testes da heurística de segmentação), `test_top_alignment.py`
+(16 testes da estimativa de rotação) e 3 testes do estágio de projeção do topo em
+`test_pipeline.py`. Os três arquivos novos rodam **sem exigir Blender instalado**.
 
 Os testes usam SQLite (`aiosqlite`) em arquivo temporário, sem exigir Postgres rodando;
 componentes que dependem de Blender/rembg/CLIP/Hunyuan são **pulados** quando essas
@@ -284,6 +286,7 @@ Os nomes são **idênticos** ao que o parser do Flutter reconhece em
 - [x] MVP ponta a ponta com `FakeProcessor` (cubo sintético).
 - [x] ~~Caminho de templates Blender (`TemplateProcessor`)~~ — **removido em 2026-08** após auditoria medir efeito zero em produção (ver [docs/16](docs/16-auditoria-blender.md)).
 - [x] **Segmentação corpo/tampa** por pico de densidade de faces — destrava vidro só no corpo (ver [docs/09h](docs/09h-segmentacao-corpo-tampa.md)).
+- [x] **Projeção da textura do topo** ligada ao pipeline (stage 7.5) — o Hunyuan não reconstrói o topo do frasco.
 - [x] **Pipeline de IA integrado** (`IntegratedPipeline`): Hunyuan3D + pré-proc + rembg + refiner + label.
 - [x] **Cache global** por similaridade CLIP (`modelos_3d_universais`, cross-tenant) + `productId` opcional.
 - [x] Módulo comercial `/sales/*` (clientes, produtos, vendas).
@@ -291,7 +294,7 @@ Os nomes são **idênticos** ao que o parser do Flutter reconhece em
 - [ ] Calibrar `CACHE_SIMILARITY_THRESHOLD` com dataset real.
 - [ ] Corrigir o `HomographyLabelExtractor` — 0 detecções em 21 fotos reais (ver [docs/16](docs/16-auditoria-blender.md)).
 - [ ] Recalibrar os prompts do `ClipTransparencyClassifier` — vidro âmbar escuro pontua abaixo de frasco opaco.
-- [ ] Alinhamento rotacional da projeção do topo.
+- [ ] Alinhamento rotacional da projeção do topo — estimador por silhueta implementado, mas o Hunyuan arredonda a tampa e apaga o sinal (ver [docs/09h](docs/09h-segmentacao-corpo-tampa.md)).
 - [ ] Migrações com Alembic (hoje é `create_all` + `ensure_*_schema` no startup).
 - [ ] Endpoint `GET /captures/history` + endpoints admin do cache.
 - [ ] Migrar storage local para object storage (S3/Firebase).

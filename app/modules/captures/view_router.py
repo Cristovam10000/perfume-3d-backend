@@ -35,7 +35,13 @@ from ...core.logging import get_logger
 _log = get_logger("captures.view_router")
 
 CARDINAL_VIEWS: tuple[str, ...] = ("front", "left", "back", "right")
-VALID_VIEW_LABELS: frozenset[str] = frozenset({*CARDINAL_VIEWS, "extra"})
+
+# `top` nao e uma vista cardeal: o Hunyuan3D-2mv consome apenas as 4 cardeais e
+# ignora o resto. A foto de cima serve ao `TopProjector`, que cola a textura da
+# tampa no GLB depois da geracao — o Hunyuan nao reconstroi o topo porque as 4
+# vistas laterais nao o enxergam.
+TOP_VIEW: str = "top"
+VALID_VIEW_LABELS: frozenset[str] = frozenset({*CARDINAL_VIEWS, TOP_VIEW, "extra"})
 
 
 @dataclass(frozen=True)
@@ -46,6 +52,10 @@ class ViewRoutingResult:
     `[front, left, back, right, *extras]`. O servidor do Hunyuan só usa
     as 4 primeiras, mas mantemos as extras na lista para diagnóstico e
     para o stage de textura multi-view.
+
+    `assignments` pode conter a chave `"top"` quando o cliente rotula uma
+    foto do topo. Ela **não** entra em `ordered` — o Hunyuan a ignoraria de
+    qualquer forma — e é consumida pelo `TopProjector` no pós-processamento.
     """
 
     ordered: list[Path]
@@ -128,11 +138,14 @@ class LabeledViewRouter(ViewRouter):
             hints = list(hints) + [None] * (len(images) - len(hints))
 
         cardinais: dict[str, Path] = {}
+        topo: Path | None = None
         extras: list[Path] = []
         for img, hint in zip(images, hints):
             label = (hint or "").strip().lower()
             if label in CARDINAL_VIEWS:
                 cardinais[label] = img  # último ganha (refazer)
+            elif label == TOP_VIEW:
+                topo = img  # último ganha, mesma lógica de "refazer"
             else:
                 extras.append(img)
 
@@ -144,18 +157,25 @@ class LabeledViewRouter(ViewRouter):
             )
             return await self.fallback.route(images, hints)
 
+        # A foto do topo fica fora de `ordered`: o Hunyuan usa só as 4 cardeais.
         ordered = [cardinais[v] for v in CARDINAL_VIEWS] + extras[:2]
+        assignments = dict(cardinais)
+        if topo is not None:
+            assignments[TOP_VIEW] = topo
+
         _log.info(
-            "Roteamento por labels: front=%s left=%s back=%s right=%s (+%d extras)",
+            "Roteamento por labels: front=%s left=%s back=%s right=%s "
+            "(+%d extras, topo=%s)",
             cardinais["front"].name,
             cardinais["left"].name,
             cardinais["back"].name,
             cardinais["right"].name,
             len(extras[:2]),
+            topo.name if topo is not None else "—",
         )
         return ViewRoutingResult(
             ordered=ordered,
-            assignments=dict(cardinais),
+            assignments=assignments,
             confidences={v: 1.0 for v in CARDINAL_VIEWS},
             source="labeled",
         )

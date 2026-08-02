@@ -42,6 +42,11 @@ from .modules.captures.label_projector import (
     DisabledLabelProjector,
     LabelProjector,
 )
+from .modules.captures.top_projector import (
+    BlenderTopProjector,
+    DisabledTopProjector,
+    TopProjector,
+)
 from .modules.captures.label_upscaler import (
     DisabledLabelUpscaler,
     LabelUpscaler,
@@ -129,6 +134,12 @@ def build_label_projector(config: Settings = settings) -> LabelProjector:
     return BlenderLabelProjector(blender_executable=config.blender_executable)
 
 
+def build_top_projector(config: Settings = settings) -> TopProjector:
+    if config.top_projector_type == "disabled":
+        return DisabledTopProjector()
+    return BlenderTopProjector(blender_executable=config.blender_executable)
+
+
 def build_embedder(config: Settings = settings) -> ImageEmbedder:
     if not config.cache_enabled or config.cache_embedder_type == "disabled":
         return DisabledEmbedder()
@@ -206,7 +217,9 @@ def build_pipeline(
         storage=storage,
         view_router=build_view_router(config),
         transparency_classifier=build_transparency_classifier(config),
+        top_projector=build_top_projector(config),
         front_axis=config.label_front_axis,
+        top_cosine_threshold=config.top_cosine_threshold,
         label_min_confidence=config.label_min_confidence,
         label_target_size=config.label_target_size,
     )

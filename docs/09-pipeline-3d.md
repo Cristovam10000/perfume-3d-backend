@@ -34,7 +34,7 @@ Campos usados hoje:
 - `output_path` — destino do `.glb` final (ex.: `storage/models/<uuid>.glb`)
 - `product_id` — opcional; vincula o molde universal a um produto do tenant
 - `liquid_color` — string `#RRGGBB` ou `None`; repassado ao `MeshRefiner` como `--liquid-color`
-- `views` — rótulos de vista enviados pelo app (`front`/`left`/`back`/`right`/`extra`); consumidos pelo `LabeledViewRouter`
+- `views` — rótulos de vista enviados pelo app (`front`/`left`/`back`/`right`/`top`/`extra`); consumidos pelo `LabeledViewRouter`. O rótulo `top` **não** vai para o Hunyuan (que só usa as 4 cardeais) — alimenta o `TopProjector` no stage (7.5), ver [09h](09h-segmentacao-corpo-tampa.md#o-estágio-no-pipeline)
 - `label_image` — opcional; **não** é preenchido automaticamente pelo service. O `IntegratedPipeline` produz a label internamente via `LabelExtractor` e a passa para o `LabelProjector` no próprio fluxo.
 
 > `template_id` foi removido junto com o `TemplateProcessor`.

@@ -23,8 +23,10 @@ async def create_capture(
         default=[],
         description=(
             "Rótulos de vista paralelos a `images` (mesmo índice). Valores válidos: "
-            "front, left, back, right, extra. Se omitido ou vazio, o backend "
-            "usa CLIPViewRouter para decidir."
+            "front, left, back, right, top, extra. Se omitido ou vazio, o backend "
+            "usa CLIPViewRouter para decidir. `top` é opcional e não vai para o "
+            "Hunyuan (que usa só as 4 cardeais) — alimenta a projeção da textura "
+            "da tampa no pós-processamento."
         ),
     ),
     product_id: int | None = Form(
