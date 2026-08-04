@@ -87,7 +87,7 @@ Quando o ombro não é identificado, o script cai no comportamento anterior (mat
 
 ### 2. Projeção da textura do topo
 
-`project_top_texture.py` usa o corte como `z_minimo` para restringir a coleta de faces, e recorta a foto do topo pela bounding box dos pixels opacos antes de projetar. A foto vem do `BackgroundRemover`, então o frasco ocupa só parte do quadro — sem recorte, a tampa recebia majoritariamente área transparente esticada.
+`project_view_texture.py` usa o corte para restringir a coleta de faces, e recorta a foto do topo pela bounding box dos pixels opacos antes de projetar. A foto vem do `BackgroundRemover`, então o frasco ocupa só parte do quadro — sem recorte, a tampa recebia majoritariamente área transparente esticada.
 
 ## O estágio no pipeline
 
@@ -191,4 +191,4 @@ Cobertura: pico detectado na faixa; picos de topo e de fundo ignorados; perfil u
 - [09c — Refinamento de malha](09c-refinamento-mesh.md)
 - [09f — Pipeline integrado](09f-pipeline-integrado.md)
 - [14 — Testes](14-testes.md)
-- Código: [`segment_bottle.py`](../app/modules/captures/blender_scripts/segment_bottle.py), [`refine_ai_mesh.py`](../app/modules/captures/blender_scripts/refine_ai_mesh.py), [`project_top_texture.py`](../app/modules/captures/blender_scripts/project_top_texture.py)
+- Código: [`segment_bottle.py`](../app/modules/captures/blender_scripts/segment_bottle.py), [`refine_ai_mesh.py`](../app/modules/captures/blender_scripts/refine_ai_mesh.py), [`project_view_texture.py`](../app/modules/captures/blender_scripts/project_view_texture.py)

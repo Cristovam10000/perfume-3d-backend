@@ -35,10 +35,12 @@ from app.modules.captures.label_projector import (
     LabelProjector,
 )
 from app.modules.captures.label_upscaler import LabelUpscaler
-from app.modules.captures.top_projector import (
-    TopProjectionInput,
-    TopProjectionResult,
-    TopProjector,
+from app.modules.captures.view_texture_projector import (
+    AXIS_BACK,
+    AXIS_TOP,
+    ViewTextureProjectionInput,
+    ViewTextureProjectionResult,
+    ViewTextureProjector,
 )
 from app.modules.captures.view_router import LabeledViewRouter, ViewRouter
 from app.modules.captures.mesh_refiner import (
@@ -218,20 +220,22 @@ class CopyLabelProjector(LabelProjector):
         )
 
 
-class SpyTopProjector(TopProjector):
+class SpyViewTextureProjector(ViewTextureProjector):
     """Registra as chamadas para os testes verificarem se o stage disparou."""
 
     def __init__(self, falhar: bool = False):
-        self.chamadas: list[TopProjectionInput] = []
+        self.chamadas: list[ViewTextureProjectionInput] = []
         self.falhar = falhar
 
-    async def project(self, input: TopProjectionInput) -> TopProjectionResult:
+    async def project(
+        self, input: ViewTextureProjectionInput
+    ) -> ViewTextureProjectionResult:
         self.chamadas.append(input)
         if self.falhar:
             raise RuntimeError("blender morreu (stub)")
         input.output_glb.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(input.input_glb, input.output_glb)
-        return TopProjectionResult(output_glb=input.output_glb)
+        return ViewTextureProjectionResult(output_glb=input.output_glb)
 
 
 # ----------------------------------------------------------------- fixtures
@@ -264,8 +268,10 @@ def _make_pipeline(
     label_extractor: LabelExtractor | None = None,
     mesh_refiner: MeshRefiner | None = None,
     transparency_classifier: TransparencyClassifier | None = None,
-    top_projector: TopProjector | None = None,
+    top_projector: ViewTextureProjector | None = None,
+    back_projector: ViewTextureProjector | None = None,
     view_router: "ViewRouter | None" = None,
+    top_elongation_max: float = 1.35,
 ):
     return IntegratedPipeline(
         preprocessor=CopyPreprocessor(),
@@ -280,7 +286,9 @@ def _make_pipeline(
         storage=storage,
         transparency_classifier=transparency_classifier,
         top_projector=top_projector,
+        back_projector=back_projector,
         view_router=view_router,
+        top_elongation_max=top_elongation_max,
     )
 
 
@@ -541,7 +549,7 @@ _HINTS_COM_TOPO = ["front", "left", "back", "right", "top"]
 async def test_top_projector_dispara_quando_app_rotula_topo(
     storage: LocalStorage, fotos_com_topo: list[Path], tmp_path: Path
 ):
-    espiao = SpyTopProjector()
+    espiao = SpyViewTextureProjector()
     pipe = _make_pipeline(
         storage,
         cache=FakeCache(hit=None),
@@ -562,8 +570,8 @@ async def test_top_projector_dispara_quando_app_rotula_topo(
     assert len(espiao.chamadas) == 1
     # Recebe a foto MASCARADA (pos-rembg), nao a original — o recorte por alpha
     # depende do canal de transparencia.
-    assert espiao.chamadas[0].top_image.suffix == ".png"
-    assert espiao.chamadas[0].top_image.stem.endswith("04")
+    assert espiao.chamadas[0].photo.suffix == ".png"
+    assert espiao.chamadas[0].photo.stem.endswith("04")
 
 
 @pytest.mark.asyncio
@@ -571,7 +579,7 @@ async def test_top_projector_pulado_sem_rotulo_top(
     storage: LocalStorage, fotos: list[Path], tmp_path: Path
 ):
     """Sem foto marcada como `top`, o stage e no-op — nao e erro."""
-    espiao = SpyTopProjector()
+    espiao = SpyViewTextureProjector()
     pipe = _make_pipeline(
         storage,
         cache=FakeCache(hit=None),
@@ -595,7 +603,7 @@ async def test_top_projector_pulado_sem_rotulo_top(
 async def test_top_projector_falha_degrada_sem_derrubar_job(
     storage: LocalStorage, fotos_com_topo: list[Path], tmp_path: Path
 ):
-    espiao = SpyTopProjector(falhar=True)
+    espiao = SpyViewTextureProjector(falhar=True)
     pipe = _make_pipeline(
         storage,
         cache=FakeCache(hit=None),
@@ -611,6 +619,334 @@ async def test_top_projector_falha_degrada_sem_derrubar_job(
             image_paths=fotos_com_topo,
             output_path=saida,
             views=_HINTS_COM_TOPO,
+        )
+    )
+
+    assert len(espiao.chamadas) == 1
+    assert resultado.output_path == saida
+    assert saida.exists()  # GLB do stage anterior foi entregue
+
+
+# ------------------------------------------- material declarado pelo cliente
+
+
+@pytest.mark.asyncio
+async def test_material_do_cliente_curto_circuita_o_clip(
+    storage: LocalStorage, fotos: list[Path], tmp_path: Path
+):
+    """`material=opaque` decide o body_mode sem consultar o classificador.
+
+    O CLIP nao separa as classes de forma confiavel (docs/16: um frasco de
+    vidro pontuou abaixo de um opaco), entao a resposta do usuario vence.
+    """
+    classificador = FakeTransparencyClassifier(transparent=True)  # diria "glass"
+    refiner = CopyMeshRefiner()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        mesh_refiner=refiner,
+        transparency_classifier=classificador,
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="job-opaco",
+            image_paths=fotos,
+            output_path=tmp_path / "out.glb",
+            material="opaque",
+        )
+    )
+
+    assert classificador.called == 0, "CLIP nao deveria rodar com material explicito"
+    assert refiner.inputs[0].body_mode == "keep"
+
+
+@pytest.mark.asyncio
+async def test_material_glass_do_cliente_forca_vidro(
+    storage: LocalStorage, fotos: list[Path], tmp_path: Path
+):
+    classificador = FakeTransparencyClassifier(transparent=False)  # diria "keep"
+    refiner = CopyMeshRefiner()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        mesh_refiner=refiner,
+        transparency_classifier=classificador,
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="job-vidro",
+            image_paths=fotos,
+            output_path=tmp_path / "out.glb",
+            material="glass",
+        )
+    )
+
+    assert classificador.called == 0
+    assert refiner.inputs[0].body_mode == "glass"
+
+
+@pytest.mark.asyncio
+async def test_sem_material_o_clip_decide(
+    storage: LocalStorage, fotos: list[Path], tmp_path: Path
+):
+    classificador = FakeTransparencyClassifier(transparent=True)
+    refiner = CopyMeshRefiner()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        mesh_refiner=refiner,
+        transparency_classifier=classificador,
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="job-auto",
+            image_paths=fotos,
+            output_path=tmp_path / "out.glb",
+        )
+    )
+
+    assert classificador.called == 1
+    assert refiner.inputs[0].body_mode == "glass"
+
+
+@pytest.mark.asyncio
+async def test_clip_de_transparencia_nao_recebe_a_foto_do_topo(
+    storage: LocalStorage, fotos_com_topo: list[Path], tmp_path: Path
+):
+    """A foto do topo tem reflexo da tampa metalica e enviesa o voto para vidro.
+
+    Ela e a 5a do lote; o classificador deve receber so as 4 cardeais.
+    """
+    recebidas: list[list[Path]] = []
+
+    class Espiao(FakeTransparencyClassifier):
+        async def classify(self, image_paths):
+            recebidas.append(list(image_paths))
+            return await super().classify(image_paths)
+
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        transparency_classifier=Espiao(transparent=False),
+        view_router=LabeledViewRouter(),
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="job-clip-cardeais",
+            image_paths=fotos_com_topo,
+            output_path=tmp_path / "out.glb",
+            views=_HINTS_COM_TOPO,
+        )
+    )
+
+    assert len(recebidas) == 1
+    assert len(recebidas[0]) == 4
+    # `_safe_preprocess` prefixa a posicao: 01_..05_. O topo e a 5a do lote, e
+    # os prefixos sao a unica parte estavel do nome (o resto vem do tmp_path).
+    assert not any(p.stem.startswith("05_") for p in recebidas[0]), (
+        "a foto do topo vazou para o CLIP"
+    )
+    assert {p.stem[:3] for p in recebidas[0]} == {"01_", "02_", "03_", "04_"}
+
+
+# ---------------------------------------------------- guarda da foto de topo
+
+
+def _escrever_png(caminho: Path, largura: int, altura: int) -> None:
+    """PNG RGBA com um retangulo opaco centralizado sobre fundo transparente."""
+    from PIL import Image
+
+    img = Image.new("RGBA", (largura + 40, altura + 40), (0, 0, 0, 0))
+    for x in range(20, 20 + largura):
+        for y in range(20, 20 + altura):
+            img.putpixel((x, y), (200, 200, 200, 255))
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    img.save(caminho)
+
+
+def _lote_png(pasta: Path, altura_topo: int) -> list[Path]:
+    """4 cardeais quadradas + 1 topo com a altura pedida (controla a elongacao)."""
+    caminhos = []
+    for i in range(4):
+        p = pasta / f"{i:02d}.png"
+        _escrever_png(p, 60, 60)
+        caminhos.append(p)
+    topo = pasta / "04.png"
+    _escrever_png(topo, 40, altura_topo)
+    caminhos.append(topo)
+    return caminhos
+
+
+@pytest.mark.asyncio
+async def test_foto_de_topo_alongada_e_rejeitada(
+    storage: LocalStorage, tmp_path: Path
+):
+    """Foto obliqua do frasco inteiro tem silhueta alongada; o stage e pulado.
+
+    Foi o que aconteceu no job 3901ff83: o projetor estica a imagem inteira
+    sobre a tampa sem procurar a tampa dentro dela, entao uma foto de perfil
+    vira o frasco amassado no topo do modelo — sem levantar erro nenhum.
+    """
+    caminhos = _lote_png(tmp_path / "uploads_topo_ruim", altura_topo=160)
+
+    espiao = SpyViewTextureProjector()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        top_projector=espiao,
+        view_router=LabeledViewRouter(),
+    )
+
+    resultado = await pipe.process(
+        ProcessingInput(
+            job_id="job-topo-ruim",
+            image_paths=caminhos,
+            output_path=tmp_path / "out.glb",
+            views=_HINTS_COM_TOPO,
+        )
+    )
+
+    assert espiao.chamadas == []
+    assert resultado.output_path.exists(), "o job conclui normalmente"
+    assert "foto de topo ignorada" in resultado.message
+
+
+@pytest.mark.asyncio
+async def test_foto_de_topo_compacta_e_aceita(storage: LocalStorage, tmp_path: Path):
+    caminhos = _lote_png(tmp_path / "uploads_topo_bom", altura_topo=40)
+
+    espiao = SpyViewTextureProjector()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        top_projector=espiao,
+        view_router=LabeledViewRouter(),
+    )
+
+    resultado = await pipe.process(
+        ProcessingInput(
+            job_id="job-topo-bom",
+            image_paths=caminhos,
+            output_path=tmp_path / "out.glb",
+            views=_HINTS_COM_TOPO,
+        )
+    )
+
+    assert len(espiao.chamadas) == 1
+    assert espiao.chamadas[0].axis == AXIS_TOP
+    assert "foto de topo ignorada" not in resultado.message
+
+
+# --------------------------------------------------- projecao das costas
+
+
+def _lote_cardeais(pasta: Path) -> list[Path]:
+    pasta.mkdir(parents=True, exist_ok=True)
+    caminhos = []
+    for i in range(4):
+        p = pasta / f"{i:02d}.jpg"
+        p.write_bytes(b"\xff\xd8jpeg-stub")
+        caminhos.append(p)
+    return caminhos
+
+
+_HINTS_CARDEAIS = ["front", "left", "back", "right"]
+
+
+@pytest.mark.asyncio
+async def test_back_projector_dispara_em_frasco_opaco(
+    storage: LocalStorage, tmp_path: Path
+):
+    """O Hunyuan textura com UMA foto e inventa o verso; a foto real substitui."""
+    espiao = SpyViewTextureProjector()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        back_projector=espiao,
+        view_router=LabeledViewRouter(),
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="job-costas",
+            image_paths=_lote_cardeais(tmp_path / "quatro"),
+            output_path=tmp_path / "out.glb",
+            views=_HINTS_CARDEAIS,
+            material="opaque",
+        )
+    )
+
+    assert len(espiao.chamadas) == 1
+    assert espiao.chamadas[0].axis == AXIS_BACK
+    # Recebe a foto MASCARADA — o recorte por alpha depende da transparencia.
+    assert espiao.chamadas[0].photo.suffix == ".png"
+    assert espiao.chamadas[0].photo.stem.endswith("02"), "deve ser a 3a (back)"
+
+
+@pytest.mark.asyncio
+async def test_back_projector_pulado_em_frasco_de_vidro(
+    storage: LocalStorage, tmp_path: Path
+):
+    """Num frasco de vidro o verso e visto ATRAVES da frente.
+
+    Colar uma foto opaca nas faces traseiras mataria a transmissao — o
+    resultado seria pior do que o palpite do gerador.
+    """
+    espiao = SpyViewTextureProjector()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        back_projector=espiao,
+        view_router=LabeledViewRouter(),
+    )
+
+    resultado = await pipe.process(
+        ProcessingInput(
+            job_id="job-costas-vidro",
+            image_paths=_lote_cardeais(tmp_path / "quatro_vidro"),
+            output_path=tmp_path / "out.glb",
+            views=_HINTS_CARDEAIS,
+            material="glass",
+        )
+    )
+
+    assert espiao.chamadas == []
+    assert resultado.output_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_back_projector_falha_degrada_sem_derrubar_job(
+    storage: LocalStorage, tmp_path: Path
+):
+    espiao = SpyViewTextureProjector(falhar=True)
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        back_projector=espiao,
+        view_router=LabeledViewRouter(),
+    )
+
+    saida = tmp_path / "out.glb"
+    resultado = await pipe.process(
+        ProcessingInput(
+            job_id="job-costas-falha",
+            image_paths=_lote_cardeais(tmp_path / "quatro_falha"),
+            output_path=saida,
+            views=_HINTS_CARDEAIS,
+            material="opaque",
         )
     )
 

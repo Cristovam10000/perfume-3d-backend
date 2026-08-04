@@ -51,11 +51,12 @@ Cada stage tem um bypass `Disabled*` (zero deps, útil para testes) e uma implem
 | `label_upscaler.py` | `LabelUpscaler` ABC + `LanczosLabelUpscaler` (Pillow LANCZOS, default 2048 px) | [09e](09e-aplicacao-label.md) |
 | `label_projector.py` | `LabelProjector` ABC + `BlenderLabelProjector` (decal frontal via UV planar) | [09e](09e-aplicacao-label.md) |
 | `view_router.py` | `ViewRouter` ABC + `LabeledViewRouter` / `CLIPViewRouter` / `PositionalViewRouter` — decide qual vista (front/left/back/right/extra) cada foto representa antes de enviar ao Hunyuan | [09f](09f-pipeline-integrado.md) |
-| `top_projector.py` | `TopProjector` ABC + `BlenderTopProjector` (textura da tampa via foto do topo) — **presente, não plugado no pipeline default** | (sem doc dedicada) |
+| `view_texture_projector.py` | `ViewTextureProjector` ABC + `BlenderViewTextureProjector` — projeta uma foto real nas faces que ela enxerga (topo e verso) | [17](17-fidelidade-do-modelo.md) |
+| `top_photo_check.py` | Mede a elongação da silhueta para descartar foto de topo oblíqua | [17](17-fidelidade-do-modelo.md#defeito-2--a-foto-do-topo-não-era-uma-foto-do-topo) |
 | `blender_scripts/segment_bottle.py` | Script Blender — separa corpo/tampa por pico de densidade de faces | [09h](09h-segmentacao-corpo-tampa.md) |
 | `blender_scripts/refine_ai_mesh.py` | Script Blender — shader de vidro PBR | [09c](09c-refinamento-mesh.md) |
 | `blender_scripts/project_label.py` | Script Blender — decal de label | [09e](09e-aplicacao-label.md) |
-| `blender_scripts/project_top_texture.py` | Script Blender — textura da tampa | (sem doc dedicada) |
+| `blender_scripts/project_view_texture.py` | Script Blender — projeção ortográfica por eixo (`z_pos` topo, `y_pos` verso) | [17](17-fidelidade-do-modelo.md) |
 
 ### Histórico / fallback
 

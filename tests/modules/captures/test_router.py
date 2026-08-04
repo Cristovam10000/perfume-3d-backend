@@ -240,3 +240,85 @@ class TestStatusEndpoint:
         assert body["status"] == CaptureStatus.COMPLETED.value
         # A URL absoluta é formada com base_url + caminho servido por StaticFiles.
         assert body["modelUrl"] == f"http://testserver/files/models/{job_id}.glb"
+
+
+class TestMaterialField:
+    """Campo `material` do POST /captures.
+
+    Existe porque o `ClipTransparencyClassifier` nao separa vidro de opaco de
+    forma confiavel — medido nos 6 jobs anteriores, um frasco de vidro pontuou
+    ABAIXO de um opaco, entao nenhum threshold acerta os dois (docs/16). Quando
+    o usuario responde na tela, a resposta dele vence.
+    """
+
+    @pytest.mark.asyncio
+    async def test_aceita_e_persiste_opaque(self, harness: _Harness):
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        response = await harness.client.post(
+            "/captures", files=files, data={"material": "opaque"}
+        )
+
+        assert response.status_code == 201
+        job = await harness.service.get_job(response.json()["jobId"])
+        assert job is not None
+        assert job.material == "opaque"
+
+    @pytest.mark.asyncio
+    async def test_aceita_e_persiste_glass(self, harness: _Harness):
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        response = await harness.client.post(
+            "/captures", files=files, data={"material": "glass"}
+        )
+
+        assert response.status_code == 201
+        job = await harness.service.get_job(response.json()["jobId"])
+        assert job is not None
+        assert job.material == "glass"
+
+    @pytest.mark.asyncio
+    async def test_normaliza_caixa_alta(self, harness: _Harness):
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        response = await harness.client.post(
+            "/captures", files=files, data={"material": "  GLASS "}
+        )
+
+        assert response.status_code == 201
+        job = await harness.service.get_job(response.json()["jobId"])
+        assert job is not None
+        assert job.material == "glass"
+
+    @pytest.mark.asyncio
+    async def test_auto_vira_null(self, harness: _Harness):
+        """`auto` e ausencia significam a mesma coisa para o pipeline.
+
+        Guardar um valor so evita tratar dois casos equivalentes em toda
+        leitura do banco.
+        """
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        response = await harness.client.post(
+            "/captures", files=files, data={"material": "auto"}
+        )
+
+        assert response.status_code == 201
+        job = await harness.service.get_job(response.json()["jobId"])
+        assert job is not None
+        assert job.material is None
+
+    @pytest.mark.asyncio
+    async def test_omitido_fica_null(self, harness: _Harness):
+        """Cliente legado nao envia o campo; o CLIP continua decidindo."""
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        response = await harness.client.post("/captures", files=files)
+
+        assert response.status_code == 201
+        job = await harness.service.get_job(response.json()["jobId"])
+        assert job is not None
+        assert job.material is None
+
+    @pytest.mark.asyncio
+    async def test_rejeita_valor_desconhecido(self, harness: _Harness):
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        response = await harness.client.post(
+            "/captures", files=files, data={"material": "plastico"}
+        )
+        assert response.status_code == 422

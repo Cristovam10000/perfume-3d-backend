@@ -77,7 +77,8 @@ app/
     │   ├── mesh_refiner.py       # ABC + DisabledMeshRefiner + BlenderMeshRefiner
     │   ├── label_upscaler.py     # ABC + DisabledLabelUpscaler + LanczosLabelUpscaler
     │   ├── label_projector.py    # ABC + DisabledLabelProjector + BlenderLabelProjector
-    │   ├── top_projector.py      # ABC + DisabledTopProjector + BlenderTopProjector (stage 7.5)
+    │   ├── view_texture_projector.py # ABC + Disabled/Blender (stages 7.4 costas e 7.5 topo)
+    │   ├── top_photo_check.py    # guarda: a foto de `top` e mesmo uma vista de cima?
     │   │
     │   │   # ── Legado / fallback ──
     │   ├── color_detector.py  # ABC ColorDetector + AverageColorDetector (depreciado do fluxo principal)
@@ -87,7 +88,7 @@ app/
     │       ├── refine_ai_mesh.py        # shader de vidro PBR
     │       ├── segment_bottle.py        # separa corpo/tampa por pico de densidade de faces
     │       ├── project_label.py         # decal frontal de label
-    │       ├── project_top_texture.py   # textura da tampa (stage 7.5)
+    │       ├── project_view_texture.py  # projecao ortografica por eixo (stages 7.4 e 7.5)
     │       └── top_alignment.py         # rotação da foto do topo por silhueta (numpy puro)
     │
     ├── sales/                 # API comercial — clientes, produtos, vendas, pagamentos

@@ -43,6 +43,7 @@ Esta pasta descreve o backend FastAPI do repositório `perfume-3d-backend/`. O b
 | 14 | [Testes](14-testes.md) | Suíte pytest, fixtures, estratégia de mocks. |
 | 15 | [Glossário](15-glossario.md) | Termos do domínio: GLB, template, embedding, cache hit, etc. |
 | 16 | [Auditoria do papel do Blender](16-auditoria-blender.md) | Medições do efeito real de cada estágio Blender e as remoções que resultaram. |
+| 17 | [Fidelidade do modelo](17-fidelidade-do-modelo.md) | Material declarado pelo app, guarda da foto de topo e projeção do verso real. |
 
 ## Convenções
 

@@ -134,7 +134,7 @@ Total: **1.571 linhas apagadas**.
 | `blender_scripts/segment_bottle.py` | [09h](09h-segmentacao-corpo-tampa.md) |
 | `blender_scripts/top_alignment.py` | [09h](09h-segmentacao-corpo-tampa.md) |
 | Stage (7.5) `TopProjector` no `IntegratedPipeline` | [09f](09f-pipeline-integrado.md) |
-| Segmentação no `refine_ai_mesh.py` e no `project_top_texture.py` | [09h](09h-segmentacao-corpo-tampa.md) |
+| Segmentação no `refine_ai_mesh.py` e no `project_view_texture.py` | [09h](09h-segmentacao-corpo-tampa.md) |
 | `tests/modules/captures/test_segment_bottle.py` | [14](14-testes.md) |
 
 ### Mantido apesar de não estar ligado

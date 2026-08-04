@@ -294,7 +294,10 @@ Os nomes são **idênticos** ao que o parser do Flutter reconhece em
 - [ ] Calibrar `CACHE_SIMILARITY_THRESHOLD` com dataset real.
 - [x] **Corrigir o `HomographyLabelExtractor`** — detecção por região substituiu o traço de borda; La vivacité detectado e projetado (ver [docs/09e](docs/09e-aplicacao-label.md)).
 - [ ] Detecção de rótulo em frascos sem placa física (texto impresso no vidro) — exige detecção de texto.
-- [ ] Recalibrar os prompts do `ClipTransparencyClassifier` — vidro âmbar escuro pontua abaixo de frasco opaco.
+- [x] **Material declarado pelo app** (`material=glass|opaque` no `POST /captures`) — o `ClipTransparencyClassifier` não separa as classes (vidro pontuou abaixo de opaco), então nenhum threshold acerta; a resposta do usuário vence (ver [docs/17](docs/17-fidelidade-do-modelo.md)).
+- [x] **Guarda da foto de topo** — elongação da silhueta descarta foto oblíqua antes de ela ser esticada sobre a tampa.
+- [x] **Projeção do verso real** (stage 7.4) — o Hunyuan gera geometria com 4 vistas mas textura com **1**, e sintetiza o resto; a foto de costas passou a ser usada.
+- [ ] Recalibrar os prompts do `ClipTransparencyClassifier` — continua sendo o caminho `auto`, para quem não responde.
 - [ ] Alinhamento rotacional da projeção do topo — estimador por silhueta implementado, mas o Hunyuan arredonda a tampa e apaga o sinal (ver [docs/09h](docs/09h-segmentacao-corpo-tampa.md)).
 - [ ] Migrações com Alembic (hoje é `create_all` + `ensure_*_schema` no startup).
 - [ ] Endpoint `GET /captures/history` + endpoints admin do cache.

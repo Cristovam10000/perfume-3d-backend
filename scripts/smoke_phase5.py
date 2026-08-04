@@ -36,7 +36,11 @@ from app.modules.captures.label_projector import (
 from app.modules.captures.label_upscaler import LanczosLabelUpscaler
 from app.modules.captures.mesh_refiner import BlenderMeshRefiner, RefinementInput
 from app.modules.captures.processor import Hunyuan3DProcessor, ProcessingInput
-from app.modules.captures.top_projector import BlenderTopProjector, TopProjectionInput
+from app.modules.captures.view_texture_projector import (
+    AXIS_TOP,
+    BlenderViewTextureProjector,
+    ViewTextureProjectionInput,
+)
 
 
 EXTENSOES_IMAGEM = {".jpg", ".jpeg", ".png", ".webp"}
@@ -417,12 +421,13 @@ async def projetar_topo(
     output_glb: Path,
     tmp_root: Path,
 ) -> None:
-    projector = BlenderTopProjector(timeout_seconds=120.0)
+    projector = BlenderViewTextureProjector(timeout_seconds=120.0)
     await projector.project(
-        TopProjectionInput(
+        ViewTextureProjectionInput(
             input_glb=input_glb,
-            top_image=top_image,
+            photo=top_image,
             output_glb=output_glb,
+            axis=AXIS_TOP,
         )
     )
     log(f"  textura do topo projetada: {output_glb.name}")

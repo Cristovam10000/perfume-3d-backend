@@ -138,10 +138,11 @@ Comportamento por stage quando algo falha. Em todos os casos o pipeline **loga**
 | (2) Background remove | Mesma coisa: cópia byte-a-byte. Hunyuan recebe foto preprocessada sem máscara — qualidade cai mas job conclui. |
 | (3) Cache lookup | Trata como miss. Loga warning. |
 | (4) Hunyuan | **Crítico e terminal.** Levanta `ProcessingError` e o service marca o job como `error`. Não há fallback — mascarar a falha poluía a medição do pipeline de IA. |
-| (5) Transparência | Trata como desconhecido — refiner roda em `body_mode=auto` (heurística legada). |
+| (5) Transparência | Se o app enviou `material`, nem chama o CLIP. Sem `material` e com falha no CLIP, trata como desconhecido — refiner roda em `body_mode=auto`. Ver [17](17-fidelidade-do-modelo.md#defeito-1--frasco-opaco-classificado-como-vidro). |
 | (6) Mesh refiner | Cópia. Label projector recebe `raw.glb`. Se o refiner rodar mas não achar o ombro, aplica vidro no material único (comportamento anterior à segmentação). |
 | (7) Label extract | Degrade total — devolve `refined.glb` direto, sem label. **Atenção:** hoje este é o caminho de 100% dos jobs; ver [16 - Auditoria](16-auditoria-blender.md). |
-| (7.5) Top projector | No-op quando o app não rotula nenhuma foto como `top`. Se o Blender falhar, mantém o GLB anterior e loga warning. |
+| (7.4) Back projector | No-op quando o frasco não é opaco (`body_mode != keep`) — em vidro, colar foto opaca no verso mataria a transmissão. Se o Blender falhar, mantém o GLB anterior. Ver [17](17-fidelidade-do-modelo.md#defeito-3--o-verso-do-frasco-era-inventado). |
+| (7.5) Top projector | No-op quando o app não rotula nenhuma foto como `top` **ou** quando a foto reprova na checagem de elongação (o motivo vai para a `message` do job). Se o Blender falhar, mantém o GLB anterior e loga warning. |
 | (8) Cache store | Loga warning mas **não** falha o job. O GLB já está disponível no `output_path`. |
 
 A propriedade chave: **um GLB sempre é entregue, exceto se o Hunyuan falhar**.
