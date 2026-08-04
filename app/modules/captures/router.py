@@ -6,6 +6,7 @@ from ...core.exceptions import NotFoundError, ValidationError
 from ...dependencies import get_capture_service
 from .schemas import CaptureStatusResponse, CreateCaptureResponse
 from .service import CaptureService, IncomingImage
+from .transparency_classifier import MATERIAL_AUTO, VALID_MATERIALS
 from .view_router import VALID_VIEW_LABELS
 
 router = APIRouter(prefix="/captures", tags=["captures"])
@@ -39,10 +40,19 @@ async def create_capture(
             "global ainda funciona; apenas o vinculo com produto fica vazio."
         ),
     ),
+    material: str | None = Form(
+        default=None,
+        description=(
+            "Material do frasco: glass, opaque ou auto. Quando informado, decide "
+            "diretamente se o refinador aplica vidro PBR ou preserva a textura. "
+            "Omitido ou `auto` deixa a decisao com o ClipTransparencyClassifier."
+        ),
+    ),
     service: CaptureService = Depends(get_capture_service),
 ) -> CreateCaptureResponse:
     """Recebe o lote de imagens e cria um job de reconstrucao 3D."""
     normalized_views: list[str | None] = _normalize_views(views, len(images))
+    normalized_material = _normalize_material(material)
 
     incoming = [
         IncomingImage(
@@ -52,7 +62,11 @@ async def create_capture(
         )
         for i, f in enumerate(images)
     ]
-    job_id = await service.create_job(incoming, product_id=product_id)
+    job_id = await service.create_job(
+        incoming,
+        product_id=product_id,
+        material=normalized_material,
+    )
     return CreateCaptureResponse(job_id=job_id)
 
 
@@ -87,6 +101,28 @@ def _normalize_views(views: list[str], image_count: int) -> list[str | None]:
             )
         normalized.append(cleaned)
     return normalized
+
+
+def _normalize_material(material: str | None) -> str | None:
+    """Valida o material vindo do multipart.
+
+    - Ausente, vazio ou `auto` => None (o pipeline decide pelo CLIP).
+    - `glass` / `opaque` => valor normalizado em minusculas.
+    - Qualquer outra coisa => 422.
+
+    `auto` colapsa para None de proposito: os dois significam a mesma coisa
+    para o pipeline, e guardar um so valor evita ter que tratar dois casos
+    equivalentes em toda leitura do banco.
+    """
+    cleaned = (material or "").strip().lower()
+    if cleaned in ("", MATERIAL_AUTO):
+        return None
+    if cleaned not in VALID_MATERIALS:
+        raise ValidationError(
+            f"Material inválido: {material!r}. Esperado um de: "
+            f"{sorted(VALID_MATERIALS)}, 'auto' ou vazio."
+        )
+    return cleaned
 
 
 @router.get(

@@ -7,12 +7,15 @@ Sequencia executada por process(input):
             HIT  -> copia GLB cacheado -> output_path -> retorna
             MISS -> continua
     (4) Hunyuan3DProcessor  -> raw.glb
-    (5) TransparencyClassifier -> body_mode (glass | keep | auto)
+    (5) material do app, ou TransparencyClassifier -> body_mode (glass|keep|auto)
     (6) MeshRefiner         -> refined.glb (vidro PBR se transparente)
     (7) LabelExtractor + Upscaler + Projector
                             -> with_label.glb (degrade se nao achou label)
+    (7.4) BackProjector     -> with_back.glb (so em frasco opaco; o Hunyuan
+                               textura com UMA foto e inventa o verso)
     (7.5) TopProjector      -> with_top.glb (so quando o app rotula uma foto
-                               como `top`; o Hunyuan nao reconstroi o topo)
+                               como `top` e ela passa na checagem de elongacao;
+                               o Hunyuan nao reconstroi o topo)
     (8) ModelCache.store    -> persiste em modelos_3d_universais + UPSERT
                                opcional em modelos_3d_produto
 
@@ -48,16 +51,27 @@ from .processor import (
     ProcessingInput,
     ProcessingResult,
 )
-from .top_projector import (
-    DisabledTopProjector,
-    TopProjectionInput,
-    TopProjector,
+from .top_photo_check import checar_foto_de_topo
+from .view_texture_projector import (
+    AXIS_BACK,
+    AXIS_TOP,
+    DisabledViewTextureProjector,
+    ViewTextureProjectionInput,
+    ViewTextureProjector,
 )
 from .transparency_classifier import (
+    MATERIAL_GLASS,
+    MATERIAL_OPAQUE,
     DisabledTransparencyClassifier,
     TransparencyClassifier,
 )
-from .view_router import TOP_VIEW, PositionalViewRouter, ViewRouter
+from .view_router import (
+    BACK_VIEW,
+    CARDINAL_VIEWS,
+    TOP_VIEW,
+    PositionalViewRouter,
+    ViewRouter,
+)
 
 _log = get_logger("captures.pipeline")
 
@@ -84,9 +98,12 @@ class IntegratedPipeline(Processor):
         *,
         view_router: ViewRouter | None = None,
         transparency_classifier: TransparencyClassifier | None = None,
-        top_projector: TopProjector | None = None,
+        top_projector: ViewTextureProjector | None = None,
+        back_projector: ViewTextureProjector | None = None,
         front_axis: str = "front_y_neg",
         top_cosine_threshold: float = 0.45,
+        top_elongation_max: float = 1.35,
+        back_cosine_threshold: float = 0.45,
         label_min_confidence: float = 0.3,
         label_target_size: int = 2048,
     ):
@@ -104,9 +121,12 @@ class IntegratedPipeline(Processor):
         self.transparency_classifier = (
             transparency_classifier or DisabledTransparencyClassifier()
         )
-        self.top_projector = top_projector or DisabledTopProjector()
+        self.top_projector = top_projector or DisabledViewTextureProjector()
+        self.back_projector = back_projector or DisabledViewTextureProjector()
         self.front_axis = front_axis
         self.top_cosine_threshold = top_cosine_threshold
+        self.top_elongation_max = top_elongation_max
+        self.back_cosine_threshold = back_cosine_threshold
         self.label_min_confidence = label_min_confidence
         self.label_target_size = label_target_size
 
@@ -115,6 +135,10 @@ class IntegratedPipeline(Processor):
     async def process(self, input: ProcessingInput) -> ProcessingResult:
         workspace = self._workspace(input.job_id)
         workspace.mkdir(parents=True, exist_ok=True)
+
+        # Notas de estagios que degradaram silenciosamente. Vao para a `message`
+        # do job, para o motivo chegar ao app em vez de morrer no log.
+        avisos: list[str] = []
 
         preprocessed = await self._safe_preprocess(input.image_paths, workspace)
         masked = await self._safe_segment(preprocessed, workspace)
@@ -149,8 +173,12 @@ class IntegratedPipeline(Processor):
             _log.exception("Hunyuan falhou para job %s: %s", input.job_id, exc)
             raise ProcessingError(f"Hunyuan falhou: {exc}") from exc
 
-        # (5) transparencia: decide o body_mode do refiner pelas fotos
-        body_mode = await self._safe_classify_transparency(preprocessed)
+        # (5) transparencia: material declarado pelo app vence; sem ele, o CLIP
+        # vota — mas so sobre as cardeais (ver _fotos_cardeais).
+        body_mode = await self._safe_classify_transparency(
+            self._fotos_cardeais(preprocessed, masked, routing),
+            input.material,
+        )
         # (6) mesh refiner
         refined = await self._safe_refine(raw_glb, input, workspace, body_mode)
         # (7) label extract + upscale + project
@@ -160,11 +188,19 @@ class IntegratedPipeline(Processor):
             masked,
             workspace,
         )
+        # (7.4) textura das costas — troca o verso alucinado pelo pixel medido
+        com_costas = await self._safe_apply_back(
+            com_label,
+            routing.assignments.get(BACK_VIEW),
+            workspace,
+            body_mode,
+        )
         # (7.5) textura do topo — só quando o app rotulou uma foto como `top`
         final_glb = await self._safe_apply_top(
-            com_label,
+            com_costas,
             routing.assignments.get(TOP_VIEW),
             workspace,
+            avisos,
         )
 
         # Copia para o output_path real do job (em storage/models/<job>.glb).
@@ -189,9 +225,12 @@ class IntegratedPipeline(Processor):
             )
 
         n = len(masked) or len(input.image_paths)
+        mensagem = f"Modelo gerado via Hunyuan3D-2mv a partir de {n} imagem(ns)"
+        if avisos:
+            mensagem = f"{mensagem} — {'; '.join(avisos)}"
         return ProcessingResult(
             output_path=input.output_path,
-            message=f"Modelo gerado via Hunyuan3D-2mv a partir de {n} imagem(ns)",
+            message=mensagem,
             origem="generated",
         )
 
@@ -305,12 +344,60 @@ class IntegratedPipeline(Processor):
             similarity=hit.similarity,
         )
 
-    async def _safe_classify_transparency(self, fotos: list[Path]) -> str:
+    def _fotos_cardeais(
+        self,
+        preprocessed: list[Path],
+        masked: list[Path],
+        routing,
+    ) -> list[Path]:
+        """Fotos preprocessadas correspondentes as 4 vistas cardeais.
+
+        Duas razoes para nao passar a lista inteira ao classificador:
+        a foto do topo e tirada de cima, cheia de reflexo da tampa metalica, e
+        empurra a media do ensemble para "vidro"; as extras nao tem angulo
+        garantido. Sobram as cardeais, que sao o que o classificador espera.
+
+        `masked` e `preprocessed` sao paralelas por construcao (`_safe_segment`
+        percorre `preprocessed` na ordem). O roteamento devolve caminhos de
+        `masked`, entao voltamos ao indice para pegar a preprocessada — o CLIP
+        precisa do fundo, que a mascara removeu.
+        """
+        cardeais = {
+            routing.assignments[v]
+            for v in CARDINAL_VIEWS
+            if v in routing.assignments
+        }
+        if not cardeais:
+            return preprocessed
+        escolhidas = [
+            preprocessed[i]
+            for i, mascara in enumerate(masked)
+            if mascara in cardeais and i < len(preprocessed)
+        ]
+        return escolhidas or preprocessed
+
+    async def _safe_classify_transparency(
+        self,
+        fotos: list[Path],
+        material: str | None = None,
+    ) -> str:
         """Traduz o veredito de transparencia para o body_mode do refiner.
 
         True -> "glass" (aplica vidro), False -> "keep" (preserva textura),
         None/falha -> "auto" (heuristica legada do script Blender).
+
+        `material` vem do app e tem prioridade absoluta sobre o CLIP. O
+        classificador nao separa as classes de forma confiavel — nos 6 jobs
+        medidos, um frasco de vidro pontuou abaixo de um opaco (docs/16) —
+        entao quando o usuario responde, a resposta dele vale.
         """
+        if material == MATERIAL_GLASS:
+            _log.info("Material informado pelo cliente: vidro -> body_mode=glass")
+            return "glass"
+        if material == MATERIAL_OPAQUE:
+            _log.info("Material informado pelo cliente: opaco -> body_mode=keep")
+            return "keep"
+
         try:
             resultado = await self.transparency_classifier.classify(fotos)
         except Exception as exc:
@@ -442,8 +529,13 @@ class IntegratedPipeline(Processor):
         entrada: Path,
         foto_topo: Path | None,
         workspace: Path,
+        avisos: list[str],
     ) -> Path:
         """Cola a foto do topo na tampa. No-op quando nao ha foto rotulada.
+
+        `avisos` e uma lista local do `process()`, nao estado da instancia: o
+        pipeline e construido uma vez e compartilhado entre jobs, entao guardar
+        mensagens em `self` misturaria jobs concorrentes.
 
         O Hunyuan nao reconstroi o topo do frasco — as 4 vistas cardeais nao o
         enxergam, e ele entrega um disco liso sem textura. Este stage so roda
@@ -454,13 +546,31 @@ class IntegratedPipeline(Processor):
             _log.info("Sem foto de topo rotulada; pulando projecao da tampa")
             return entrada
 
+        # Guarda contra foto obliqua. O projetor estica a imagem inteira sobre a
+        # tampa sem procurar a tampa dentro dela, entao uma foto do frasco de
+        # lado vira o frasco inteiro amassado no topo do modelo — sem erro
+        # nenhum, so um resultado errado.
+        veredito = checar_foto_de_topo(foto_topo, limite=self.top_elongation_max)
+        if not veredito.aprovado:
+            _log.warning(
+                "Foto de topo rejeitada (%s): %s; pulando projecao da tampa",
+                foto_topo.name,
+                veredito.motivo,
+            )
+            avisos.append(
+                f"foto de topo ignorada (elongação {veredito.elongacao:.2f}; "
+                "fotografe a tampa de cima, perpendicular)"
+            )
+            return entrada
+
         with_top = workspace / "with_top.glb"
         try:
             await self.top_projector.project(
-                TopProjectionInput(
+                ViewTextureProjectionInput(
                     input_glb=entrada,
-                    top_image=foto_topo,
+                    photo=foto_topo,
                     output_glb=with_top,
+                    axis=AXIS_TOP,
                     cosine_threshold=self.top_cosine_threshold,
                 )
             )
@@ -469,6 +579,55 @@ class IntegratedPipeline(Processor):
         except Exception as exc:
             _log.warning(
                 "Top projector falhou (%s); seguindo com o GLB anterior",
+                exc,
+            )
+            return entrada
+
+    async def _safe_apply_back(
+        self,
+        entrada: Path,
+        foto_costas: Path | None,
+        workspace: Path,
+        body_mode: str,
+    ) -> Path:
+        """Cola a foto das costas nas faces traseiras do corpo.
+
+        O Hunyuan gera a geometria com as 4 vistas mas a textura com UMA: o
+        pipeline de paint aceita uma unica referencia e sintetiza as demais
+        vistas a partir dela, entao o verso sai inventado — tipicamente uma
+        copia da frente. A foto real das costas existe e so nao era usada.
+
+        So roda em frasco opaco. Num frasco de vidro o verso e visto *atraves*
+        da frente, e colar uma foto opaca ali mataria a transmissao — o
+        resultado seria pior do que o palpite do gerador.
+        """
+        if foto_costas is None:
+            _log.info("Sem foto de costas rotulada; pulando projecao do verso")
+            return entrada
+        if body_mode != "keep":
+            _log.info(
+                "Corpo em body_mode=%s (nao opaco); pulando projecao do verso "
+                "para nao matar a transmissao do vidro",
+                body_mode,
+            )
+            return entrada
+
+        with_back = workspace / "with_back.glb"
+        try:
+            await self.back_projector.project(
+                ViewTextureProjectionInput(
+                    input_glb=entrada,
+                    photo=foto_costas,
+                    output_glb=with_back,
+                    axis=AXIS_BACK,
+                    cosine_threshold=self.back_cosine_threshold,
+                )
+            )
+            _log.info("Textura das costas aplicada a partir de %s", foto_costas.name)
+            return with_back
+        except Exception as exc:
+            _log.warning(
+                "Back projector falhou (%s); seguindo com o GLB anterior",
                 exc,
             )
             return entrada

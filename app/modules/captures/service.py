@@ -19,6 +19,21 @@ _log = get_logger("captures.service")
 
 
 @dataclass(frozen=True)
+class _JobPreparado:
+    """Dados do job lidos do banco antes de chamar o Processor.
+
+    Era uma tupla; virou dataclass ao ganhar o quinto campo, quando o
+    desempacotamento posicional deixou de ser legivel.
+    """
+
+    image_paths: list[Path]
+    output_path: Path
+    product_id: int | None
+    views: list[str | None]
+    material: str | None
+
+
+@dataclass(frozen=True)
 class IncomingImage:
     filename: str
     content: bytes
@@ -55,6 +70,7 @@ class CaptureService:
         images: list[IncomingImage],
         *,
         product_id: int | None = None,
+        material: str | None = None,
     ) -> str:
         """Cria job, persiste imagens em disco + DB, e enfileira processamento."""
         if not images:
@@ -64,7 +80,11 @@ class CaptureService:
 
         async with self._session_factory() as session:
             repo = CaptureRepository(session)
-            await repo.create_job(job_id, product_id=product_id)
+            await repo.create_job(
+                job_id,
+                product_id=product_id,
+                material=material,
+            )
 
             for image in images:
                 path = self._storage.save_upload(job_id, image.filename, image.content)
@@ -93,16 +113,15 @@ class CaptureService:
         if prep is None:
             return  # job sumiu entre o submit e o pop — tolerante.
 
-        image_paths, output_path, product_id, views = prep
-
         try:
             result = await self._processor.process(
                 ProcessingInput(
                     job_id=job_id,
-                    image_paths=image_paths,
-                    output_path=output_path,
-                    product_id=product_id,
-                    views=views,
+                    image_paths=prep.image_paths,
+                    output_path=prep.output_path,
+                    product_id=prep.product_id,
+                    views=prep.views,
+                    material=prep.material,
                 )
             )
         except Exception as exc:
@@ -111,19 +130,20 @@ class CaptureService:
 
         await self._mark_completed(job_id, result.message)
 
-    async def _prepare_job(
-        self, job_id: str
-    ) -> tuple[list[Path], Path, int | None, list[str | None]] | None:
+    async def _prepare_job(self, job_id: str) -> _JobPreparado | None:
         async with self._session_factory() as session:
             repo = CaptureRepository(session)
             job = await repo.get(job_id)
             if job is None:
                 return None
 
-            image_paths = [Path(img.path) for img in job.images]
-            views = [img.view for img in job.images]
-            output_path = self._storage.model_path(job_id)
-            product_id = job.product_id
+            preparado = _JobPreparado(
+                image_paths=[Path(img.path) for img in job.images],
+                output_path=self._storage.model_path(job_id),
+                product_id=job.product_id,
+                views=[img.view for img in job.images],
+                material=job.material,
+            )
 
             await repo.update_status(
                 job_id,
@@ -132,7 +152,7 @@ class CaptureService:
             )
             await session.commit()
 
-        return image_paths, output_path, product_id, views
+        return preparado
 
     async def _mark_completed(self, job_id: str, message: str) -> None:
         async with self._session_factory() as session:

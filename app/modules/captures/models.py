@@ -25,6 +25,12 @@ class CaptureJob(Base):
     # do tenant (em /sales). Usado pelo IntegratedPipeline para fazer UPSERT
     # em modelos_3d_produto ao final do pipeline.
     product_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    # Material do frasco informado pelo usuário no app ("glass" | "opaque").
+    # NULL = não informado; o pipeline cai no ClipTransparencyClassifier.
+    # Existe porque o CLIP não separa as classes: um frasco de vidro chegou a
+    # pontuar abaixo de um opaco (ver docs/16), então nenhum threshold acerta
+    # os dois. Um toque na tela acerta sempre.
+    material: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

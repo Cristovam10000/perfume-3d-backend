@@ -94,6 +94,10 @@ async def ensure_captures_schema(engine: AsyncEngine) -> None:
         # NULL = cliente legado, dispara CLIPViewRouter no pipeline.
         "ALTER TABLE IF EXISTS capture_images "
         "ADD COLUMN IF NOT EXISTS view varchar(16)",
+        # material do frasco informado pelo usuario (glass|opaque) em
+        # capture_jobs. NULL = nao informado, o pipeline usa o CLIP.
+        "ALTER TABLE IF EXISTS capture_jobs "
+        "ADD COLUMN IF NOT EXISTS material varchar(16)",
     ]
 
     # A constraint de FK e adicionada separadamente porque Postgres nao tem

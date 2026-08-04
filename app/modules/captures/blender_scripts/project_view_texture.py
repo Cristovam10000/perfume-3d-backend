@@ -1,26 +1,38 @@
-"""Projeta a foto do topo do frasco diretamente nas faces superiores da tampa.
+"""Projeta uma foto real do frasco nas faces que a foto enxerga.
 
-Em vez de criar um plano flutuante (decal), modifica o material das faces
-superiores da tampa para exibir a imagem via projecao ortografica de cima.
+Em vez de criar um plano flutuante (decal), modifica o material daquelas faces
+para exibir a imagem via projecao ortografica ao longo de um eixo.
+
+Dois eixos hoje:
+
+- `z_pos` (**topo**) — o Hunyuan nao reconstroi a tampa, porque nenhuma das 4
+  vistas cardeais a enxerga; ela sai como um disco liso.
+- `y_pos` (**costas**) — o Hunyuan gera a *geometria* com 4 vistas mas a
+  *textura* com UMA. O pipeline de paint (`tencent/Hunyuan3D-2`) aceita uma
+  unica imagem de referencia e **sintetiza** as demais vistas a partir dela, de
+  modo que o verso do frasco sai inventado. Nos temos a foto real do verso; a
+  projecao troca o palpite pelo pixel medido.
 
 Fluxo:
 1. Importa o GLB.
-2. Identifica o mesh de maior Z (a tampa).
-3. Coleta as faces com normal apontando para cima (dot(n, Z) >= threshold).
-4. Calcula coordenadas UV para essas faces via projecao ortografica: cada
-   vertice recebe UV = ((x - min_x) / largura, (y - min_y) / altura).
-5. Cria um novo UV map "TopProjectionUV" no mesh da tampa.
-6. Adiciona a imagem como novo material ("TopTextureMaterial") e atribui
-   apenas as faces superiores a esse material.
-7. Exporta GLB com a textura embutida.
+2. Identifica o mesh de maior Z (o frasco; o Hunyuan entrega bloco unico).
+3. Coleta as faces cuja normal aponta para o eixo (dot(n, eixo) >= threshold),
+   restritas a faixa de altura correspondente (tampa acima do ombro, corpo
+   abaixo).
+4. Calcula UV por projecao ortografica: descarta a coordenada do eixo de
+   projecao e normaliza as duas restantes para 0..1.
+5. Cria um UV map proprio e um material com a imagem, atribuidos so aquelas
+   faces.
+6. Exporta GLB com a textura embutida.
 
 Roda dentro do Blender headless:
 
-    blender.exe --background --python project_top_texture.py -- \\
+    blender.exe --background --python project_view_texture.py -- \\
         --input  path/to/refined.glb \\
-        --top    path/to/05_top_segmented.png \\
+        --photo  path/to/05_top_segmented.png \\
         --output path/to/with_top.glb \\
-        [--cosine-threshold 0.5]
+        --axis   z_pos \\
+        [--cosine-threshold 0.45]
 """
 
 from __future__ import annotations
@@ -41,13 +53,54 @@ from top_alignment import estimar_rotacao  # noqa: E402
 
 UP_AXIS = Vector((0.0, 0.0, 1.0))
 
+# Eixos de projecao suportados. Para cada um:
+#   vetor      — direcao para onde as faces alvo apontam, em coordenadas mundo.
+#   uv         — indices das coordenadas de mundo que viram (u, v).
+#   inverter_u — espelha o u.
+#   faixa      — recorte em Z: "acima" do ombro, "abaixo" dele, ou "tudo".
+#
+# A regra da faixa e uma so: **a extensao da foto tem que casar com a extensao
+# das faces alvo**, porque a projecao estica a imagem inteira sobre elas.
+#   - topo:   a foto mostra so a tampa      -> faces so acima do ombro.
+#   - costas: a foto mostra o frasco inteiro -> todas as faces traseiras.
+# Restringir as costas ao corpo desalinha a imagem: a tampa da foto cai sobre a
+# parte de cima do corpo e o relevo escorrega para baixo (medido em 03/08).
+#
+# Sobre `inverter_u` em `y_pos`: olhando o frasco de tras para a frente, o +X do
+# mundo aparece a ESQUERDA do observador — igual a olhar alguem de costas, cuja
+# mao direita esta do seu lado esquerdo. Sem a inversao as costas saem
+# espelhadas (texto de composicao ao contrario).
+#
+# A convencao "frente = -Y" vem de FRONT_AXES em project_label.py, logo o verso
+# do frasco e +Y.
+EIXOS = {
+    "z_pos": {
+        "vetor": Vector((0.0, 0.0, 1.0)),
+        "uv": (0, 1),          # (x, y)
+        "inverter_u": False,
+        "faixa": "acima",      # tampa
+        "rotulo": "topo",
+        "uv_layer": "TopProjectionUV",
+        "material": "TopTextureMaterial",
+    },
+    "y_pos": {
+        "vetor": Vector((0.0, 1.0, 0.0)),
+        "uv": (0, 2),          # (x, z)
+        "inverter_u": True,
+        "faixa": "tudo",       # frasco inteiro visto de tras
+        "rotulo": "costas",
+        "uv_layer": "BackProjectionUV",
+        "material": "BackTextureMaterial",
+    },
+}
+
 # Resolucao das mascaras usadas na estimativa de rotacao. Precisa ser suficiente
 # para a forma da tampa (triangular, quadrada, circular) sem custar tempo.
 _RES_MASCARA = 128
 
 
 def log(msg: str) -> None:
-    print(f"[project-top] {msg}", flush=True)
+    print(f"[project-view] {msg}", flush=True)
 
 
 def get_argv_after_double_dash() -> list[str]:
@@ -57,10 +110,11 @@ def get_argv_after_double_dash() -> list[str]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="project_top_texture")
+    parser = argparse.ArgumentParser(prog="project_view_texture")
     parser.add_argument("--input",  required=True, type=Path)
-    parser.add_argument("--top",    required=True, type=Path)
+    parser.add_argument("--photo",  required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--axis", choices=sorted(EIXOS), default="z_pos")
     parser.add_argument("--cosine-threshold", type=float, default=0.45)
     parser.add_argument(
         "--sem-alinhar-rotacao",
@@ -91,25 +145,34 @@ def identificar_tampa(meshes: list[bpy.types.Object]) -> bpy.types.Object | None
     return max(meshes, key=max_z_bbox)
 
 
-def coletar_faces_topo(
+def coletar_faces_por_normal(
     obj: bpy.types.Object,
+    eixo: Vector,
     threshold: float,
-    z_minimo: float | None = None,
+    z_corte: float | None = None,
+    faixa: str = "acima",
 ) -> list[bpy.types.MeshPolygon]:
-    """Faces voltadas para cima, opcionalmente restritas a acima de `z_minimo`.
+    """Faces cuja normal aponta para `eixo`, restritas a uma faixa de altura.
 
-    Sem `z_minimo` a coleta pega TODA face voltada para cima do frasco — ombro,
-    ressaltos do corpo, tudo. Como o Hunyuan entrega um mesh unico, isso fazia a
-    projecao ortografica usar a bounding box XY do frasco inteiro e a foto do
-    topo saia esticada e deslocada. `z_minimo` vem da segmentacao (o ombro) e
-    limita a coleta a tampa.
+    `z_corte` vem da segmentacao (o ombro) e serve para casar a extensao das
+    faces com a extensao da foto:
+
+    - `faixa="acima"` (topo): so a tampa. A foto do topo mostra so a tampa; sem
+      o corte, a coleta pegaria ombro e ressaltos do corpo, a bounding box da
+      projecao viraria a do frasco inteiro e a foto sairia esticada.
+    - `faixa="tudo"` (costas): a foto do verso mostra o frasco inteiro, entao o
+      alvo tambem tem que ser o frasco inteiro.
     """
     matriz = obj.matrix_world
 
+    def na_faixa(p: bpy.types.MeshPolygon) -> bool:
+        if z_corte is None or faixa == "tudo":
+            return True
+        z = (matriz @ p.center).z
+        return z > z_corte if faixa == "acima" else z <= z_corte
+
     def elegivel(p: bpy.types.MeshPolygon, t: float) -> bool:
-        if normal_mundo(obj, p).dot(UP_AXIS) < t:
-            return False
-        return z_minimo is None or (matriz @ p.center).z > z_minimo
+        return normal_mundo(obj, p).dot(eixo) >= t and na_faixa(p)
 
     faces = [p for p in obj.data.polygons if elegivel(p, threshold)]
     # Fallback progressivo se threshold alto demais
@@ -174,15 +237,20 @@ def recortar_para_alpha(img_path: Path, destino: Path) -> Path:
 
 
 def mascara_da_malha(
-    obj: bpy.types.Object, faces_topo: list[bpy.types.MeshPolygon]
+    obj: bpy.types.Object,
+    faces: list[bpy.types.MeshPolygon],
+    uv_idx: tuple[int, int] = (0, 1),
 ) -> "object":
-    """Silhueta da tampa vista de cima, rasterizada numa grade booleana."""
+    """Silhueta das faces vista ao longo do eixo, numa grade booleana."""
     import numpy as np
 
     matriz = obj.matrix_world
     verts = obj.data.vertices
+    iu, iv = uv_idx
     pontos = [
-        (matriz @ verts[vi].co)[:2] for face in faces_topo for vi in face.vertices
+        ((matriz @ verts[vi].co)[iu], (matriz @ verts[vi].co)[iv])
+        for face in faces
+        for vi in face.vertices
     ]
     if not pontos:
         return np.zeros((_RES_MASCARA, _RES_MASCARA), dtype=bool)
@@ -212,9 +280,15 @@ def mascara_da_foto(img_path: Path) -> "object":
     return opacos[np.ix_(ys, xs)]
 
 
-def criar_material_topo(img_path: Path) -> bpy.types.Material:
-    """Cria material com Image Texture RGBA (transparencia preservada)."""
-    nome = "TopTextureMaterial"
+def criar_material_projecao(
+    img_path: Path, nome: str, uv_layer: str
+) -> bpy.types.Material:
+    """Cria material com Image Texture RGBA (transparencia preservada).
+
+    `uv_layer` entra num no UV Map explicito. Sem ele a textura amostra o UV
+    **ativo** da malha, e como topo e costas convivem no mesmo mesh com UV maps
+    diferentes, a segunda projecao a rodar roubaria o UV da primeira.
+    """
     for mat in list(bpy.data.materials):
         if mat.name.split(".")[0] == nome:
             bpy.data.materials.remove(mat)
@@ -245,8 +319,12 @@ def criar_material_topo(img_path: Path) -> bpy.types.Material:
     tex.location = (-200, 80)
     tex.image = imagem
     tex.image.colorspace_settings.name = "sRGB"
+    no_uv = nodes.new("ShaderNodeUVMap")
+    no_uv.location = (-420, 80)
+    no_uv.uv_map = uv_layer
 
-    # Conecta: textura → BSDF (cor) + alpha → Mix (transparencia)
+    # Conecta: UV explicito → textura → BSDF (cor) + alpha → Mix (transparencia)
+    links.new(no_uv.outputs["UV"], tex.inputs["Vector"])
     links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
     links.new(tex.outputs["Alpha"], mix.inputs["Fac"])
     links.new(transparent.outputs["BSDF"], mix.inputs[1])
@@ -264,86 +342,91 @@ def criar_material_topo(img_path: Path) -> bpy.types.Material:
     return mat
 
 
-def aplicar_uv_projecao_topo(
+def aplicar_uv_projecao(
     obj: bpy.types.Object,
-    faces_topo: list[bpy.types.MeshPolygon],
+    faces_alvo: list[bpy.types.MeshPolygon],
     img_path: Path,
+    eixo: dict,
     angulo_graus: float = 0.0,
 ) -> None:
     """
-    Projeta UV ortograficamente nas faces do topo via coordenadas mundo XY.
-    Cria material novo e o atribui apenas a essas faces.
+    Projeta UV ortograficamente nas faces alvo, descartando a coordenada do
+    eixo de projecao. Cria material novo e o atribui apenas a essas faces.
 
     `angulo_graus` gira o sistema de coordenadas da projeção antes de calcular
     a bounding box e os UVs, corrigindo a diferença de orientação entre a foto
-    e a malha (ver `top_alignment.py`).
+    e a malha (ver `top_alignment.py`). So o topo usa isso; nas costas a
+    orientacao ja esta fixada pelo proprio eixo.
     """
     import math
 
     mat_world = obj.matrix_world
     verts = obj.data.vertices
+    iu, iv = eixo["uv"]
+    sinal_u = -1.0 if eixo["inverter_u"] else 1.0
 
     rad = math.radians(angulo_graus)
     cos_a, sen_a = math.cos(rad), math.sin(rad)
 
-    # Coleta todos os vértices das faces do topo em coordenadas mundo
-    indices_faces = {p.index for p in faces_topo}
-    brutos = []
-    for face in faces_topo:
-        for vi in face.vertices:
-            p = mat_world @ verts[vi].co
-            brutos.append((p.x, p.y))
+    def plano(vi: int) -> tuple[float, float]:
+        """Coordenada mundo do vertice reduzida ao plano da projecao."""
+        p = mat_world @ verts[vi].co
+        return (p[iu] * sinal_u, p[iv])
+
+    # Coleta todos os vértices das faces alvo no plano da projecao
+    indices_faces = {p.index for p in faces_alvo}
+    brutos = [plano(vi) for face in faces_alvo for vi in face.vertices]
 
     if not brutos:
-        raise RuntimeError("nenhum vértice nas faces do topo")
+        raise RuntimeError("nenhum vértice nas faces alvo")
 
-    # Centro da tampa: a rotação precisa ser em torno dele, não da origem.
-    centro_x = sum(x for x, _ in brutos) / len(brutos)
-    centro_y = sum(y for _, y in brutos) / len(brutos)
+    # Centro das faces: a rotação precisa ser em torno dele, não da origem.
+    centro_a = sum(a for a, _ in brutos) / len(brutos)
+    centro_b = sum(b for _, b in brutos) / len(brutos)
 
-    def girar(x: float, y: float) -> tuple[float, float]:
-        dx, dy = x - centro_x, y - centro_y
-        return (dx * cos_a - dy * sen_a, dx * sen_a + dy * cos_a)
+    def girar(a: float, b: float) -> tuple[float, float]:
+        da, db = a - centro_a, b - centro_b
+        return (da * cos_a - db * sen_a, da * sen_a + db * cos_a)
 
-    girados = [girar(x, y) for x, y in brutos]
-    xs = [p[0] for p in girados]
-    ys = [p[1] for p in girados]
+    girados = [girar(a, b) for a, b in brutos]
+    us = [p[0] for p in girados]
+    vs = [p[1] for p in girados]
 
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    span_x = max(max_x - min_x, 1e-6)
-    span_y = max(max_y - min_y, 1e-6)
+    min_u, max_u = min(us), max(us)
+    min_v, max_v = min(vs), max(vs)
+    span_u = max(max_u - min_u, 1e-6)
+    span_v = max(max_v - min_v, 1e-6)
     log(
-        f"bbox XY do topo (rotacao {angulo_graus:.1f}deg): "
-        f"x=[{min_x:.3f},{max_x:.3f}] y=[{min_y:.3f},{max_y:.3f}]"
+        f"bbox da projecao {eixo['rotulo']} (rotacao {angulo_graus:.1f}deg): "
+        f"u=[{min_u:.3f},{max_u:.3f}] v=[{min_v:.3f},{max_v:.3f}]"
     )
 
-    # Cria ou substitui UV map "TopProjectionUV"
-    uv_nome = "TopProjectionUV"
+    # Cria ou substitui o UV map desta projecao
+    uv_nome = eixo["uv_layer"]
     if uv_nome in obj.data.uv_layers:
         obj.data.uv_layers.remove(obj.data.uv_layers[uv_nome])
     uv_layer = obj.data.uv_layers.new(name=uv_nome)
     obj.data.uv_layers.active = uv_layer
 
-    # Preenche UVs: faces do topo recebem projecao XY; restantes ficam em (0,0)
+    # Preenche UVs: faces alvo recebem a projecao; restantes ficam em (0,0)
     for face in obj.data.polygons:
         if face.index in indices_faces:
             for loop_i, vi in zip(face.loop_indices, face.vertices):
-                p = mat_world @ verts[vi].co
-                gx, gy = girar(p.x, p.y)
-                u = (gx - min_x) / span_x
-                v = (gy - min_y) / span_y
-                uv_layer.data[loop_i].uv = (u, v)
+                ga, gb = girar(*plano(vi))
+                uv_layer.data[loop_i].uv = (
+                    (ga - min_u) / span_u,
+                    (gb - min_v) / span_v,
+                )
         else:
             for loop_i in face.loop_indices:
                 uv_layer.data[loop_i].uv = (0.0, 0.0)
 
     # Adiciona material novo ao objeto
-    material = criar_material_topo(img_path)
+    material = criar_material_projecao(img_path, eixo["material"], uv_nome)
     obj.data.materials.append(material)
     mat_idx = len(obj.data.materials) - 1
 
-    # Atribui material apenas às faces do topo
+    # Atribui material apenas às faces alvo
     for face in obj.data.polygons:
         if face.index in indices_faces:
             face.material_index = mat_idx
@@ -353,22 +436,24 @@ def aplicar_uv_projecao_topo(
         if node.type == "TEX_IMAGE":
             node.extension = "CLIP"
 
-    log(f"UV projecao aplicada: {len(faces_topo)} faces, material_index={mat_idx}")
+    log(f"UV projecao aplicada: {len(faces_alvo)} faces, material_index={mat_idx}")
 
 
 # ------------------------------------------------------------------ main
 
 def main() -> int:
     args = parse_args()
+    eixo = EIXOS[args.axis]
     log(f"input             = {args.input}")
-    log(f"top               = {args.top}")
+    log(f"photo             = {args.photo}")
     log(f"output            = {args.output}")
+    log(f"axis              = {args.axis} ({eixo['rotulo']})")
     log(f"cosine-threshold  = {args.cosine_threshold}")
 
     if not args.input.exists():
         raise FileNotFoundError(f"GLB nao encontrado: {args.input}")
-    if not args.top.exists():
-        raise FileNotFoundError(f"Imagem do topo nao encontrada: {args.top}")
+    if not args.photo.exists():
+        raise FileNotFoundError(f"Imagem nao encontrada: {args.photo}")
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.import_scene.gltf(filepath=str(args.input))
@@ -378,39 +463,51 @@ def main() -> int:
         raise RuntimeError("GLB sem meshes")
     log(f"meshes: {[o.name for o in meshes]}")
 
-    tampa = identificar_tampa(meshes)
-    if tampa is None:
-        raise RuntimeError("tampa nao identificada")
-    log(f"tampa: '{tampa.name}' (max_z={max_z_bbox(tampa):.4f})")
+    frasco = identificar_tampa(meshes)
+    if frasco is None:
+        raise RuntimeError("mesh do frasco nao identificado")
+    log(f"mesh: '{frasco.name}' (max_z={max_z_bbox(frasco):.4f})")
 
-    # Sem segmentacao, `identificar_tampa` devolve o frasco inteiro (o Hunyuan
-    # entrega mesh unico) e a projecao se espalha pelo corpo. O corte no ombro
-    # restringe a coleta e, por consequencia, a bounding box da projecao.
-    z_corte, diag = encontrar_corte(alturas_das_faces(tampa))
+    # O Hunyuan entrega mesh unico, sem distincao entre corpo e tampa. Sem o
+    # corte no ombro a coleta pega faces dos dois e a bounding box da projecao
+    # vira a do frasco inteiro — a foto sai esticada e deslocada.
+    z_corte, diag = encontrar_corte(alturas_das_faces(frasco))
     if z_corte is None:
         log(f"AVISO: ombro nao identificado ({diag.get('motivo')}) — projetando sem recorte")
     else:
+        comparador = ">" if eixo["faixa"] == "acima" else "<="
         log(
             f"ombro em z_rel={diag['z_rel_pico']:.2f} (razao {diag['razao']:.2f}x); "
-            f"limitando projecao a z > {z_corte:.4f}"
+            f"limitando projecao a z {comparador} {z_corte:.4f}"
         )
 
-    faces_topo = coletar_faces_topo(tampa, args.cosine_threshold, z_minimo=z_corte)
-    log(f"faces do topo: {len(faces_topo)}")
+    faces_alvo = coletar_faces_por_normal(
+        frasco,
+        eixo["vetor"],
+        args.cosine_threshold,
+        z_corte=z_corte,
+        faixa=eixo["faixa"],
+    )
+    log(f"faces alvo ({eixo['rotulo']}): {len(faces_alvo)}")
+    if not faces_alvo:
+        raise RuntimeError(f"nenhuma face voltada para {args.axis} encontrada")
 
-    imagem_topo = recortar_para_alpha(
-        args.top, args.output.parent / f"{args.output.stem}_top_crop.png"
+    imagem = recortar_para_alpha(
+        args.photo, args.output.parent / f"{args.output.stem}_{args.axis}_crop.png"
     )
 
-    # Estimativa de rotacao pela silhueta. `permitir_espelho` fica desligado:
-    # a projecao ortografica e a foto de cima tem a mesma lateralidade, e num
-    # frasco quase simetrico o espelho seria escolhido por ruido, produzindo um
-    # logo invertido — pior do que um logo girado.
+    # Estimativa de rotacao pela silhueta — so no topo. `permitir_espelho` fica
+    # desligado: a projecao ortografica e a foto de cima tem a mesma
+    # lateralidade, e num frasco quase simetrico o espelho seria escolhido por
+    # ruido, produzindo um logo invertido — pior do que um logo girado.
+    #
+    # Nas costas nao ha o que estimar: o eixo ja fixa a orientacao, e girar a
+    # projecao no plano XZ inclinaria o frasco.
     angulo = 0.0
-    if args.alinhar_rotacao:
+    if args.alinhar_rotacao and args.axis == "z_pos":
         estimativa = estimar_rotacao(
-            mascara_da_malha(tampa, faces_topo),
-            mascara_da_foto(imagem_topo),
+            mascara_da_malha(frasco, faces_alvo, eixo["uv"]),
+            mascara_da_foto(imagem),
             permitir_espelho=False,
         )
         if estimativa is None:
@@ -428,10 +525,7 @@ def main() -> int:
                 f"(IoU={estimativa.iou:.3f}, confianca={estimativa.confianca:.3f})"
             )
 
-    if not faces_topo:
-        raise RuntimeError("nenhuma face superior encontrada na tampa")
-
-    aplicar_uv_projecao_topo(tampa, faces_topo, imagem_topo, angulo_graus=angulo)
+    aplicar_uv_projecao(frasco, faces_alvo, imagem, eixo, angulo_graus=angulo)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     log(f"exportando: {args.output}")
@@ -441,7 +535,7 @@ def main() -> int:
         use_selection=False,
         export_apply=True,
     )
-    log("OK — textura do topo projetada nas faces reais")
+    log(f"OK — textura de {eixo['rotulo']} projetada nas faces reais")
     return 0
 
 

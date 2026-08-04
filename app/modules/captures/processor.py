@@ -44,6 +44,10 @@ class ProcessingInput:
     # O IntegratedPipeline usa esses rótulos via LabeledViewRouter; quando todos
     # são None, recorre ao CLIPViewRouter.
     views: list[str | None] | None = None
+    # Material do frasco declarado pelo usuário ("glass" | "opaque"). Quando
+    # presente, decide o body_mode do refiner sem consultar o CLIP. None = não
+    # informado, o pipeline classifica.
+    material: str | None = None
 
 
 @dataclass(frozen=True)

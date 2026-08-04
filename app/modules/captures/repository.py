@@ -14,13 +14,18 @@ class CaptureRepository:
         self.session = session
 
     async def create_job(
-        self, job_id: str, *, product_id: int | None = None
+        self,
+        job_id: str,
+        *,
+        product_id: int | None = None,
+        material: str | None = None,
     ) -> CaptureJob:
         job = CaptureJob(
             id=job_id,
             status=CaptureStatus.WAITING.value,
             message="Aguardando processamento",
             product_id=product_id,
+            material=material,
         )
         self.session.add(job)
         await self.session.flush()
