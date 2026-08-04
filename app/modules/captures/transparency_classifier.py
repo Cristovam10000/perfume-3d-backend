@@ -26,6 +26,17 @@ from ...core.logging import get_logger
 
 _log = get_logger("captures.transparency_classifier")
 
+# Materiais que o cliente pode declarar no POST /captures. Existem porque o
+# classificador abaixo nao separa as classes de forma confiavel: medido nos 6
+# jobs anteriores, um frasco de vidro (GRAND, 0,072) pontuou ABAIXO de um opaco
+# (ASAD, 0,089). Como as classes se sobrepoem no eixo medido, nenhum valor de
+# threshold acerta os dois — ver docs/16-auditoria-blender.md. Quando o usuario
+# informa o material, o pipeline usa a resposta dele e nao chama o CLIP.
+MATERIAL_GLASS = "glass"
+MATERIAL_OPAQUE = "opaque"
+MATERIAL_AUTO = "auto"
+VALID_MATERIALS: frozenset[str] = frozenset({MATERIAL_GLASS, MATERIAL_OPAQUE})
+
 
 @dataclass(frozen=True)
 class TransparencyResult:

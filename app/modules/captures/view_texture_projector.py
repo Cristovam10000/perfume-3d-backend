@@ -1,9 +1,23 @@
-"""Projetor de textura do topo: aplica a foto do topo do frasco na tampa do GLB."""
+"""Projeta uma foto real do frasco nas faces do GLB que aquela foto enxerga.
+
+Dois eixos, dois problemas distintos do gerador:
+
+- `AXIS_TOP` (`z_pos`) — o Hunyuan3D-2mv reconstroi a partir de 4 vistas
+  cardeais e nenhuma delas enxerga a tampa; ela sai como disco liso.
+- `AXIS_BACK` (`y_pos`) — o Hunyuan gera a *geometria* com as 4 vistas mas a
+  *textura* com UMA. O pipeline de paint aceita uma unica imagem de referencia
+  e sintetiza as demais vistas a partir dela, entao o verso do frasco sai
+  inventado (tipicamente uma copia da frente). Ver docs/16.
+
+Nos dois casos a foto correta existe e so nao estava sendo usada. A projecao
+troca o palpite do gerador pelo pixel medido.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -11,50 +25,62 @@ from pathlib import Path
 
 from ...core.logging import get_logger
 
-_log = get_logger("captures.top_projector")
+_log = get_logger("captures.view_texture_projector")
 
 _DEFAULT_SCRIPT_PATH = (
-    Path(__file__).resolve().parent / "blender_scripts" / "project_top_texture.py"
+    Path(__file__).resolve().parent / "blender_scripts" / "project_view_texture.py"
 )
 _DEFAULT_BLENDER_EXECUTABLE = Path(
     r"C:\Program Files\Blender Foundation\Blender 5.1\blender.exe"
 )
 
+# Eixos aceitos pelo script Blender. A convencao "frente = -Y" vem de
+# FRONT_AXES em project_label.py, logo o verso do frasco e +Y.
+AXIS_TOP = "z_pos"
+AXIS_BACK = "y_pos"
+VALID_AXES: frozenset[str] = frozenset({AXIS_TOP, AXIS_BACK})
+
+_ROTULOS = {AXIS_TOP: "topo", AXIS_BACK: "costas"}
+
 
 @dataclass(frozen=True)
-class TopProjectionInput:
+class ViewTextureProjectionInput:
     input_glb: Path
-    top_image: Path
+    photo: Path
     output_glb: Path
-    cosine_threshold: float = 0.50
+    axis: str = AXIS_TOP
+    cosine_threshold: float = 0.45
 
 
 @dataclass(frozen=True)
-class TopProjectionResult:
+class ViewTextureProjectionResult:
     output_glb: Path
 
 
-class TopProjectionError(Exception):
-    """Falha durante projeção da textura do topo."""
+class ViewTextureProjectionError(Exception):
+    """Falha durante a projeção da textura."""
 
 
-class TopProjector(ABC):
+class ViewTextureProjector(ABC):
     @abstractmethod
-    async def project(self, input: TopProjectionInput) -> TopProjectionResult: ...
+    async def project(
+        self, input: ViewTextureProjectionInput
+    ) -> ViewTextureProjectionResult: ...
 
 
-class DisabledTopProjector(TopProjector):
+class DisabledViewTextureProjector(ViewTextureProjector):
     """Bypass: copia o GLB de entrada sem modificar."""
 
-    async def project(self, input: TopProjectionInput) -> TopProjectionResult:
-        import shutil
+    async def project(
+        self, input: ViewTextureProjectionInput
+    ) -> ViewTextureProjectionResult:
         input.output_glb.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(input.input_glb, input.output_glb)
-        return TopProjectionResult(output_glb=input.output_glb)
+        return ViewTextureProjectionResult(output_glb=input.output_glb)
 
 
-class BlenderTopProjector(TopProjector):
-    """Projeta a foto do topo nas faces superiores da tampa via Blender headless."""
+class BlenderViewTextureProjector(ViewTextureProjector):
+    """Projeta a foto nas faces voltadas para o eixo, via Blender headless."""
 
     def __init__(
         self,
@@ -70,7 +96,13 @@ class BlenderTopProjector(TopProjector):
         self.script_path = Path(script_path) if script_path else _DEFAULT_SCRIPT_PATH
         self.timeout_seconds = timeout_seconds
 
-    async def project(self, input: TopProjectionInput) -> TopProjectionResult:
+    async def project(
+        self, input: ViewTextureProjectionInput
+    ) -> ViewTextureProjectionResult:
+        if input.axis not in VALID_AXES:
+            raise ViewTextureProjectionError(
+                f"Eixo inválido: {input.axis!r} (esperado um de {sorted(VALID_AXES)})"
+            )
         self._assert_runtime_assets(input)
 
         args = [
@@ -79,43 +111,45 @@ class BlenderTopProjector(TopProjector):
             "--python", str(self.script_path),
             "--",
             "--input",  str(input.input_glb),
-            "--top",    str(input.top_image),
+            "--photo",  str(input.photo),
             "--output", str(input.output_glb),
+            "--axis",   input.axis,
             "--cosine-threshold", str(input.cosine_threshold),
         ]
 
-        returncode, stdout, stderr = await self._run_blender(args)
+        returncode, _stdout, stderr = await self._run_blender(args)
+        rotulo = _ROTULOS.get(input.axis, input.axis)
 
         if returncode != 0:
             tail = stderr.decode("utf-8", errors="replace")[-500:]
-            raise TopProjectionError(
-                f"Blender retornou {returncode} ao projetar textura do topo: {tail}"
+            raise ViewTextureProjectionError(
+                f"Blender retornou {returncode} ao projetar textura de {rotulo}: {tail}"
             )
         if not input.output_glb.exists():
-            raise TopProjectionError(
-                f"Blender concluiu sem erros mas GLB de saida nao foi criado: "
+            raise ViewTextureProjectionError(
+                "Blender concluiu sem erros mas GLB de saida nao foi criado: "
                 f"{input.output_glb}"
             )
 
-        _log.info("Textura do topo projetada: %s", input.output_glb)
-        return TopProjectionResult(output_glb=input.output_glb)
+        _log.info("Textura de %s projetada: %s", rotulo, input.output_glb)
+        return ViewTextureProjectionResult(output_glb=input.output_glb)
 
-    def _assert_runtime_assets(self, input: TopProjectionInput) -> None:
+    def _assert_runtime_assets(self, input: ViewTextureProjectionInput) -> None:
         if not self.blender_executable.exists():
-            raise TopProjectionError(
+            raise ViewTextureProjectionError(
                 f"Executavel do Blender nao encontrado: {self.blender_executable}"
             )
         if not self.script_path.exists():
-            raise TopProjectionError(
+            raise ViewTextureProjectionError(
                 f"Script do Blender nao encontrado: {self.script_path}"
             )
         if not input.input_glb.exists():
-            raise TopProjectionError(
+            raise ViewTextureProjectionError(
                 f"GLB de entrada nao encontrado: {input.input_glb}"
             )
-        if not input.top_image.exists():
-            raise TopProjectionError(
-                f"Imagem do topo nao encontrada: {input.top_image}"
+        if not input.photo.exists():
+            raise ViewTextureProjectionError(
+                f"Imagem nao encontrada: {input.photo}"
             )
 
     async def _run_blender(self, args: list[str]) -> tuple[int, bytes, bytes]:
@@ -133,8 +167,8 @@ class BlenderTopProjector(TopProjector):
                 check=False,
             )
         except subprocess.TimeoutExpired:
-            raise TopProjectionError(
-                f"Blender excedeu timeout de {self.timeout_seconds}s ao projetar topo"
+            raise ViewTextureProjectionError(
+                f"Blender excedeu timeout de {self.timeout_seconds}s ao projetar"
             ) from None
         return (
             completed.returncode,

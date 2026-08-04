@@ -42,10 +42,10 @@ from .modules.captures.label_projector import (
     DisabledLabelProjector,
     LabelProjector,
 )
-from .modules.captures.top_projector import (
-    BlenderTopProjector,
-    DisabledTopProjector,
-    TopProjector,
+from .modules.captures.view_texture_projector import (
+    BlenderViewTextureProjector,
+    DisabledViewTextureProjector,
+    ViewTextureProjector,
 )
 from .modules.captures.label_upscaler import (
     DisabledLabelUpscaler,
@@ -134,10 +134,16 @@ def build_label_projector(config: Settings = settings) -> LabelProjector:
     return BlenderLabelProjector(blender_executable=config.blender_executable)
 
 
-def build_top_projector(config: Settings = settings) -> TopProjector:
+def build_top_projector(config: Settings = settings) -> ViewTextureProjector:
     if config.top_projector_type == "disabled":
-        return DisabledTopProjector()
-    return BlenderTopProjector(blender_executable=config.blender_executable)
+        return DisabledViewTextureProjector()
+    return BlenderViewTextureProjector(blender_executable=config.blender_executable)
+
+
+def build_back_projector(config: Settings = settings) -> ViewTextureProjector:
+    if config.back_projector_type == "disabled":
+        return DisabledViewTextureProjector()
+    return BlenderViewTextureProjector(blender_executable=config.blender_executable)
 
 
 def build_embedder(config: Settings = settings) -> ImageEmbedder:
@@ -218,8 +224,11 @@ def build_pipeline(
         view_router=build_view_router(config),
         transparency_classifier=build_transparency_classifier(config),
         top_projector=build_top_projector(config),
+        back_projector=build_back_projector(config),
         front_axis=config.label_front_axis,
         top_cosine_threshold=config.top_cosine_threshold,
+        top_elongation_max=config.top_elongation_max,
+        back_cosine_threshold=config.back_cosine_threshold,
         label_min_confidence=config.label_min_confidence,
         label_target_size=config.label_target_size,
     )

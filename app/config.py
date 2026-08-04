@@ -88,6 +88,17 @@ class Settings(BaseSettings):
     # Cosseno minimo entre a normal da face e o eixo Z para a face contar como
     # "topo". 0.45 aceita a curvatura do ombro da tampa sem pegar as laterais.
     top_cosine_threshold: float = 0.45
+    # Elongacao maxima (razao entre eixos principais da silhueta) para uma foto
+    # ser aceita como vista de topo. Medido nas 34 fotos reais do projeto: topo
+    # correto 1.03, topo obliquo 2.06, cardeais 1.50-4.23. Ver top_photo_check.
+    top_elongation_max: float = 1.35
+
+    # Projeta a foto das costas nas faces traseiras do corpo. O Hunyuan gera a
+    # geometria com 4 vistas mas textura com UMA (o pipeline de paint recusa
+    # lista); as outras vistas sao sintetizadas a partir da foto da frente, o
+    # que faz o verso do frasco sair inventado. Ver docs/16.
+    back_projector_type: Literal["disabled", "blender"] = "blender"
+    back_cosine_threshold: float = 0.45
 
     # ---- Legado (compat) ----
     # COLOR_DETECTOR_TYPE servia ao TemplateProcessor (removido). Mantido

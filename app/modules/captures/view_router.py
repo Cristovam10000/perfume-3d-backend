@@ -36,6 +36,11 @@ _log = get_logger("captures.view_router")
 
 CARDINAL_VIEWS: tuple[str, ...] = ("front", "left", "back", "right")
 
+# `back` e cardeal (vai para o Hunyuan como as outras), mas tambem e consumida
+# pelo pos-processamento: o gerador produz a geometria com as 4 vistas e a
+# textura com UMA, entao o verso sai inventado e a foto real e reprojetada.
+BACK_VIEW: str = "back"
+
 # `top` nao e uma vista cardeal: o Hunyuan3D-2mv consome apenas as 4 cardeais e
 # ignora o resto. A foto de cima serve ao `TopProjector`, que cola a textura da
 # tampa no GLB depois da geracao — o Hunyuan nao reconstroi o topo porque as 4
