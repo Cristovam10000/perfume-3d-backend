@@ -128,7 +128,7 @@ class CaptureService:
             await self._mark_error(job_id, str(exc))
             raise
 
-        await self._mark_completed(job_id, result.message)
+        await self._mark_completed(job_id, result.message, prep.product_id)
 
     async def _prepare_job(self, job_id: str) -> _JobPreparado | None:
         async with self._session_factory() as session:
@@ -154,14 +154,45 @@ class CaptureService:
 
         return preparado
 
-    async def _mark_completed(self, job_id: str, message: str) -> None:
+    async def _mark_completed(
+        self,
+        job_id: str,
+        message: str,
+        product_id: int | None = None,
+    ) -> None:
+        model_public_path = self._storage.model_public_path(job_id)
+
+        # O vinculo vai em transacao propria, antes do status. Se ele falhar
+        # (produto apagado no meio do job, por exemplo) o GLB continua valido e
+        # o job precisa concluir mesmo assim — o que nao pode e a falha sumir:
+        # ela entra na `message`, que o app mostra.
+        aviso: str | None = None
+        if product_id is not None:
+            try:
+                async with self._session_factory() as session:
+                    repo = CaptureRepository(session)
+                    await repo.vincular_produto(
+                        product_id=product_id,
+                        job_id=job_id,
+                        model_public_path=model_public_path,
+                    )
+                    await session.commit()
+            except Exception as exc:
+                aviso = f"modelo gerado, mas nao vinculado ao produto: {exc}"
+                _log.warning(
+                    "Falha ao vincular job %s ao produto %s: %s",
+                    job_id,
+                    product_id,
+                    exc,
+                )
+
         async with self._session_factory() as session:
             repo = CaptureRepository(session)
             await repo.update_status(
                 job_id,
                 CaptureStatus.COMPLETED,
-                message=message,
-                model_path=self._storage.model_public_path(job_id),
+                message=f"{message} — {aviso}" if aviso else message,
+                model_path=model_public_path,
             )
             await session.commit()
 

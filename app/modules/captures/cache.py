@@ -317,7 +317,6 @@ class ClipSimilarityCache(ModelCache):
                         session,
                         product_id=product_id,
                         universal_id=universal_id,
-                        glb_path=destino_glb,
                         capture_job_id=source_job_id,
                     )
 
@@ -343,14 +342,12 @@ class ClipSimilarityCache(ModelCache):
         product_id: int,
         capture_job_id: str,
     ) -> None:
-        glb_path = self._storage.cache_path(universal_id)
         async with self._session_factory() as session:
             try:
                 await self._upsert_modelo_produto(
                     session,
                     product_id=product_id,
                     universal_id=universal_id,
-                    glb_path=glb_path,
                     capture_job_id=capture_job_id,
                 )
                 await session.commit()
@@ -368,7 +365,6 @@ class ClipSimilarityCache(ModelCache):
         *,
         product_id: int,
         universal_id: str,
-        glb_path: Path,
         capture_job_id: str,
     ) -> None:
         """Liga o produto comercial (do tenant) ao molde universal recem-criado.
@@ -376,6 +372,17 @@ class ClipSimilarityCache(ModelCache):
         ON CONFLICT (produto_id) preserva a UNIQUE da tabela existente: cada
         produto so aponta para um modelo. Em conflito, atualiza para o molde
         mais recente.
+
+        `caminho_arquivo_modelo` recebe a URL publica do job, nao o caminho de
+        disco do cache: a coluna e devolvida crua pelo `/sales` e o app a
+        resolve como URL — um `C:\\...\\cache\\<uuid>.glb` ali vira link quebrado.
+        A URL do job vale mesmo em cache hit, porque o pipeline copia o GLB
+        cacheado para `storage/models/<job>.glb` antes de concluir.
+
+        Quem manda nessa coluna, no fim, e o `CaptureRepository.vincular_produto`,
+        que roda depois e independe de `CACHE_ENABLED`. Aqui o valor existe para
+        satisfazer o NOT NULL do INSERT e para nao regredir quando so o cache
+        escreve.
         """
         await session.execute(
             text(
@@ -395,7 +402,7 @@ class ClipSimilarityCache(ModelCache):
             ),
             {
                 "produto_id": product_id,
-                "path": str(glb_path),
+                "path": self._storage.model_public_path(capture_job_id),
                 "job_id": capture_job_id,
                 "universal_id": universal_id,
             },

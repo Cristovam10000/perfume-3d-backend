@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 from app.core.exceptions import ValidationError
 from app.modules.captures.processor import (
@@ -168,3 +169,151 @@ class TestProcessJob:
         # Nenhum processor.call deve acontecer.
         await fx.service.process_job("job-que-nao-existe")
         assert fx.processor.calls == []
+
+
+async def _criar_tabelas_do_tenant(session_factory) -> None:
+    """Cria `produtos` e `modelos_3d_produto` no SQLite do teste.
+
+    As duas nascem fora do SQLAlchemy do backend (schema preexistente do
+    sistema comercial), entao a fixture `session_factory` nao as cria. Aqui vai
+    so o subconjunto de colunas que o vinculo toca.
+    """
+    async with session_factory() as session:
+        await session.execute(
+            text(
+                "CREATE TABLE produtos ("
+                "  id INTEGER PRIMARY KEY, nome TEXT, "
+                "  possui_modelo_3d BOOLEAN NOT NULL DEFAULT 0)"
+            )
+        )
+        await session.execute(
+            text(
+                "CREATE TABLE modelos_3d_produto ("
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "  produto_id INTEGER NOT NULL UNIQUE, "
+                "  caminho_arquivo_modelo TEXT NOT NULL, "
+                "  caminho_imagem_preview TEXT, "
+                "  status TEXT NOT NULL, "
+                "  criado_em TIMESTAMP NOT NULL, "
+                "  atualizado_em TIMESTAMP NOT NULL, "
+                "  capture_job_id TEXT, "
+                "  modelo_universal_id TEXT)"
+            )
+        )
+        await session.execute(
+            text("INSERT INTO produtos (id, nome, possui_modelo_3d) VALUES (7, 'X', 0)")
+        )
+        await session.commit()
+
+
+async def _linha_do_produto(session_factory, produto_id: int):
+    async with session_factory() as session:
+        resultado = await session.execute(
+            text(
+                "SELECT m.caminho_arquivo_modelo, m.capture_job_id, m.status, "
+                "       p.possui_modelo_3d "
+                "FROM modelos_3d_produto m JOIN produtos p ON p.id = m.produto_id "
+                "WHERE m.produto_id = :pid"
+            ),
+            {"pid": produto_id},
+        )
+        return resultado.mappings().one_or_none()
+
+
+class TestVinculoComProduto:
+    """O produto so mostra o 3D depois que `modelos_3d_produto` aponta para o GLB.
+
+    Esse vinculo morava dentro do `ModelCache.store()` e, com `CACHE_ENABLED=false`,
+    nunca era escrito: o job concluia, o GLB existia em disco e o app seguia
+    mostrando o placeholder. Estes testes prendem o vinculo no service, onde ele
+    independe do cache.
+    """
+
+    @pytest.mark.asyncio
+    async def test_job_com_produto_grava_vinculo_e_liga_a_flag(
+        self, session_factory, tmp_path
+    ):
+        await _criar_tabelas_do_tenant(session_factory)
+        fx = _make_fixtures(session_factory, tmp_path)
+
+        job_id = await fx.service.create_job(
+            [IncomingImage(filename="a.jpg", content=b"a")],
+            product_id=7,
+        )
+        await fx.service.process_job(job_id)
+
+        linha = await _linha_do_produto(session_factory, 7)
+        assert linha is not None, "produto ficou sem vinculo apos o job concluir"
+        # URL publica, nao caminho de disco: o app resolve essa string como URL.
+        assert linha["caminho_arquivo_modelo"] == f"/files/models/{job_id}.glb"
+        assert linha["capture_job_id"] == job_id
+        assert linha["status"] == "completo"
+        assert bool(linha["possui_modelo_3d"]) is True
+
+    @pytest.mark.asyncio
+    async def test_segundo_job_do_mesmo_produto_substitui_o_vinculo(
+        self, session_factory, tmp_path
+    ):
+        """UNIQUE(produto_id): regerar o molde troca o modelo, nao duplica linha."""
+        await _criar_tabelas_do_tenant(session_factory)
+        fx = _make_fixtures(session_factory, tmp_path)
+
+        primeiro = await fx.service.create_job(
+            [IncomingImage(filename="a.jpg", content=b"a")], product_id=7
+        )
+        await fx.service.process_job(primeiro)
+        segundo = await fx.service.create_job(
+            [IncomingImage(filename="b.jpg", content=b"b")], product_id=7
+        )
+        await fx.service.process_job(segundo)
+
+        async with session_factory() as session:
+            total = await session.execute(
+                text("SELECT count(*) FROM modelos_3d_produto WHERE produto_id = 7")
+            )
+            assert total.scalar_one() == 1
+
+        linha = await _linha_do_produto(session_factory, 7)
+        assert linha is not None
+        assert linha["capture_job_id"] == segundo
+
+    @pytest.mark.asyncio
+    async def test_falha_no_vinculo_nao_perde_o_modelo(
+        self, session_factory, tmp_path
+    ):
+        """Sem as tabelas do tenant o vinculo estoura — o job conclui assim mesmo.
+
+        O GLB foi gerado e continua servivel; o que nao pode e a falha sumir,
+        entao ela vai para a `message`, que o app mostra.
+        """
+        fx = _make_fixtures(session_factory, tmp_path)
+
+        job_id = await fx.service.create_job(
+            [IncomingImage(filename="a.jpg", content=b"a")], product_id=7
+        )
+        await fx.service.process_job(job_id)
+
+        job = await fx.service.get_job(job_id)
+        assert job is not None
+        assert job.status == CaptureStatus.COMPLETED.value
+        assert job.model_path == f"/files/models/{job_id}.glb"
+        assert job.message is not None
+        assert "nao vinculado ao produto" in job.message
+
+    @pytest.mark.asyncio
+    async def test_job_sem_produto_nao_toca_a_tabela(self, session_factory, tmp_path):
+        await _criar_tabelas_do_tenant(session_factory)
+        fx = _make_fixtures(session_factory, tmp_path)
+
+        job_id = await fx.service.create_job(
+            [IncomingImage(filename="a.jpg", content=b"a")]
+        )
+        await fx.service.process_job(job_id)
+
+        async with session_factory() as session:
+            total = await session.execute(
+                text("SELECT count(*) FROM modelos_3d_produto")
+            )
+            assert total.scalar_one() == 0
+        job = await fx.service.get_job(job_id)
+        assert job is not None and job.message == "ok"
