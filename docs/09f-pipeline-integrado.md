@@ -80,18 +80,46 @@ ProcessingInput (job_id, image_paths, output_path)
             │
             ▼
         ┌───────────────────────────────────────────────────────────┐
-        │ (8) ModelCache.store(embedding, with_label.glb, meta,      │
+        │ (7.4) BackProjector  → with_back.glb  (só se opaco)        │
+        │ (7.5) TopProjector   → with_top.glb   (só se foto aprovada)│
+        └───────────────────────────────────────────────────────────┘
+            │
+            ▼
+        ┌───────────────────────────────────────────────────────────┐
+        │ (7.9) GlbOptimizer → optimized.glb                         │
+        │      compressão Draco (~5,5x); último da cadeia porque o   │
+        │      artefato final varia com os opcionais que rodaram     │
+        └───────────────────────────────────────────────────────────┘
+            │
+            ▼
+        copia optimized.glb → output_path
+            │
+            ▼
+        ┌───────────────────────────────────────────────────────────┐
+        │ (7.95) PreviewRenderer → storage/models/<job>.png          │
+        │      renderiza o GLB já entregue (não um intermediário)    │
+        │      opcional: falha → preview_path=None                   │
+        └───────────────────────────────────────────────────────────┘
+            │
+            ▼
+        ┌───────────────────────────────────────────────────────────┐
+        │ (8) ModelCache.store(embedding, optimized.glb, meta,       │
         │                       product_id?)                         │
         │     persiste em storage/cache/<uuid>.glb                   │
         │     INSERT em modelos_3d_universais                        │
         │     se product_id veio: UPSERT em modelos_3d_produto       │
-        │       (ON CONFLICT (produto_id) DO UPDATE                  │
-        │        SET modelo_universal_id = EXCLUDED.modelo...)       │
+        │       (só para gravar modelo_universal_id — o vínculo em   │
+        │        si é do service, ver abaixo)                        │
         └───────────────────────────────────────────────────────────┘
             │
             ▼
-        copia with_label.glb → output_path
-        return ProcessingResult(origem="generated", message=...)
+        return ProcessingResult(origem="generated", message=...,
+                                preview_path=...)
+            │
+            ▼
+        CaptureService._mark_completed()
+            UPSERT em modelos_3d_produto (caminho do GLB + preview)
+            UPDATE produtos.possui_modelo_3d = true
 ```
 
 ## Responsabilidades
@@ -124,7 +152,9 @@ class IntegratedPipeline(Processor):
     async def process(self, input: ProcessingInput) -> ProcessingResult: ...
 ```
 
-`ProcessingInput` tem um campo opcional `product_id: int | None = None`. O service repassa o valor recebido do `POST /captures` (`productId` no form-data) para o pipeline, que o entrega ao `ModelCache.store(...)` no stage (8). O pipeline em si não conhece a tabela `modelos_3d_produto` — quem faz o UPSERT é o `ClipSimilarityCache`.
+`ProcessingInput` tem um campo opcional `product_id: int | None = None`. O service repassa o valor recebido do `POST /captures` (`productId` no form-data) para o pipeline, que o entrega ao `ModelCache.store(...)` no stage (8).
+
+O pipeline **não** amarra o produto ao modelo. Quem escreve `modelos_3d_produto` é o `CaptureService._mark_completed()`, via `CaptureRepository.vincular_produto()`. Esse vínculo já morou dentro do `ModelCache.store()` e ficava refém do `CACHE_ENABLED`: com o cache desligado, o job concluía, o GLB ia para o disco e o produto continuava sem modelo. Ver [17 - Defeito 4](17-fidelidade-do-modelo.md#defeito-4--o-modelo-ficava-pronto-e-o-produto-não-sabia). O cache ainda cuida do `modelo_universal_id`, coluna que é dele.
 
 Cada dependência é uma ABC, então o pipeline pode ser instanciado com `Disabled*` em qualquer stage para teste — útil em testes unitários (`tests/modules/captures/test_pipeline.py`).
 
@@ -143,9 +173,15 @@ Comportamento por stage quando algo falha. Em todos os casos o pipeline **loga**
 | (7) Label extract | Degrade total — devolve `refined.glb` direto, sem label. **Atenção:** hoje este é o caminho de 100% dos jobs; ver [16 - Auditoria](16-auditoria-blender.md). |
 | (7.4) Back projector | No-op quando o frasco não é opaco (`body_mode != keep`) — em vidro, colar foto opaca no verso mataria a transmissão. Se o Blender falhar, mantém o GLB anterior. Ver [17](17-fidelidade-do-modelo.md#defeito-3--o-verso-do-frasco-era-inventado). |
 | (7.5) Top projector | No-op quando o app não rotula nenhuma foto como `top` **ou** quando a foto reprova na checagem de elongação (o motivo vai para a `message` do job). Se o Blender falhar, mantém o GLB anterior e loga warning. |
+| (7.9) GLB optimizer | Entrega o GLB sem comprimir e loga warning. Um arquivo grande é melhor que nenhum arquivo. |
+| (7.95) Preview | `ProcessingResult.preview_path` vem `None` e o card do produto usa o visual genérico — que era o comportamento antes desta etapa existir. |
 | (8) Cache store | Loga warning mas **não** falha o job. O GLB já está disponível no `output_path`. |
 
 A propriedade chave: **um GLB sempre é entregue, exceto se o Hunyuan falhar**.
+
+### Ordem dos dois últimos estágios
+
+A compressão roda **depois** de todos os projetores porque qual deles produziu o artefato final varia com os opcionais que dispararam — comprimir no meio da cadeia obrigaria os seguintes a descomprimir e recomprimir. O preview roda **depois da cópia** para `output_path`, renderizando o GLB que o app vai de fato baixar, não um intermediário do workspace.
 
 > **Degradação silenciosa.** Os stages opcionais logam em INFO/WARNING e seguem. Isso permitiu que o extrator de rótulo ficasse quebrado por meses sem ninguém notar — nenhum job jamais produziu `with_label.glb`. Ao investigar qualidade de saída, verifique nos logs quais stages **efetivamente agiram**, não apenas se o job concluiu.
 

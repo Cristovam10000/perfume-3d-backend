@@ -20,9 +20,10 @@ from app.storage.local_storage import LocalStorage
 class _RecordingProcessor(Processor):
     """Processor fake que grava os inputs e opcionalmente estoura."""
 
-    def __init__(self, should_fail: bool = False):
+    def __init__(self, should_fail: bool = False, com_preview: bool = False):
         self.calls: list[ProcessingInput] = []
         self.should_fail = should_fail
+        self.com_preview = com_preview
 
     async def process(self, input: ProcessingInput) -> ProcessingResult:
         self.calls.append(input)
@@ -30,7 +31,15 @@ class _RecordingProcessor(Processor):
             raise RuntimeError("falha simulada no pipeline")
         input.output_path.parent.mkdir(parents=True, exist_ok=True)
         input.output_path.write_bytes(b"fake-glb")
-        return ProcessingResult(output_path=input.output_path, message="ok")
+        preview: Path | None = None
+        if self.com_preview:
+            preview = input.output_path.with_suffix(".png")
+            preview.write_bytes(b"\x89PNG")
+        return ProcessingResult(
+            output_path=input.output_path,
+            message="ok",
+            preview_path=preview,
+        )
 
 
 class _StubQueue:
@@ -51,10 +60,16 @@ class _Fixtures:
     storage: LocalStorage
 
 
-def _make_fixtures(session_factory, tmp_path: Path, *, fail: bool = False) -> _Fixtures:
+def _make_fixtures(
+    session_factory,
+    tmp_path: Path,
+    *,
+    fail: bool = False,
+    com_preview: bool = False,
+) -> _Fixtures:
     storage = LocalStorage(root=tmp_path / "storage")
     storage.ensure_dirs()
-    processor = _RecordingProcessor(should_fail=fail)
+    processor = _RecordingProcessor(should_fail=fail, com_preview=com_preview)
     queue = _StubQueue()
     service = CaptureService(session_factory, storage, processor, queue)  # type: ignore[arg-type]
     return _Fixtures(service=service, processor=processor, queue=queue, storage=storage)
@@ -299,6 +314,86 @@ class TestVinculoComProduto:
         assert job.model_path == f"/files/models/{job_id}.glb"
         assert job.message is not None
         assert "nao vinculado ao produto" in job.message
+
+    @pytest.mark.asyncio
+    async def test_preview_renderizado_vai_para_o_card(
+        self, session_factory, tmp_path
+    ):
+        await _criar_tabelas_do_tenant(session_factory)
+        fx = _make_fixtures(session_factory, tmp_path, com_preview=True)
+
+        job_id = await fx.service.create_job(
+            [IncomingImage(filename="a.jpg", content=b"a")], product_id=7
+        )
+        await fx.service.process_job(job_id)
+
+        async with session_factory() as session:
+            preview = await session.execute(
+                text(
+                    "SELECT caminho_imagem_preview FROM modelos_3d_produto "
+                    "WHERE produto_id = 7"
+                )
+            )
+            assert preview.scalar_one() == f"/files/models/{job_id}.png"
+
+    @pytest.mark.asyncio
+    async def test_sem_preview_a_coluna_fica_nula(self, session_factory, tmp_path):
+        """Preview e opcional: o card volta ao visual generico, o resto segue."""
+        await _criar_tabelas_do_tenant(session_factory)
+        fx = _make_fixtures(session_factory, tmp_path)
+
+        job_id = await fx.service.create_job(
+            [IncomingImage(filename="a.jpg", content=b"a")], product_id=7
+        )
+        await fx.service.process_job(job_id)
+
+        linha = await _linha_do_produto(session_factory, 7)
+        assert linha is not None
+        assert linha["caminho_arquivo_modelo"] == f"/files/models/{job_id}.glb"
+        async with session_factory() as session:
+            preview = await session.execute(
+                text(
+                    "SELECT caminho_imagem_preview FROM modelos_3d_produto "
+                    "WHERE produto_id = 7"
+                )
+            )
+            assert preview.scalar_one() is None
+
+    @pytest.mark.asyncio
+    async def test_regerar_sem_preview_preserva_o_preview_anterior(
+        self, session_factory, tmp_path
+    ):
+        """COALESCE no UPSERT: regerar o modelo nao pode piorar o card.
+
+        Se o primeiro job rendeu preview e o segundo falhou nesse estagio, o
+        card deve continuar mostrando o render antigo em vez de voltar ao
+        gradiente.
+        """
+        await _criar_tabelas_do_tenant(session_factory)
+
+        com_preview = _make_fixtures(session_factory, tmp_path, com_preview=True)
+        primeiro = await com_preview.service.create_job(
+            [IncomingImage(filename="a.jpg", content=b"a")], product_id=7
+        )
+        await com_preview.service.process_job(primeiro)
+
+        sem_preview = _make_fixtures(session_factory, tmp_path)
+        segundo = await sem_preview.service.create_job(
+            [IncomingImage(filename="b.jpg", content=b"b")], product_id=7
+        )
+        await sem_preview.service.process_job(segundo)
+
+        async with session_factory() as session:
+            linha = await session.execute(
+                text(
+                    "SELECT caminho_arquivo_modelo, caminho_imagem_preview "
+                    "FROM modelos_3d_produto WHERE produto_id = 7"
+                )
+            )
+            atual = linha.mappings().one()
+        # GLB novo, preview antigo.
+        assert atual["caminho_arquivo_modelo"] == f"/files/models/{segundo}.glb"
+        assert atual["caminho_imagem_preview"] == f"/files/models/{primeiro}.png"
 
     @pytest.mark.asyncio
     async def test_job_sem_produto_nao_toca_a_tabela(self, session_factory, tmp_path):

@@ -16,6 +16,9 @@ Sequencia executada por process(input):
     (7.5) TopProjector      -> with_top.glb (so quando o app rotula uma foto
                                como `top` e ela passa na checagem de elongacao;
                                o Hunyuan nao reconstroi o topo)
+    (7.9) GlbOptimizer      -> optimized.glb (Draco; ~5,5x, sempre por ultimo
+                               porque o artefato final varia com os opcionais)
+    (7.95) PreviewRenderer  -> models/<job>.png (card do produto no app)
     (8) ModelCache.store    -> persiste em modelos_3d_universais + UPSERT
                                opcional em modelos_3d_produto
 
@@ -35,6 +38,11 @@ from ...storage.local_storage import LocalStorage
 from .background_remover import BackgroundRemover
 from .cache import CacheHit, ModelCache
 from .embeddings import ImageEmbedder
+from .glb_optimizer import (
+    DisabledGlbOptimizer,
+    GlbOptimizationInput,
+    GlbOptimizer,
+)
 from .image_preprocessor import ImagePreprocessor
 from .label_extractor import LabelExtractor
 from .label_projector import (
@@ -44,6 +52,11 @@ from .label_projector import (
 )
 from .label_upscaler import LabelUpscaler
 from .mesh_refiner import MeshRefiner, RefinementInput
+from .preview_renderer import (
+    DisabledPreviewRenderer,
+    PreviewRenderer,
+    PreviewRenderInput,
+)
 from .processor import (
     Hunyuan3DProcessor,
     Processor,
@@ -100,10 +113,15 @@ class IntegratedPipeline(Processor):
         transparency_classifier: TransparencyClassifier | None = None,
         top_projector: ViewTextureProjector | None = None,
         back_projector: ViewTextureProjector | None = None,
+        glb_optimizer: GlbOptimizer | None = None,
+        preview_renderer: PreviewRenderer | None = None,
         front_axis: str = "front_y_neg",
         top_cosine_threshold: float = 0.45,
         top_elongation_max: float = 1.35,
         back_cosine_threshold: float = 0.45,
+        glb_position_quantization: int = 14,
+        glb_texcoord_quantization: int = 12,
+        preview_resolution: int = 512,
         label_min_confidence: float = 0.3,
         label_target_size: int = 2048,
     ):
@@ -123,10 +141,15 @@ class IntegratedPipeline(Processor):
         )
         self.top_projector = top_projector or DisabledViewTextureProjector()
         self.back_projector = back_projector or DisabledViewTextureProjector()
+        self.glb_optimizer = glb_optimizer or DisabledGlbOptimizer()
+        self.preview_renderer = preview_renderer or DisabledPreviewRenderer()
         self.front_axis = front_axis
         self.top_cosine_threshold = top_cosine_threshold
         self.top_elongation_max = top_elongation_max
         self.back_cosine_threshold = back_cosine_threshold
+        self.glb_position_quantization = glb_position_quantization
+        self.glb_texcoord_quantization = glb_texcoord_quantization
+        self.preview_resolution = preview_resolution
         self.label_min_confidence = label_min_confidence
         self.label_target_size = label_target_size
 
@@ -196,16 +219,22 @@ class IntegratedPipeline(Processor):
             body_mode,
         )
         # (7.5) textura do topo — só quando o app rotulou uma foto como `top`
-        final_glb = await self._safe_apply_top(
+        com_topo = await self._safe_apply_top(
             com_costas,
             routing.assignments.get(TOP_VIEW),
             workspace,
             avisos,
         )
+        # (7.9) compressao Draco — sempre por ultimo, porque qual estagio
+        # produziu o artefato final varia com os opcionais que rodaram.
+        final_glb = await self._safe_optimize(com_topo, workspace)
 
         # Copia para o output_path real do job (em storage/models/<job>.glb).
         input.output_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(final_glb, input.output_path)
+
+        # (7.95) preview do card do produto, renderizado do GLB ja entregue.
+        preview = await self._safe_render_preview(input.output_path, input.job_id)
 
         # (8) cache store
         try:
@@ -232,6 +261,7 @@ class IntegratedPipeline(Processor):
             output_path=input.output_path,
             message=mensagem,
             origem="generated",
+            preview_path=preview,
         )
 
     # -------------------------------------------------------------- internals
@@ -582,6 +612,61 @@ class IntegratedPipeline(Processor):
                 exc,
             )
             return entrada
+
+    async def _safe_optimize(self, entrada: Path, workspace: Path) -> Path:
+        """Comprime o GLB final com Draco.
+
+        ~90% do arquivo e malha, e a malha comprime ~5,5x sem perda visivel
+        (medido: 77,1 MB -> 13,9 MB no job 15ef21e9). O celular baixa o modelo
+        inteiro por Wi-Fi a cada abertura do produto, entao isso e a diferenca
+        entre abrir e nao abrir.
+
+        Roda por ultimo de proposito: qual estagio produziu o artefato final
+        depende dos opcionais que dispararam, e comprimir no meio da cadeia
+        obrigaria os estagios seguintes a descomprimir e recomprimir.
+        """
+        otimizado = workspace / "optimized.glb"
+        try:
+            resultado = await self.glb_optimizer.optimize(
+                GlbOptimizationInput(
+                    input_glb=entrada,
+                    output_glb=otimizado,
+                    position_quantization=self.glb_position_quantization,
+                    texcoord_quantization=self.glb_texcoord_quantization,
+                )
+            )
+            return resultado.output_glb
+        except Exception as exc:
+            _log.warning(
+                "Compressao do GLB falhou (%s); entregando o GLB sem comprimir",
+                exc,
+            )
+            return entrada
+
+    async def _safe_render_preview(self, glb: Path, job_id: str) -> Path | None:
+        """Renderiza o PNG do card do produto. `None` quando nao rolou.
+
+        Opcional por contrato: sem preview o card cai no visual generico, que
+        era o comportamento ate agora. Nao pode reprovar um job cujo GLB ficou
+        pronto.
+        """
+        destino = self.storage.preview_path(job_id)
+        try:
+            await self.preview_renderer.render(
+                PreviewRenderInput(
+                    input_glb=glb,
+                    output_png=destino,
+                    resolution=self.preview_resolution,
+                )
+            )
+            return destino
+        except Exception as exc:
+            _log.warning(
+                "Preview do job %s falhou (%s); card usara o visual generico",
+                job_id,
+                exc,
+            )
+            return None
 
     async def _safe_apply_back(
         self,

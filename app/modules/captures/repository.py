@@ -83,6 +83,7 @@ class CaptureRepository:
         product_id: int,
         job_id: str,
         model_public_path: str,
+        preview_public_path: str | None = None,
     ) -> None:
         """Faz o produto comercial apontar para o GLB recem-gerado.
 
@@ -100,18 +101,25 @@ class CaptureRepository:
 
         `modelo_universal_id` fica de fora do UPDATE de proposito: quem cuida
         dessa coluna e o cache, e este metodo roda depois dele.
+
+        `preview_public_path` e o PNG de vitrine do card. Quando o estagio de
+        preview falha ele chega `None`, e o COALESCE preserva o preview anterior
+        em vez de apaga-lo — regerar um modelo nao deve piorar o card.
         """
         await self.session.execute(
             text(
                 "INSERT INTO modelos_3d_produto ("
-                "  produto_id, caminho_arquivo_modelo, status, "
-                "  capture_job_id, criado_em, atualizado_em"
+                "  produto_id, caminho_arquivo_modelo, caminho_imagem_preview, "
+                "  status, capture_job_id, criado_em, atualizado_em"
                 ") VALUES ("
-                "  :produto_id, :path, 'completo', "
-                "  :job_id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP"
+                "  :produto_id, :path, :preview, "
+                "  'completo', :job_id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP"
                 ") "
                 "ON CONFLICT (produto_id) DO UPDATE SET "
                 "  caminho_arquivo_modelo = EXCLUDED.caminho_arquivo_modelo, "
+                "  caminho_imagem_preview = COALESCE("
+                "      EXCLUDED.caminho_imagem_preview, "
+                "      modelos_3d_produto.caminho_imagem_preview), "
                 "  capture_job_id = EXCLUDED.capture_job_id, "
                 "  status = 'completo', "
                 "  atualizado_em = CURRENT_TIMESTAMP"
@@ -119,6 +127,7 @@ class CaptureRepository:
             {
                 "produto_id": product_id,
                 "path": model_public_path,
+                "preview": preview_public_path,
                 "job_id": job_id,
             },
         )

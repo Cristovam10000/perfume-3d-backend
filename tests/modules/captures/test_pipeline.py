@@ -35,6 +35,16 @@ from app.modules.captures.label_projector import (
     LabelProjector,
 )
 from app.modules.captures.label_upscaler import LabelUpscaler
+from app.modules.captures.glb_optimizer import (
+    GlbOptimizationInput,
+    GlbOptimizationResult,
+    GlbOptimizer,
+)
+from app.modules.captures.preview_renderer import (
+    PreviewRenderer,
+    PreviewRenderInput,
+    PreviewRenderResult,
+)
 from app.modules.captures.view_texture_projector import (
     AXIS_BACK,
     AXIS_TOP,
@@ -238,6 +248,43 @@ class SpyViewTextureProjector(ViewTextureProjector):
         return ViewTextureProjectionResult(output_glb=input.output_glb)
 
 
+class SpyGlbOptimizer(GlbOptimizer):
+    """Marca o GLB comprimido com bytes proprios, para o teste rastrear qual
+    arquivo chegou ao `output_path`."""
+
+    MARCA = b"GLB-COMPRIMIDO"
+
+    def __init__(self, falhar: bool = False):
+        self.chamadas: list[GlbOptimizationInput] = []
+        self.falhar = falhar
+
+    async def optimize(self, input: GlbOptimizationInput) -> GlbOptimizationResult:
+        self.chamadas.append(input)
+        if self.falhar:
+            raise RuntimeError("draco indisponivel (stub)")
+        input.output_glb.parent.mkdir(parents=True, exist_ok=True)
+        input.output_glb.write_bytes(self.MARCA)
+        return GlbOptimizationResult(
+            output_glb=input.output_glb,
+            bytes_antes=input.input_glb.stat().st_size,
+            bytes_depois=len(self.MARCA),
+        )
+
+
+class SpyPreviewRenderer(PreviewRenderer):
+    def __init__(self, falhar: bool = False):
+        self.chamadas: list[PreviewRenderInput] = []
+        self.falhar = falhar
+
+    async def render(self, input: PreviewRenderInput) -> PreviewRenderResult:
+        self.chamadas.append(input)
+        if self.falhar:
+            raise RuntimeError("blender morreu no preview (stub)")
+        input.output_png.parent.mkdir(parents=True, exist_ok=True)
+        input.output_png.write_bytes(b"\x89PNG")
+        return PreviewRenderResult(output_png=input.output_png)
+
+
 # ----------------------------------------------------------------- fixtures
 
 
@@ -272,6 +319,8 @@ def _make_pipeline(
     back_projector: ViewTextureProjector | None = None,
     view_router: "ViewRouter | None" = None,
     top_elongation_max: float = 1.35,
+    glb_optimizer: "GlbOptimizer | None" = None,
+    preview_renderer: "PreviewRenderer | None" = None,
 ):
     return IntegratedPipeline(
         preprocessor=CopyPreprocessor(),
@@ -289,6 +338,8 @@ def _make_pipeline(
         back_projector=back_projector,
         view_router=view_router,
         top_elongation_max=top_elongation_max,
+        glb_optimizer=glb_optimizer,
+        preview_renderer=preview_renderer,
     )
 
 
@@ -953,3 +1004,123 @@ async def test_back_projector_falha_degrada_sem_derrubar_job(
     assert len(espiao.chamadas) == 1
     assert resultado.output_path == saida
     assert saida.exists()  # GLB do stage anterior foi entregue
+
+
+# --------------------------------------------- compressao Draco e preview PNG
+
+
+@pytest.mark.asyncio
+async def test_glb_entregue_e_o_comprimido(storage: LocalStorage, tmp_path: Path):
+    """O arquivo que chega ao output_path tem que ser a saida do otimizador.
+
+    O estagio roda depois de todos os opcionais justamente para comprimir o
+    artefato final, seja ele qual for.
+    """
+    otimizador = SpyGlbOptimizer()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        glb_optimizer=otimizador,
+        view_router=LabeledViewRouter(),
+    )
+
+    saida = tmp_path / "out.glb"
+    await pipe.process(
+        ProcessingInput(
+            job_id="job-draco",
+            image_paths=_lote_cardeais(tmp_path / "quatro_draco"),
+            output_path=saida,
+            views=_HINTS_CARDEAIS,
+        )
+    )
+
+    assert len(otimizador.chamadas) == 1
+    assert saida.read_bytes() == SpyGlbOptimizer.MARCA
+
+
+@pytest.mark.asyncio
+async def test_falha_na_compressao_entrega_glb_sem_comprimir(
+    storage: LocalStorage, tmp_path: Path
+):
+    otimizador = SpyGlbOptimizer(falhar=True)
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        glb_optimizer=otimizador,
+        view_router=LabeledViewRouter(),
+    )
+
+    saida = tmp_path / "out.glb"
+    resultado = await pipe.process(
+        ProcessingInput(
+            job_id="job-draco-falha",
+            image_paths=_lote_cardeais(tmp_path / "quatro_draco_falha"),
+            output_path=saida,
+            views=_HINTS_CARDEAIS,
+        )
+    )
+
+    # Job conclui: um GLB grande e melhor que nenhum GLB.
+    assert resultado.output_path == saida
+    assert saida.exists()
+    assert saida.read_bytes() != SpyGlbOptimizer.MARCA
+
+
+@pytest.mark.asyncio
+async def test_preview_e_renderizado_do_glb_final(
+    storage: LocalStorage, tmp_path: Path
+):
+    renderer = SpyPreviewRenderer()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        preview_renderer=renderer,
+        view_router=LabeledViewRouter(),
+    )
+
+    saida = tmp_path / "out.glb"
+    resultado = await pipe.process(
+        ProcessingInput(
+            job_id="job-preview",
+            image_paths=_lote_cardeais(tmp_path / "quatro_preview"),
+            output_path=saida,
+            views=_HINTS_CARDEAIS,
+        )
+    )
+
+    assert len(renderer.chamadas) == 1
+    # Renderiza do GLB ja entregue, nao de um intermediario do workspace.
+    assert renderer.chamadas[0].input_glb == saida
+    assert resultado.preview_path == storage.preview_path("job-preview")
+    assert resultado.preview_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_falha_no_preview_nao_derruba_o_job(
+    storage: LocalStorage, tmp_path: Path
+):
+    """Preview e opcional por contrato: sem ele o card volta ao visual generico."""
+    renderer = SpyPreviewRenderer(falhar=True)
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        preview_renderer=renderer,
+        view_router=LabeledViewRouter(),
+    )
+
+    saida = tmp_path / "out.glb"
+    resultado = await pipe.process(
+        ProcessingInput(
+            job_id="job-preview-falha",
+            image_paths=_lote_cardeais(tmp_path / "quatro_preview_falha"),
+            output_path=saida,
+            views=_HINTS_CARDEAIS,
+        )
+    )
+
+    assert resultado.preview_path is None
+    assert saida.exists()

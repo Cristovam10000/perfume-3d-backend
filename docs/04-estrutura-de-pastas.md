@@ -79,6 +79,8 @@ app/
     │   ├── label_projector.py    # ABC + DisabledLabelProjector + BlenderLabelProjector
     │   ├── view_texture_projector.py # ABC + Disabled/Blender (stages 7.4 costas e 7.5 topo)
     │   ├── top_photo_check.py    # guarda: a foto de `top` e mesmo uma vista de cima?
+    │   ├── glb_optimizer.py      # ABC + Disabled/Blender — compressao Draco (stage 7.9)
+    │   ├── preview_renderer.py   # ABC + Disabled/Blender — PNG do card (stage 7.95)
     │   │
     │   │   # ── Legado / fallback ──
     │   ├── color_detector.py  # ABC ColorDetector + AverageColorDetector (depreciado do fluxo principal)
@@ -89,6 +91,8 @@ app/
     │       ├── segment_bottle.py        # separa corpo/tampa por pico de densidade de faces
     │       ├── project_label.py         # decal frontal de label
     │       ├── project_view_texture.py  # projecao ortografica por eixo (stages 7.4 e 7.5)
+    │       ├── optimize_glb.py          # compressao Draco do GLB final
+    │       ├── render_preview.py        # render do card do produto (EEVEE, fundo transparente)
     │       └── top_alignment.py         # rotação da foto do topo por silhueta (numpy puro)
     │
     ├── sales/                 # API comercial — clientes, produtos, vendas, pagamentos
@@ -179,6 +183,10 @@ Esses scripts **não são chamados pelo backend em runtime**. São ferramentas d
 
 ```
 assets/
+├── draco/                        # versionado — decodificador servido em /draco/
+│   ├── draco_decoder.js
+│   ├── draco_decoder.wasm
+│   └── draco_wasm_wrapper.js
 └── templates/
     ├── ATTRIBUTIONS.md            # créditos dos 6 modelos do Sketchfab
     ├── catalog.json               # mapeia raw → status, license, notes
@@ -202,6 +210,7 @@ assets/
 
 - **`raw/` é gitignored** — esses arquivos são pesados (10-30MB cada) e têm licenças que requerem atribuição mas não permitem redistribuição em massa. Cada dev que precisar dos raws baixa de novo do Sketchfab seguindo o `ATTRIBUTIONS.md`.
 - **`normalized/` é versionado** — hoje consumidos apenas por `eval/synthetic_dataset.py` (dataset sintético do benchmark). Tamanho varia: ~150KB (procedural) até ~26MB (round_spherical).
+- **`draco/` é versionado** (~1MB) — decodificador WASM do `KHR_draco_mesh_compression`, montado em `/draco/` por `create_app()`. Existe para o app não depender de `gstatic.com`: numa rede local sem internet o GLB comprimido não abriria. Ver [17 - Fidelidade do modelo](17-fidelidade-do-modelo.md).
 
 ## `storage/` — gerado em runtime
 
@@ -213,7 +222,8 @@ storage/
 │       ├── img1.jpg
 │       └── ...
 ├── models/                        # gitignored
-│   ├── <job_id>.glb               # GLB entregue (cópia do cache em hit, ou recém-gerado em miss)
+│   ├── <job_id>.glb               # GLB entregue (comprimido com Draco; cópia do cache em hit)
+│   ├── <job_id>.png               # preview do card do produto (fundo transparente)
 │   └── candidates/                # GLBs intermediários para debug (gitignored)
 │       └── <job_id>/
 ├── cache/                         # gitignored — GLBs cacheados, referenciados por modelos_3d_universais.caminho_arquivo_modelo

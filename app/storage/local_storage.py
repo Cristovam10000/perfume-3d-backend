@@ -12,6 +12,7 @@ class LocalStorage:
         storage_root/
             uploads/<job_id>/<filename>
             models/<job_id>.glb
+            models/<job_id>.png     (preview do card do produto)
             cache/<universal_id>.glb
     """
 
@@ -43,6 +44,14 @@ class LocalStorage:
     def model_public_path(self, job_id: str) -> str:
         """Caminho relativo servido por StaticFiles em /files."""
         return f"/files/models/{job_id}.glb"
+
+    def preview_path(self, job_id: str) -> Path:
+        """PNG de vitrine do modelo, ao lado do GLB para cair no mesmo mount."""
+        return self.models_dir / f"{job_id}.png"
+
+    def preview_public_path(self, job_id: str) -> str:
+        """Caminho relativo servido por StaticFiles em /files."""
+        return f"/files/models/{job_id}.png"
 
     def cache_path(self, universal_id: str) -> Path:
         """Caminho fisico do GLB cacheado em modelos_3d_universais."""

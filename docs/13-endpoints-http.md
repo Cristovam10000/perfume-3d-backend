@@ -55,9 +55,11 @@ O front deve fazer *polling* (ex. a cada 2–3 s) até `status` ser `completed` 
 
 | Caminho | Descrição |
 |---------|-----------|
-| `GET /files/models/{job_id}.glb` | Modelo 3D final (o mesmo de `modelUrl` quando o host bate certo) |
+| `GET /files/models/{job_id}.glb` | Modelo 3D final, comprimido com Draco (o mesmo de `modelUrl` quando o host bate certo) |
+| `GET /files/models/{job_id}.png` | Preview do card do produto — o `previewImg` devolvido pelo `/sales` |
 | `GET /files/uploads/...` | Possível acesso direto a uploads (tipicamente o app usa só a API) |
 | `GET /files/model_viewer.html` | Viewer local de depuração (model-viewer) |
+| `GET /draco/{arquivo}` | Decodificador WASM do `KHR_draco_mesh_compression`, servido de `assets/draco/`. Existe para o app não depender de `gstatic.com` — sem internet o GLB comprimido não abriria. Ver [17](17-fidelidade-do-modelo.md#o-decodificador-precisa-ser-local) |
 
 ## Endpoints comerciais — `/sales/*`
 

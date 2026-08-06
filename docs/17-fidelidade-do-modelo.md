@@ -1,8 +1,10 @@
-# 17 — Fidelidade do modelo: material, foto de topo e verso
+# 17 — Fidelidade do modelo: material, foto de topo, verso e entrega
 
 Correção de três defeitos que ficaram visíveis quando o job `3901ff83` (Lattafa Fakhar, 02/08/2026) foi o primeiro a rodar o pipeline completo — com segmentação corpo/tampa e projeção de topo já ligadas. Renderizando os três estágios (`raw.glb` → `refined.glb` → `with_top.glb`) lado a lado, os três apareceram de uma vez.
 
 Nenhum é regressão do trabalho anterior. São defeitos antigos que só se tornaram observáveis quando o resto do pipeline passou a funcionar.
+
+O job seguinte (`15ef21e9`, Camille, 05/08/2026) validou as três correções e expôs um quarto defeito, este na **entrega**: o modelo ficava pronto e o app não o via. Ver [Defeito 4](#defeito-4--o-modelo-ficava-pronto-e-o-produto-não-sabia).
 
 ---
 
@@ -195,13 +197,39 @@ Consome `routing.assignments["back"]`, que já é a versão **mascarada** — o 
 
 ---
 
-## Configuração
+## Defeito 4 — o modelo ficava pronto e o produto não sabia
 
-| variável | default | efeito |
-|---|---|---|
-| `TOP_ELONGATION_MAX` | `1.35` | acima disso a foto de topo é descartada |
-| `BACK_PROJECTOR_TYPE` | `blender` | `disabled` desliga a projeção do verso |
-| `BACK_COSINE_THRESHOLD` | `0.45` | cosseno mínimo entre normal e `+Y` |
+### Sintoma
+
+No job `15ef21e9` (Camille) o usuário gerou o molde a partir de um produto do estoque. O job concluiu, o GLB de 73,5 MB foi para o disco — e a tela do produto continuou mostrando a ilustração vetorial genérica, sob um selo verde escrito "3D disponivel".
+
+### Diagnóstico
+
+```
+capture_jobs         status=completed, product_id=11, model_path preenchido  ✓
+modelos_3d_produto   0 linhas                                                ✗
+produtos.possui_modelo_3d (Camille)   false                                  ✗
+```
+
+O `/sales` faz `LEFT JOIN modelos_3d_produto` e devolve `caminho_arquivo_modelo` como `modelo_3d_path`. Sem linha, o campo vem nulo e o app cai no placeholder.
+
+O UPSERT em `modelos_3d_produto` morava **dentro do `ModelCache.store()`**. O `.env` tem `CACHE_ENABLED=false` (desligado de propósito para não poluir benchmark), o que faz `build_model_cache` devolver `DisabledModelCache`, cujo `store()` é no-op. Resultado: **desligar o cache desligava, junto e em silêncio, o salvamento do modelo no produto.**
+
+### Correção
+
+Persistir o modelo do produto não é trabalho do cache. O vínculo passou para `CaptureRepository.vincular_produto()`, chamado de `CaptureService._mark_completed()` — o único ponto por onde todo job concluído passa, com cache ligado, desligado ou em hit. Também liga `produtos.possui_modelo_3d`.
+
+Transação própria, antes do status: se o vínculo falhar (produto apagado no meio do job), o GLB continua válido e o job conclui mesmo assim, com o motivo na `message` em vez de sumir no log. Falhar dentro da mesma transação do status deixaria o job preso em `processing`.
+
+### Segundo defeito, latente, encontrado junto
+
+O `_upsert_modelo_produto` gravava `str(glb_path)` — um caminho de disco, tipo `C:\TCC\...\storage\cache\<uuid>.glb` — numa coluna que o app resolve como **URL** (`AppConstants.resolveBackendUrl`). Nunca tinha aparecido porque o cache nunca rodou. Teria quebrado no instante em que `CACHE_ENABLED` virasse `true`.
+
+Agora as duas escritas usam `model_public_path(job_id)` (`/files/models/<job>.glb`). Vale inclusive em cache hit, porque o pipeline copia o GLB cacheado para `storage/models/<job>.glb` antes de concluir. O `modelo_universal_id` fica de fora do UPDATE do service — essa coluna é do cache, que roda antes.
+
+### No app
+
+O selo "3D disponivel" era `const`, renderizado sempre. Passou a seguir `produto.modelo3DPath != null`, mostrando "Sem modelo 3D" em âmbar quando não há.
 
 ---
 
@@ -211,15 +239,91 @@ Consome `routing.assignments["back"]`, que já é a versão **mascarada** — o 
 |---|---|
 | [`test_top_photo_check.py`](../tests/modules/captures/test_top_photo_check.py) | elongação de silhuetas sintéticas, invariância a rotação, degradação segura |
 | [`test_view_texture_projector.py`](../tests/modules/captures/test_view_texture_projector.py) | argumentos por eixo, validação, tradução de falha |
-| [`test_pipeline.py`](../tests/modules/captures/test_pipeline.py) | material curto-circuita o CLIP, topo rejeitado, verso por `body_mode` |
+| [`test_glb_optimizer.py`](../tests/modules/captures/test_glb_optimizer.py) | quantização repassada, saída ausente, bypass copia sem comprimir |
+| [`test_preview_renderer.py`](../tests/modules/captures/test_preview_renderer.py) | resolução repassada, PNG ausente, bypass sinaliza por exceção |
+| [`test_pipeline.py`](../tests/modules/captures/test_pipeline.py) | material curto-circuita o CLIP, topo rejeitado, verso por `body_mode`, GLB entregue é o comprimido, falha em compressão/preview degrada |
+| [`test_service.py`](../tests/modules/captures/test_service.py) | vínculo produto→modelo independe do cache, preview persistido, `COALESCE` preserva o preview anterior |
 | [`test_router.py`](../tests/modules/captures/test_router.py) | `material` válido / inválido / ausente / `auto` |
 
-O comportamento geométrico não é testável sem Blender; foi verificado rodando o script sobre os GLBs reais do job `3901ff83` e inspecionando o `texCoord` do GLB resultante.
+O comportamento geométrico não é testável sem Blender; foi verificado rodando os scripts sobre os GLBs reais dos jobs `3901ff83` e `15ef21e9`, inspecionando o `texCoord` do GLB resultante e comparando renders pixel a pixel.
+
+O `vincular_produto` também foi rodado contra o Postgres real — os testes usam SQLite, que não pega diferenças de dialeto no `ON CONFLICT`.
+
+---
+
+## Peso do arquivo — compressão Draco
+
+O GLB chegou a **77 MB** no job `15ef21e9`, baixado pelo celular por Wi-Fi a cada abertura do produto. Medindo onde estavam os bytes:
+
+| | raw.glb | with_top.glb |
+|---|---|---|
+| vértices | 389.733 | 1.583.847 (4,06×) |
+| triângulos | 530.544 | 530.546 (iguais) |
+| POSITION | 4,7 MB | 19,0 MB |
+| NORMAL | ausente | 19,0 MB |
+| TEXCOORD_0 | 3,1 MB | 12,7 MB |
+| TEXCOORD_1 | ausente | 12,7 MB |
+| imagens | 4,7 MB | 7,4 MB |
+
+Malha = 90% do arquivo. O estágio 7.9 (`optimize_glb.py`) comprime com `KHR_draco_mesh_compression`:
+
+```
+original .................... 77,08 MB
+reexportado sem mudança ..... 77,08 MB   (a ida e volta pelo Blender é neutra)
+sem normais ................. 58,07 MB
+Draco ....................... 13,92 MB   ← 5,5×
+Draco + sem normais ......... 12,99 MB
+```
+
+**Perda: nenhuma medível.** Render do comprimido contra o do original nas 10 vistas do showcase: RMS **0,549** numa escala de 0–255 (0,2%), com 0,13–0,20% dos pixels diferindo mais de 2 níveis. `extents` e contagem de faces idênticos.
+
+### Duas otimizações medidas e descartadas
+
+Ambas estavam registradas aqui como "cabe fazer". A medição mostrou que não cabe:
+
+- **Remover as normais** economiza 0,9 MB depois do Draco. Mas a malha não é toda plana — 510.207 de 530.544 polígonos são flat, ~20 mil são suavizados. Sem o atributo, o visualizador calcula normais planas e o sombreamento desses 20 mil muda. Não vale 0,9 MB.
+
+- **Limitar o `TEXCOORD_1` às faces que o usam.** A camada é escrita para a malha inteira, inclusive o corpo (1,38M vértices), que não a amostra — 12,7 MB de dado morto **no arquivo sem compressão**. Depois do Draco custa **48 bytes**: `d_draco.glb` = 13.924.452 bytes com a camada, `f_draco_uv_limpo.glb` = 13.924.404 bytes sem ela. O codificador reduz um atributo praticamente constante a quase nada. Separar a malha por material para eliminar 48 bytes não paga o risco de mexer no grafo de cena.
+
+> A versão anterior deste documento estimava "~10 MB de dado morto" no `TEXCOORD_1` e recomendava limitá-lo. O número estava certo para o arquivo sem compressão; com Draco ligado, a recomendação deixa de fazer sentido.
+
+### O decodificador precisa ser local
+
+`KHR_draco_mesh_compression` exige que o visualizador carregue um decodificador WASM. O `model-viewer` empacotado no `model_viewer_plus` busca em `https://www.gstatic.com/draco/versioned/decoders/1.5.6/` — **na internet**. Numa rede local sem saída (laboratório, sala de apresentação) o GLB comprimido não abriria: falha pior que o arquivo grande que a compressão veio resolver.
+
+Por isso o backend versiona os três arquivos em `assets/draco/` e os serve em `/draco/`, e o app redireciona o decodificador via `relatedJs` (`AppConstants.dracoRelatedJs`). Custo: ~1 MB baixado uma vez, cacheado pelo WebView.
+
+---
+
+## Preview do card do produto
+
+`modelos_3d_produto.caminho_imagem_preview` existia desde o schema original e **nunca era preenchida**: o `/sales` a devolvia como `previewImg`, o app já a lia no modelo, e ela era sempre nula — o card caía num gradiente genérico da cor do frasco. Faltava só quem gerasse a imagem.
+
+O estágio 7.95 (`render_preview.py`) renderiza o GLB final em EEVEE e grava `storage/models/<job>.png`. Decisões:
+
+- **Fundo transparente**, para o PNG assentar sobre a cor do card sem moldura branca.
+- **Sem HDRI** — mundo em gradiente por nodes e quatro area lights. Evita depender de `eval/assets/*.hdr`, que é material de benchmark, e deixa o resultado determinístico.
+- **Ângulo de catálogo** (3/4, 12° de elevação), enquadrando ~80% da altura.
+- **Opcional por contrato**: falhar aqui não reprova um job cujo GLB ficou pronto; o card volta ao gradiente.
+
+No UPSERT, `caminho_imagem_preview` usa `COALESCE(EXCLUDED..., modelos_3d_produto....)`: se o primeiro job rendeu preview e o segundo falhou nesse estágio, o card mantém o render antigo em vez de regredir.
+
+---
+
+## Configuração
+
+| variável | default | efeito |
+|---|---|---|
+| `GLB_OPTIMIZER_TYPE` | `blender` | `disabled` entrega o GLB sem comprimir |
+| `GLB_POSITION_QUANTIZATION` | `14` | bits por eixo (~6 µm num frasco de 10 cm) |
+| `GLB_TEXCOORD_QUANTIZATION` | `12` | bits por eixo de UV |
+| `PREVIEW_RENDERER_TYPE` | `blender` | `disabled` deixa o card no visual genérico |
+| `PREVIEW_RESOLUTION` | `512` | lado do PNG quadrado |
 
 ---
 
 ## Fora de escopo (registrado, não corrigido)
 
-- **GLB de 64 MB.** A ida e volta pelo Blender leva 338k → 1,33M vértices com o mesmo número de triângulos, e cada projeção acrescenta um `TEXCOORD` para a malha inteira. Cabe limitar o UV extra às faces alvo e ligar Draco na exportação.
+- **A label pode ser um falso positivo.** No job `15ef21e9` o `HomographyLabelExtractor` devolveu um close borrado do fundo do frasco — vidro e líquido, sem texto — e o pipeline projetou o que recebeu (faixa bege na base do modelo). Num frasco transparente não há etiqueta de papel para achar, e o extrator não tem como desistir: `label_min_confidence` mede o casamento da homografia, não se aquilo é mesmo uma label.
 - **`HUNYUAN_TEXTURE_RESOLUTION` é configuração morta.** O log diz `texture-single nao aceita texture_resolution; omitindo` em toda execução.
 - **`ProcessingResult.message` conta imagens erradas.** Usa `len(masked)` (inclui o topo) enquanto o Hunyuan recebeu só as 4 cardeais.

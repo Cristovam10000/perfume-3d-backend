@@ -37,10 +37,20 @@ from .modules.captures.label_extractor import (
     HomographyLabelExtractor,
     LabelExtractor,
 )
+from .modules.captures.glb_optimizer import (
+    BlenderGlbOptimizer,
+    DisabledGlbOptimizer,
+    GlbOptimizer,
+)
 from .modules.captures.label_projector import (
     BlenderLabelProjector,
     DisabledLabelProjector,
     LabelProjector,
+)
+from .modules.captures.preview_renderer import (
+    BlenderPreviewRenderer,
+    DisabledPreviewRenderer,
+    PreviewRenderer,
 )
 from .modules.captures.view_texture_projector import (
     BlenderViewTextureProjector,
@@ -146,6 +156,18 @@ def build_back_projector(config: Settings = settings) -> ViewTextureProjector:
     return BlenderViewTextureProjector(blender_executable=config.blender_executable)
 
 
+def build_glb_optimizer(config: Settings = settings) -> GlbOptimizer:
+    if config.glb_optimizer_type == "disabled":
+        return DisabledGlbOptimizer()
+    return BlenderGlbOptimizer(blender_executable=config.blender_executable)
+
+
+def build_preview_renderer(config: Settings = settings) -> PreviewRenderer:
+    if config.preview_renderer_type == "disabled":
+        return DisabledPreviewRenderer()
+    return BlenderPreviewRenderer(blender_executable=config.blender_executable)
+
+
 def build_embedder(config: Settings = settings) -> ImageEmbedder:
     if not config.cache_enabled or config.cache_embedder_type == "disabled":
         return DisabledEmbedder()
@@ -225,6 +247,11 @@ def build_pipeline(
         transparency_classifier=build_transparency_classifier(config),
         top_projector=build_top_projector(config),
         back_projector=build_back_projector(config),
+        glb_optimizer=build_glb_optimizer(config),
+        preview_renderer=build_preview_renderer(config),
+        glb_position_quantization=config.glb_position_quantization,
+        glb_texcoord_quantization=config.glb_texcoord_quantization,
+        preview_resolution=config.preview_resolution,
         front_axis=config.label_front_axis,
         top_cosine_threshold=config.top_cosine_threshold,
         top_elongation_max=config.top_elongation_max,
@@ -317,6 +344,21 @@ def create_app(
         StaticFiles(directory=static_root),
         name="files",
     )
+
+    # Decodificador Draco servido pelo proprio backend. O model-viewer busca em
+    # `gstatic.com` por padrao; num Wi-Fi sem saida para a internet (laboratorio,
+    # sala de apresentacao) o GLB comprimido simplesmente nao abriria — falha
+    # pior que o arquivo grande que a compressao veio resolver. Apontando o app
+    # para ca, o modelo funciona em rede local isolada. Ver docs/17.
+    draco_dir = Path(__file__).resolve().parent.parent / "assets" / "draco"
+    if draco_dir.is_dir():
+        app.mount("/draco", StaticFiles(directory=draco_dir), name="draco")
+    else:
+        get_logger("app.main").warning(
+            "assets/draco ausente: o app dependera de internet para decodificar "
+            "GLB comprimido (%s)",
+            draco_dir,
+        )
 
     return app
 

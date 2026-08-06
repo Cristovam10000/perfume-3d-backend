@@ -128,7 +128,12 @@ class CaptureService:
             await self._mark_error(job_id, str(exc))
             raise
 
-        await self._mark_completed(job_id, result.message, prep.product_id)
+        await self._mark_completed(
+            job_id,
+            result.message,
+            prep.product_id,
+            tem_preview=result.preview_path is not None,
+        )
 
     async def _prepare_job(self, job_id: str) -> _JobPreparado | None:
         async with self._session_factory() as session:
@@ -159,8 +164,13 @@ class CaptureService:
         job_id: str,
         message: str,
         product_id: int | None = None,
+        *,
+        tem_preview: bool = False,
     ) -> None:
         model_public_path = self._storage.model_public_path(job_id)
+        preview_public_path = (
+            self._storage.preview_public_path(job_id) if tem_preview else None
+        )
 
         # O vinculo vai em transacao propria, antes do status. Se ele falhar
         # (produto apagado no meio do job, por exemplo) o GLB continua valido e
@@ -175,6 +185,7 @@ class CaptureService:
                         product_id=product_id,
                         job_id=job_id,
                         model_public_path=model_public_path,
+                        preview_public_path=preview_public_path,
                     )
                     await session.commit()
             except Exception as exc:

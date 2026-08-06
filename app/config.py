@@ -100,6 +100,22 @@ class Settings(BaseSettings):
     back_projector_type: Literal["disabled", "blender"] = "blender"
     back_cosine_threshold: float = 0.45
 
+    # Comprime o GLB final com Draco (KHR_draco_mesh_compression). Medido em
+    # 5,5x no job 15ef21e9: 77,1 MB -> 13,9 MB, sem perda visivel. Desligue
+    # apenas se algum cliente nao conseguir decodificar Draco — o app nao e o
+    # caso, ver `draco/` servido em /files e DRACO_DECODER_PATH no front.
+    glb_optimizer_type: Literal["disabled", "blender"] = "blender"
+    # Bits por eixo na quantizacao de posicao. 14 = 16.384 passos no maior eixo
+    # (~6 micrometros num frasco de 10 cm), bem abaixo do que a malha resolve.
+    glb_position_quantization: int = 14
+    glb_texcoord_quantization: int = 12
+
+    # Renderiza o PNG do card do produto a partir do GLB final. Preenche
+    # `modelos_3d_produto.caminho_imagem_preview`, que existia no schema e
+    # nunca era escrita — por isso o card caia num gradiente generico.
+    preview_renderer_type: Literal["disabled", "blender"] = "blender"
+    preview_resolution: int = 512
+
     # ---- Legado (compat) ----
     # COLOR_DETECTOR_TYPE servia ao TemplateProcessor (removido). Mantido
     # apenas para nao quebrar .env antigos; nao e lido por nenhum stage.

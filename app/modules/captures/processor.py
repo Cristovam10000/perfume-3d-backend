@@ -57,6 +57,10 @@ class ProcessingResult:
     # Diagnostico para o service repassar ao status do job.
     origem: str = "generated"  # "generated" | "cache" | "template-fallback" | "fake"
     similarity: float | None = None  # preenchido em cache hits
+    # PNG de vitrine do modelo, quando o estagio de preview rodou. `None`
+    # significa que o card do produto cai no visual generico — o preview e
+    # opcional por contrato e sua falha nao reprova o job.
+    preview_path: Path | None = None
 
 
 class Processor(ABC):
