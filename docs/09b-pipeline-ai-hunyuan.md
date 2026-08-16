@@ -60,6 +60,193 @@ Esses defaults vieram da sessão `historico/2026-05-09_integracao-sales-e-melhor
 O servidor pré-resolve o snapshot da forma solicitando somente `config.yaml` e
 `model.fp16.safetensors`; o `.ckpt` duplicado do repositório não é necessário.
 
+### Auditoria da configuração local em 2026-08-16
+
+A configuração local auditada solicita `384 / 75 / 7.5 / mc` para a forma e
+`1024` para a textura. **Ela não reduz a qualidade geométrica em relação aos
+parâmetros operacionalmente validados do projeto.** A única redução solicitada
+em relação ao default documentado acima é a textura de `2048` para `1024`, mas a
+verificação ao vivo mostrou que o pipeline instalado ignora esse parâmetro no
+caminho single-view efetivamente executado.
+
+| Variável local | Papel técnico | Impacto esperado na qualidade |
+|---|---|---|
+| `HUNYUAN_URL=http://localhost:7860` | Endereço HTTP do serviço | Nenhum; muda somente a conexão. |
+| `HUNYUAN_HOST_PORT=7860` | Porta exposta pelo Docker | Nenhum; muda somente a conexão. |
+| `HUNYUAN_CACHE_VOLUME_NAME=tcc_hunyuan_cache` | Volume que conserva pesos baixados | Nenhum; evita novos downloads. Não é o cache de similaridade CLIP. |
+| `HUNYUAN_TIMEOUT_SECONDS=1200` | Tempo máximo de espera do cliente | Não reduz qualidade. Se excedido, o job falha em vez de entregar uma malha de qualidade menor. |
+| `HUNYUAN_OCTREE_RESOLUTION=384` | Resolução da grade hierárquica usada para extrair a superfície | É o modo **High** da interface oficial do Hunyuan3D-2. Pode preservar mais detalhe que `256`, com custo de VRAM, tempo e triângulos. |
+| `HUNYUAN_NUM_INFERENCE_STEPS=75` | Número de iterações de remoção de ruído da geração da forma | Não é um valor reduzido; já é alto. Aumentar mais eleva o tempo e não implica ganho proporcional. |
+| `HUNYUAN_GUIDANCE_SCALE=7.5` | Intensidade com que a forma é condicionada pelas imagens | É o valor usado no caminho multi-view oficial; não há evidência local de degradação por esse valor. |
+| `HUNYUAN_MC_ALGO=mc` | Marching Cubes, algoritmo que converte o campo implícito em triângulos | Escolha estável. `dmc` é outra extração de superfície, não uma versão “completa” do modelo, e falhou neste contêiner por incompatibilidade da `diso`/CUDA. |
+| `HUNYUAN_TEXTURE_RESOLUTION=1024` | Lado solicitado, em pixels, do mapa de textura | O valor não é efetivo no pipeline instalado: sua assinatura aceita apenas `(mesh, image)`, e o servidor omite `texture_resolution`. Assim, trocar `1024` por `2048` hoje não controla a resolução produzida. Isso não altera a geometria nem as métricas Chamfer, Hausdorff e F-Score. |
+
+Referência externa: a interface oficial classifica a decodificação como
+`Low=196`, `Standard=256` e `High=384` em
+[`gradio_app.py`](https://github.com/Tencent-Hunyuan/Hunyuan3D-2/blob/main/gradio_app.py).
+
+#### Valor solicitado não é necessariamente o valor efetivo
+
+O cliente envia os cinco parâmetros no formulário HTTP, mas o servidor possui
+degradações automáticas para conseguir terminar em GPU de 8 GB:
+
+1. `_gerar_forma_com_fallback()` tenta o `octree_resolution` solicitado e, se
+   ocorrer falta de VRAM ou não houver malha, tenta `octree=256, mc=mc`;
+2. ao carregar os pesos, o servidor tenta o checkpoint multi-view e pode usar o
+   checkpoint single-view se `HUNYUAN_ALLOW_SINGLE_VIEW_FALLBACK=1`;
+3. `_texturizar_com_fallback()` tenta enviar uma lista de vistas, mas a classe de
+   textura instalada espera uma única imagem PIL; todas as execuções registradas
+   falharam nessa tentativa e continuaram apenas com a primeira foto;
+4. a assinatura instalada também não possui `texture_resolution`; o helper
+   `_filtrar_kwargs()` omite o argumento e deixa a biblioteca escolher sua
+   resolução interna.
+
+O segundo caso é o mais perigoso para fidelidade: em `shape_mode=single-view`,
+as fotos esquerda, traseira e direita deixam de condicionar a geometria. Isso
+pode prejudicar muito mais o formato do frasco que usar textura `1024`.
+
+O `mmgp profile 4` realiza *offload* (movimenta partes do modelo entre RAM e VRAM
+para caber na GPU). O offload, por si só, troca principalmente velocidade por
+menor consumo de VRAM. A versão atual do projeto, porém, instala o fork e o
+`mmgp` sem fixar commit ou versão no `Dockerfile`; portanto, uma reconstrução da
+imagem pode mudar comportamento. A documentação atual do `mmgp` também informa
+quantização de 8 bits por padrão em certos fluxos, mas não foi possível confirmar
+se a imagem Docker local usa essa política. Esse possível impacto exige um teste
+A/B e não deve ser apresentado como perda já comprovada.
+
+#### Comprovação no contêiner em execução
+
+Com o Docker em execução, verificar primeiro:
+
+```powershell
+Invoke-RestMethod http://localhost:7860/health
+# Esperado: status=ready, shape_mode=multi-view, fallback=False
+
+$container = docker ps --filter publish=7860 --format "{{.Names}}" |
+  Select-Object -First 1
+docker logs --tail=500 $container |
+  Select-String -Pattern "Tentando forma|octree=256|Textura multi-view|usando primeira vista|texture-single|mmgp profile"
+```
+
+O contêiner `tcc-hunyuan-1` respondeu:
+
+```text
+status=ready
+shape_mode=multi-view
+shape_repo=tencent/Hunyuan3D-2mv
+shape_subfolder=hunyuan3d-dit-v2-mv
+shape_variant=fp16
+fallback=False
+```
+
+Nos cinco jobs completos preservados nos logs, entre 23/07 e 06/08/2026:
+
+- a forma recebeu `front`, `left`, `back` e `right`;
+- executou `octree=384`, `steps=75`, `guidance=7.5`, `mc=mc`;
+- chegou a `Forma gerada com sucesso` sem tentativa posterior em `256`;
+- produziu entre 347.624 e 591.060 faces antes do pós-processamento;
+- a textura multi-view falhou em todos com
+  `'list' object has no attribute 'mode'`;
+- o fallback usou a primeira imagem e registrou
+  `texture-single nao aceita texture_resolution; omitindo`;
+- todos concluíram a textura, exportaram GLB e responderam HTTP 200.
+
+A inspeção Python confirmou que `Hunyuan3DPaintPipeline.__call__` possui a
+assinatura `(self, mesh, image)`: a dependência instalada não oferece, nesse
+contrato, lista de imagens nem parâmetro de resolução. O SHA-256 do `server.py`
+no contêiner é igual ao arquivo do workspace, descartando imagem desatualizada
+como causa. Portanto, o comportamento confirmado é **forma multi-view em 384 e
+textura single-view com resolução interna não controlada pelo `.env`**.
+
+#### Decisão recomendada para a RTX 5050 de 8 GB
+
+- Manter `384 / 75 / 7.5 / mc` para a forma.
+- Não esperar melhoria ao mudar apenas `1024 → 2048`: atualmente ambos os
+  valores são omitidos. Um A/B de resolução só fará sentido depois que o
+  pipeline de textura realmente aceitar e registrar o parâmetro efetivo.
+- Tratar a textura atual como single-view. Para melhorar laterais e verso, será
+  necessário integrar um pipeline que aceite múltiplas imagens ou ampliar as
+  projeções por vista no Blender; isso é uma proposta, ainda não implementada.
+- Avaliar a label projetada depois no Blender separadamente da pintura produzida
+  pelo Hunyuan, pois esse estágio pode recuperar texto frontal mesmo quando a
+  textura-base usa somente uma foto.
+- Não usar `512` como default: o benchmark histórico do projeto registrou
+  timeout superior a 30 minutos e fallback em vez de ganho utilizável.
+- Em sessões longas, reiniciar o serviço entre lotes reduz o risco de
+  fragmentação de VRAM. Se ainda houver OOM, `384 → 256` é uma degradação
+  controlada, que deve ser registrada por job.
+
+Analogia: a forma é uma escultura e a textura é a pintura aplicada sobre ela.
+O `octree_resolution` é a finura da grade usada para recortar a escultura; a
+`texture_resolution` é o tamanho da tela onde a pintura é desenhada. Assim,
+reduzir `2048 → 1024` poderia borrar a pintura sem mudar a silhueta, **se o
+controle fosse aceito**. No pipeline instalado, o pintor ignora esse tamanho e
+usa sua configuração interna. A limitação da analogia é que forma e aparência
+não são totalmente independentes na percepção humana: uma pintura ruim pode
+fazer um modelo geometricamente bom parecer menos fiel.
+
+#### Evidências e validação desta auditoria
+
+Foram inspecionados `.env`, `.env.example`, `app/config.py`, `app/main.py`,
+`app/modules/captures/processor.py`, `docker-compose.yml`,
+`docker/hunyuan/server.py`, `docker/hunyuan/Dockerfile` e o histórico do
+benchmark. O caminho confirmado é: configuração → construção do processor →
+formulário HTTP → parâmetros da forma e da textura no servidor.
+
+Teste executado:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+.\.venv\Scripts\python.exe -m pytest `
+  tests/test_hunyuan_server.py `
+  tests/modules/captures/test_processor.py `
+  -q -p no:cacheprovider --basetemp=$env:TEMP\pytest-tcc
+```
+
+O `--basetemp` não é decorativo: sem ele, esta máquina falha os testes de
+`test_processor.py` com `PermissionError: [WinError 5] Acesso negado` ao criar
+`%LOCALAPPDATA%\Temp\pytest-of-crish`. É defeito de ambiente, não do código — os
+mesmos testes passam quando o diretório temporário é gravável.
+
+Resultado: **21 testes aprovados**. Eles validam o contrato do cliente e a lógica
+do servidor com dependências simuladas, mas não medem qualidade perceptiva. A
+consulta ao `/health`, a inspeção da assinatura instalada e os logs reais
+complementaram os testes e comprovaram os caminhos efetivos descritos acima.
+Ainda falta uma comparação visual controlada para quantificar o impacto da
+textura single-view nos GLBs finais.
+
+#### Hipótese avaliada e descartada: *bake* das fotos reais
+
+A conclusão acima — "a textura usa uma foto só" — sugere naturalmente a correção
+"então entregue as quatro fotos ao texturizador". Essa hipótese foi levantada,
+implementada parcialmente e **descartada em 2026-08-16**. O registro fica aqui
+porque o caminho é plausível à primeira vista e o motivo da rejeição não é óbvio.
+
+A ideia era reproduzir o corpo de `Hunyuan3DPaintPipeline.__call__` substituindo
+as vistas *sintetizadas* pelas quatro fotos *reais* e chamando
+`bake_from_multiview` com os azimutes cardeais. A inspeção da biblioteca
+instalada mostra por que isso não funciona:
+
+1. `bake_from_multiview()` delega a `render.back_project(view, elev, azim)`, que
+   rasteriza a malha a partir de uma câmera fixa e transfere pixel → UV. A
+   imagem precisa ser um **render pixel-alinhado daquela malha naquela câmera**.
+2. Essa câmera é **ortográfica** — `MeshRender(camera_distance=1.45,
+   camera_type='orth')` com `ortho_scale=1.2`. Foto de celular é projeção
+   **perspectiva**, com distância, distância focal e elevação desconhecidas. O
+   pixel cai na geometria errada.
+3. O `__call__` original só funciona porque o `multiview_model` gera as vistas
+   *condicionadas* a `normal_maps` e `position_maps` renderizados da própria
+   malha nesses mesmos ângulos: o alinhamento existe por construção, não por
+   coincidência.
+
+Ou seja, o pipeline aceita apenas uma foto de referência **por desenho**, não por
+limitação de configuração. Aumentar o número de referências exige o checkpoint
+multi-referência oficial (~14 GB, fora do orçamento de VRAM da RTX 5050 deste
+projeto), não uma mudança de parâmetros. A alternativa por projeção geométrica no
+Blender já existe no pipeline (topo, verso e label) e é discutida em
+[17 - Fidelidade do modelo](17-fidelidade-do-modelo.md); ela não se aplica ao
+corpo de frascos translúcidos, onde colar foto opaca destruiria a transmissão.
+
 ## Como subir o contêiner
 
 Veja [docker/hunyuan/README.md](../docker/hunyuan/README.md) para instruções detalhadas. Resumo:

@@ -2,7 +2,7 @@
 
 Esta pasta descreve o backend FastAPI do repositório `perfume-3d-backend/`. O backend é o serviço HTTP que recebe lotes de fotos do app Flutter, gera um modelo 3D `.glb` por meio de um **pipeline integrado de IA (Hunyuan3D + pós-processamento)** e devolve a URL do modelo pronto. Modelos já gerados de perfumes equivalentes são reaproveitados via **cache por similaridade visual (CLIP)** para evitar regerar o mesmo frasco.
 
-**Conjunto de documentos:** `01-` a `16-` (todos versionados em `docs/`). Quando código e doc divergem, **o código manda** — atualize o Markdown após alterações reais. Os docs marcados como *planejado* descrevem o desenho aprovado para a integração; a implementação acontece em commits subsequentes.
+**Conjunto de documentos:** `01-` a `19-` (todos versionados em `docs/`). Quando código e doc divergem, **o código manda** — atualize o Markdown após alterações reais. Os docs marcados como *planejado* descrevem o desenho aprovado para a integração; a implementação acontece em commits subsequentes.
 
 > **Histórico:** versões anteriores deste docs descreveram (a) um pipeline de fotogrametria com Meshroom/AliceVision e (b) um pipeline baseado em **templates Blender** com classificação CLIP. **O caminho de templates foi removido do código em 2026-08** — junto com o fallback, o `MeshCleaner` e o `Classifier` — depois de uma auditoria que mediu o efeito real de cada estágio Blender. Ver [16 - Auditoria do papel do Blender](16-auditoria-blender.md). O sistema comercial (`/sales/*`) é independente do pipeline 3D — ver [13 - Endpoints HTTP](13-endpoints-http.md).
 
@@ -44,6 +44,8 @@ Esta pasta descreve o backend FastAPI do repositório `perfume-3d-backend/`. O b
 | 15 | [Glossário](15-glossario.md) | Termos do domínio: GLB, template, embedding, cache hit, etc. |
 | 16 | [Auditoria do papel do Blender](16-auditoria-blender.md) | Medições do efeito real de cada estágio Blender e as remoções que resultaram. |
 | 17 | [Fidelidade do modelo](17-fidelidade-do-modelo.md) | Material declarado pelo app, guarda da foto de topo e projeção do verso real. |
+| 18 | [Avaliação do LingBot-Map](18-avaliacao-lingbot-map.md) | Viabilidade, incompatibilidades, hardware e protocolo A/B para uma reconstrução alternativa. |
+| 19 | [Metodologia e reprodução do benchmark](19-metodologia-reproducao-benchmark.md) | Como o experimento foi executado, limitações encontradas e procedimento seguro para refazê-lo. |
 
 ## Convenções
 
