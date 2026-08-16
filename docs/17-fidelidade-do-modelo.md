@@ -324,6 +324,6 @@ No UPSERT, `caminho_imagem_preview` usa `COALESCE(EXCLUDED..., modelos_3d_produt
 
 ## Fora de escopo (registrado, não corrigido)
 
-- **A label pode ser um falso positivo.** No job `15ef21e9` o `HomographyLabelExtractor` devolveu um close borrado do fundo do frasco — vidro e líquido, sem texto — e o pipeline projetou o que recebeu (faixa bege na base do modelo). Num frasco transparente não há etiqueta de papel para achar, e o extrator não tem como desistir: `label_min_confidence` mede o casamento da homografia, não se aquilo é mesmo uma label.
+- ~~**A label pode ser um falso positivo.**~~ **Corrigido em 2026-08-06** — ver [09e](09e-aplicacao-label.md#os-três-defeitos-corrigidos-em-2026-08-06). Eram três defeitos empilhados: o recorte errado (score puramente geométrico, resolvido com portões de conteúdo e de posição), a foto errada (varria as 5 vistas; agora só a frontal) e o plano flutuante de 4 vértices (agora projeção nas faces reais). Somou-se a marcação manual `labelBox`, para os frascos com texto gravado no vidro que nenhum detector alcança.
 - **`HUNYUAN_TEXTURE_RESOLUTION` é configuração morta.** O log diz `texture-single nao aceita texture_resolution; omitindo` em toda execução.
 - **`ProcessingResult.message` conta imagens erradas.** Usa `len(masked)` (inclui o topo) enquanto o Hunyuan recebeu só as 4 cardeais.

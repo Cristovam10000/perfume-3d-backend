@@ -76,7 +76,6 @@ app/
     │   ├── image_preprocessor.py # ABC + DisabledImagePreprocessor + StandardImagePreprocessor
     │   ├── mesh_refiner.py       # ABC + DisabledMeshRefiner + BlenderMeshRefiner
     │   ├── label_upscaler.py     # ABC + DisabledLabelUpscaler + LanczosLabelUpscaler
-    │   ├── label_projector.py    # ABC + DisabledLabelProjector + BlenderLabelProjector
     │   ├── view_texture_projector.py # ABC + Disabled/Blender (stages 7.4 costas e 7.5 topo)
     │   ├── top_photo_check.py    # guarda: a foto de `top` e mesmo uma vista de cima?
     │   ├── glb_optimizer.py      # ABC + Disabled/Blender — compressao Draco (stage 7.9)
@@ -89,8 +88,7 @@ app/
     │       ├── __init__.py
     │       ├── refine_ai_mesh.py        # shader de vidro PBR
     │       ├── segment_bottle.py        # separa corpo/tampa por pico de densidade de faces
-    │       ├── project_label.py         # decal frontal de label
-    │       ├── project_view_texture.py  # projecao ortografica por eixo (stages 7.4 e 7.5)
+    │       ├── project_view_texture.py  # projecao ortografica por eixo (label, verso, topo)
     │       ├── optimize_glb.py          # compressao Draco do GLB final
     │       ├── render_preview.py        # render do card do produto (EEVEE, fundo transparente)
     │       └── top_alignment.py         # rotação da foto do topo por silhueta (numpy puro)
@@ -109,7 +107,7 @@ app/
 ### Pontos-chave da árvore
 
 - **`main.py` é o único lugar onde tudo se encontra**. As factories `build_pipeline()` (que escolhe entre `FakeProcessor` e `IntegratedPipeline` conforme `PIPELINE_MODE`) e os helpers de cada stage (`build_image_preprocessor`, `build_background_remover`, `build_mesh_refiner`, `build_embedder`, `build_model_cache`, etc.) ficam aqui — sem container DI, sem mágica.
-- **`modules/captures/` é o módulo principal de domínio 3D**. Reúne o pipeline integrado (`pipeline.py`), o cliente do Hunyuan, os stages auxiliares (preprocess, rembg, refiner, label extractor/upscaler/projector), o cache CLIP e a tabela `modelos_3d_universais` (cache global, cross-tenant — separada da `modelos_3d_produto` que já existe e amarra produto comercial a um molde). O caminho de templates (`TemplateProcessor` + `templates_catalog`) foi **removido** em 2026-08 — ver [16 - Auditoria](16-auditoria-blender.md).
+- **`modules/captures/` é o módulo principal de domínio 3D**. Reúne o pipeline integrado (`pipeline.py`), o cliente do Hunyuan, os stages auxiliares (preprocess, rembg, refiner, label extractor/upscaler, projetor de vista), o cache CLIP e a tabela `modelos_3d_universais` (cache global, cross-tenant — separada da `modelos_3d_produto` que já existe e amarra produto comercial a um molde). O caminho de templates (`TemplateProcessor` + `templates_catalog`) foi **removido** em 2026-08 — ver [16 - Auditoria](16-auditoria-blender.md).
 - **`modules/sales/` é o segundo módulo de domínio** (comercial); `health/` é só `/health`.
 - **Tudo abaixo de `modules/` segue o padrão Feature-First**: cada módulo carrega seu próprio router, service/repository, schemas. `sales/` é mais enxuto (sem `service.py` separado — a lógica fica no `repository.py` por ser CRUD direto sobre Postgres).
 - **`blender_scripts/` é especial**: rodam **dentro** do Blender via `--python`. Não importam nada do `app/` (não conseguiriam — Blender tem o próprio Python isolado). A convenção Blender↔wrapper usa uma única linha estruturada `STATS:...` em stdout para passar contagens (ilhas removidas, faces, índice da face frontal).
@@ -150,7 +148,6 @@ tests/
         ├── test_segment_bottle.py     # 10 — heurística de segmentação (bpy stubado)
         ├── test_mesh_refiner.py       # 13 — BlenderMeshRefiner mocked + integração Blender
         ├── test_label_upscaler.py     # 8  — LanczosLabelUpscaler
-        ├── test_label_projector.py    # 9  — BlenderLabelProjector mocked + integração Blender
         ├── test_embeddings.py         # 5  — ImageEmbedder / ClipImageEmbedder (cache)
         ├── test_cache.py              # 8  — ClipSimilarityCache (lookup/store, threshold)
         ├── test_pipeline.py           # 11 — IntegratedPipeline (composição, degradação, transparência)
@@ -260,7 +257,7 @@ docs/
 ├── 09b-pipeline-ai-hunyuan.md          # cliente HTTP do contêiner Hunyuan
 ├── 09c-refinamento-mesh.md             # shader de vidro PBR
 ├── 09d-preprocessamento-e-cleanup.md   # ImagePreprocessor (cleanup removido)
-├── 09e-aplicacao-label.md              # LabelUpscaler + LabelProjector
+├── 09e-aplicacao-label.md              # deteccao, recorte, upscale e projecao da label
 ├── 09f-pipeline-integrado.md           # IntegratedPipeline (composição)
 ├── 09g-cache-similaridade-clip.md      # ModelCache + modelos_3d_universais (cross-tenant)
 ├── 10-classificador-e-cor.md           # ImageEmbedder + ColorDetector (legado)
