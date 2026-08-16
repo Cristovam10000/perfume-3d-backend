@@ -44,12 +44,32 @@ class DisabledLabelUpscaler(LabelUpscaler):
 
 
 class LanczosLabelUpscaler(LabelUpscaler):
-    """Upscale com Pillow Image.resize usando Resampling.LANCZOS."""
+    """Upscale com Pillow Image.resize usando Resampling.LANCZOS.
 
-    def __init__(self, target_size: int = 2048):
+    O `unsharp` compensa a suavização que qualquer reamostragem introduz. Não
+    inventa detalhe — realça o que sobreviveu ao redimensionamento, que é o que
+    decide se o texto da label fica legível no modelo. Vale tanto na ampliação
+    (Lanczos borra) quanto na redução (o recorte agora sai da foto original, em
+    resolução maior que o alvo).
+    """
+
+    def __init__(
+        self,
+        target_size: int = 2048,
+        unsharp: bool = True,
+        unsharp_raio: float = 1.2,
+        unsharp_forca: float = 0.6,
+    ):
         if target_size <= 0:
             raise ValueError("target_size deve ser positivo")
+        if unsharp_raio <= 0:
+            raise ValueError("unsharp_raio deve ser positivo")
+        if not 0.0 <= unsharp_forca <= 3.0:
+            raise ValueError("unsharp_forca deve estar em [0, 3]")
         self.target_size = target_size
+        self.unsharp = unsharp
+        self.unsharp_raio = unsharp_raio
+        self.unsharp_forca = unsharp_forca
 
     async def upscale(
         self,
@@ -88,6 +108,30 @@ class LanczosLabelUpscaler(LabelUpscaler):
                 filtro = Image.LANCZOS
 
             ampliada = imagem.resize((nova_largura, nova_altura), filtro)
+            if self.unsharp:
+                ampliada = self._aplicar_unsharp(ampliada)
             ampliada.save(output, format="PNG")
 
         return output
+
+    def _aplicar_unsharp(self, imagem):
+        """Realce de borda preservando o canal alpha.
+
+        `UnsharpMask` do Pillow trabalha por banda; aplicar direto num RGBA
+        realçaria também o alpha e serrilharia a borda do recorte, então o
+        alpha é separado, preservado e recolado.
+        """
+        from PIL import ImageFilter
+
+        filtro = ImageFilter.UnsharpMask(
+            radius=self.unsharp_raio,
+            percent=int(round(self.unsharp_forca * 100)),
+            threshold=3,
+        )
+        if imagem.mode != "RGBA":
+            return imagem.filter(filtro)
+
+        alpha = imagem.getchannel("A")
+        realcada = imagem.convert("RGB").filter(filtro).convert("RGBA")
+        realcada.putalpha(alpha)
+        return realcada

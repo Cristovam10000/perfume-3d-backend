@@ -42,11 +42,6 @@ from .modules.captures.glb_optimizer import (
     DisabledGlbOptimizer,
     GlbOptimizer,
 )
-from .modules.captures.label_projector import (
-    BlenderLabelProjector,
-    DisabledLabelProjector,
-    LabelProjector,
-)
 from .modules.captures.preview_renderer import (
     BlenderPreviewRenderer,
     DisabledPreviewRenderer,
@@ -138,10 +133,18 @@ def build_label_upscaler(config: Settings = settings) -> LabelUpscaler:
     return LanczosLabelUpscaler(target_size=config.label_target_size)
 
 
-def build_label_projector(config: Settings = settings) -> LabelProjector:
+def build_label_projector(config: Settings = settings) -> ViewTextureProjector:
+    """A label passou a usar o mesmo projetor de topo e costas, no eixo `y_neg`.
+
+    Antes era um plano de 4 vertices colado na frente do GLB, que nao
+    acompanhava a curvatura do frasco e aparecia como adesivo. O projetor de
+    vista aplica a imagem nas faces reais; a diferenca para os outros eixos e
+    que a label vai com `window`, porque ocupa um retangulo da frente e nao a
+    frente inteira.
+    """
     if config.label_projector_type == "disabled":
-        return DisabledLabelProjector()
-    return BlenderLabelProjector(blender_executable=config.blender_executable)
+        return DisabledViewTextureProjector()
+    return BlenderViewTextureProjector(blender_executable=config.blender_executable)
 
 
 def build_top_projector(config: Settings = settings) -> ViewTextureProjector:
@@ -242,6 +245,7 @@ def build_pipeline(
         label_extractor=build_label_extractor(config),
         label_upscaler=build_label_upscaler(config),
         label_projector=build_label_projector(config),
+        label_cosine_threshold=config.label_cosine_threshold,
         storage=storage,
         view_router=build_view_router(config),
         transparency_classifier=build_transparency_classifier(config),
@@ -252,7 +256,6 @@ def build_pipeline(
         glb_position_quantization=config.glb_position_quantization,
         glb_texcoord_quantization=config.glb_texcoord_quantization,
         preview_resolution=config.preview_resolution,
-        front_axis=config.label_front_axis,
         top_cosine_threshold=config.top_cosine_threshold,
         top_elongation_max=config.top_elongation_max,
         back_cosine_threshold=config.back_cosine_threshold,

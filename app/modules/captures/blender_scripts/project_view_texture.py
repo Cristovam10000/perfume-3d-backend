@@ -3,7 +3,7 @@
 Em vez de criar um plano flutuante (decal), modifica o material daquelas faces
 para exibir a imagem via projecao ortografica ao longo de um eixo.
 
-Dois eixos hoje:
+Tres eixos hoje:
 
 - `z_pos` (**topo**) — o Hunyuan nao reconstroi a tampa, porque nenhuma das 4
   vistas cardeais a enxerga; ela sai como um disco liso.
@@ -12,18 +12,27 @@ Dois eixos hoje:
   unica imagem de referencia e **sintetiza** as demais vistas a partir dela, de
   modo que o verso do frasco sai inventado. Nos temos a foto real do verso; a
   projecao troca o palpite pelo pixel medido.
+- `y_neg` (**label**) — sempre com `--window`. Substitui o plano flutuante de
+  4 vertices que era colado na frente do GLB e nao acompanhava a curvatura.
 
 Fluxo:
 1. Importa o GLB.
 2. Identifica o mesh de maior Z (o frasco; o Hunyuan entrega bloco unico).
 3. Coleta as faces cuja normal aponta para o eixo (dot(n, eixo) >= threshold),
    restritas a faixa de altura correspondente (tampa acima do ombro, corpo
-   abaixo).
+   abaixo) ou a janela retangular de `--window`.
 4. Calcula UV por projecao ortografica: descarta a coordenada do eixo de
    projecao e normaliza as duas restantes para 0..1.
 5. Cria um UV map proprio e um material com a imagem, atribuidos so aquelas
    faces.
 6. Exporta GLB com a textura embutida.
+
+Sobre `--window u0,v0,u1,v1`: normalizado na bounding box da projecao do
+**frasco inteiro** naquele eixo, com `v` crescendo para cima (casa com Z). Sem
+janela, o alvo e o conjunto inteiro de faces elegiveis e nada muda — topo e
+costas seguem identicos. Com janela, tanto a selecao de faces quanto a
+normalizacao do UV usam a janela, entao a imagem cobre exatamente o retangulo
+pedido em vez de esticar sobre a frente toda.
 
 Roda dentro do Blender headless:
 
@@ -32,7 +41,7 @@ Roda dentro do Blender headless:
         --photo  path/to/05_top_segmented.png \\
         --output path/to/with_top.glb \\
         --axis   z_pos \\
-        [--cosine-threshold 0.45]
+        [--cosine-threshold 0.45] [--window 0.2,0.4,0.8,0.6]
 """
 
 from __future__ import annotations
@@ -92,6 +101,22 @@ EIXOS = {
         "uv_layer": "BackProjectionUV",
         "material": "BackTextureMaterial",
     },
+    # Frente. Existe para a label: em vez de um plano flutuante de 4 vertices
+    # na frente do frasco (que parecia adesivo colado), a label vira textura
+    # nas faces reais, acompanhando a curvatura. Sempre usado com `--window`,
+    # porque a label ocupa um pedaco da frente, nao a frente inteira.
+    #
+    # `inverter_u=False`: olhando de -Y para +Y, o +X do mundo aparece a
+    # DIREITA do observador — o oposto de `y_pos`, e por isso sem espelho.
+    "y_neg": {
+        "vetor": Vector((0.0, -1.0, 0.0)),
+        "uv": (0, 2),          # (x, z)
+        "inverter_u": False,
+        "faixa": "tudo",
+        "rotulo": "label",
+        "uv_layer": "LabelProjectionUV",
+        "material": "LabelTextureMaterial",
+    },
 }
 
 # Resolucao das mascaras usadas na estimativa de rotacao. Precisa ser suficiente
@@ -117,12 +142,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--axis", choices=sorted(EIXOS), default="z_pos")
     parser.add_argument("--cosine-threshold", type=float, default=0.45)
     parser.add_argument(
+        "--window",
+        type=janela_normalizada,
+        default=None,
+        help=(
+            "u0,v0,u1,v1 normalizados na bbox da projecao do frasco inteiro "
+            "(v cresce para cima). Restringe as faces alvo e a normalizacao "
+            "do UV a esse retangulo. Usado pela label."
+        ),
+    )
+    parser.add_argument(
         "--sem-alinhar-rotacao",
         dest="alinhar_rotacao",
         action="store_false",
         help="desliga a estimativa de rotacao por silhueta (util para comparar)",
     )
     return parser.parse_args(get_argv_after_double_dash())
+
+
+def janela_normalizada(texto: str) -> tuple[float, float, float, float]:
+    """Converte "u0,v0,u1,v1" validando faixa e ordem.
+
+    Falhar aqui e melhor que projetar em lugar nenhum: uma janela degenerada
+    produziria um material atribuido a zero faces, e o GLB sairia sem erro
+    aparente e sem label.
+    """
+    partes = [p.strip() for p in texto.split(",")]
+    if len(partes) != 4:
+        raise argparse.ArgumentTypeError(
+            f"--window espera 4 numeros separados por virgula, recebi {texto!r}"
+        )
+    try:
+        u0, v0, u1, v1 = (float(p) for p in partes)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"--window nao numerico: {texto!r}") from exc
+    if not all(0.0 <= v <= 1.0 for v in (u0, v0, u1, v1)):
+        raise argparse.ArgumentTypeError(f"--window fora de [0,1]: {texto!r}")
+    if u1 - u0 < 0.01 or v1 - v0 < 0.01:
+        raise argparse.ArgumentTypeError(
+            f"--window degenerada (largura/altura < 1%): {texto!r}"
+        )
+    return (u0, v0, u1, v1)
 
 
 # ------------------------------------------------------------------ geometria
@@ -145,14 +205,34 @@ def identificar_tampa(meshes: list[bpy.types.Object]) -> bpy.types.Object | None
     return max(meshes, key=max_z_bbox)
 
 
+def bbox_projetada(obj: bpy.types.Object, eixo: dict) -> tuple[float, float, float, float]:
+    """(min_u, min_v, max_u, max_v) do objeto inteiro no plano da projecao.
+
+    E a referencia da janela: `--window` vem normalizado nesta caixa, nao no
+    conjunto de faces alvo. A distincao importa — normalizar nas faces alvo
+    seria circular, porque sao elas que a janela seleciona.
+    """
+    iu, iv = eixo["uv"]
+    sinal_u = -1.0 if eixo["inverter_u"] else 1.0
+    matriz = obj.matrix_world
+    us, vs = [], []
+    for vert in obj.data.vertices:
+        p = matriz @ vert.co
+        us.append(p[iu] * sinal_u)
+        vs.append(p[iv])
+    return (min(us), min(vs), max(us), max(vs))
+
+
 def coletar_faces_por_normal(
     obj: bpy.types.Object,
     eixo: Vector,
     threshold: float,
     z_corte: float | None = None,
     faixa: str = "acima",
+    janela_mundo: tuple[float, float, float, float] | None = None,
+    plano=None,
 ) -> list[bpy.types.MeshPolygon]:
-    """Faces cuja normal aponta para `eixo`, restritas a uma faixa de altura.
+    """Faces cuja normal aponta para `eixo`, restritas a uma faixa ou janela.
 
     `z_corte` vem da segmentacao (o ombro) e serve para casar a extensao das
     faces com a extensao da foto:
@@ -162,6 +242,11 @@ def coletar_faces_por_normal(
       projecao viraria a do frasco inteiro e a foto sairia esticada.
     - `faixa="tudo"` (costas): a foto do verso mostra o frasco inteiro, entao o
       alvo tambem tem que ser o frasco inteiro.
+
+    `janela_mundo` (min_u, min_v, max_u, max_v) em coordenadas de mundo do
+    plano da projecao substitui a faixa: usada pela label, que ocupa um
+    retangulo da frente e nao a frente inteira. `plano` e a funcao que reduz um
+    ponto de mundo ao par (u, v) daquele eixo.
     """
     matriz = obj.matrix_world
 
@@ -171,8 +256,15 @@ def coletar_faces_por_normal(
         z = (matriz @ p.center).z
         return z > z_corte if faixa == "acima" else z <= z_corte
 
+    def na_janela(p: bpy.types.MeshPolygon) -> bool:
+        if janela_mundo is None or plano is None:
+            return True
+        u, v = plano(matriz @ p.center)
+        min_u, min_v, max_u, max_v = janela_mundo
+        return min_u <= u <= max_u and min_v <= v <= max_v
+
     def elegivel(p: bpy.types.MeshPolygon, t: float) -> bool:
-        return normal_mundo(obj, p).dot(eixo) >= t and na_faixa(p)
+        return normal_mundo(obj, p).dot(eixo) >= t and na_faixa(p) and na_janela(p)
 
     faces = [p for p in obj.data.polygons if elegivel(p, threshold)]
     # Fallback progressivo se threshold alto demais
@@ -348,6 +440,7 @@ def aplicar_uv_projecao(
     img_path: Path,
     eixo: dict,
     angulo_graus: float = 0.0,
+    janela_mundo: tuple[float, float, float, float] | None = None,
 ) -> None:
     """
     Projeta UV ortograficamente nas faces alvo, descartando a coordenada do
@@ -357,6 +450,13 @@ def aplicar_uv_projecao(
     a bounding box e os UVs, corrigindo a diferença de orientação entre a foto
     e a malha (ver `top_alignment.py`). So o topo usa isso; nas costas a
     orientacao ja esta fixada pelo proprio eixo.
+
+    `janela_mundo` substitui a bbox das faces na normalizacao do UV. Sem ela, a
+    imagem se estica sobre a extensao real das faces coletadas — correto para
+    topo e costas, onde a foto cobre exatamente aquele conjunto. Com janela, a
+    imagem cobre o retangulo pedido: a label precisa disso porque as faces
+    dentro da janela nunca preenchem a janela exatamente (a malha e discreta) e
+    normalizar por elas esticaria a label alguns por cento a cada job.
     """
     import math
 
@@ -392,12 +492,23 @@ def aplicar_uv_projecao(
     us = [p[0] for p in girados]
     vs = [p[1] for p in girados]
 
-    min_u, max_u = min(us), max(us)
-    min_v, max_v = min(vs), max(vs)
+    if janela_mundo is None:
+        min_u, max_u = min(us), max(us)
+        min_v, max_v = min(vs), max(vs)
+        origem = "faces alvo"
+    else:
+        # A janela ja vem em coordenadas de mundo do plano; a rotacao e sempre
+        # 0 quando ha janela (so o topo gira, e o topo nao usa janela), entao
+        # `girar` e identidade e nao ha o que converter.
+        min_u, min_v, max_u, max_v = janela_mundo
+        min_u, min_v = min_u - centro_a, min_v - centro_b
+        max_u, max_v = max_u - centro_a, max_v - centro_b
+        origem = "janela"
     span_u = max(max_u - min_u, 1e-6)
     span_v = max(max_v - min_v, 1e-6)
     log(
-        f"bbox da projecao {eixo['rotulo']} (rotacao {angulo_graus:.1f}deg): "
+        f"bbox da projecao {eixo['rotulo']} ({origem}, "
+        f"rotacao {angulo_graus:.1f}deg): "
         f"u=[{min_u:.3f},{max_u:.3f}] v=[{min_v:.3f},{max_v:.3f}]"
     )
 
@@ -481,12 +592,39 @@ def main() -> int:
             f"limitando projecao a z {comparador} {z_corte:.4f}"
         )
 
+    # Janela normalizada -> coordenadas de mundo do plano da projecao.
+    janela_mundo = None
+    if args.window is not None:
+        base_u0, base_v0, base_u1, base_v1 = bbox_projetada(frasco, eixo)
+        largura, altura = base_u1 - base_u0, base_v1 - base_v0
+        u0, v0, u1, v1 = args.window
+        janela_mundo = (
+            base_u0 + u0 * largura,
+            base_v0 + v0 * altura,
+            base_u0 + u1 * largura,
+            base_v0 + v1 * altura,
+        )
+        log(
+            f"janela {args.window} -> mundo "
+            f"u=[{janela_mundo[0]:.3f},{janela_mundo[2]:.3f}] "
+            f"v=[{janela_mundo[1]:.3f},{janela_mundo[3]:.3f}] "
+            f"(bbox do frasco u=[{base_u0:.3f},{base_u1:.3f}] "
+            f"v=[{base_v0:.3f},{base_v1:.3f}])"
+        )
+
+    def plano_mundo(p) -> tuple[float, float]:
+        iu, iv = eixo["uv"]
+        sinal = -1.0 if eixo["inverter_u"] else 1.0
+        return (p[iu] * sinal, p[iv])
+
     faces_alvo = coletar_faces_por_normal(
         frasco,
         eixo["vetor"],
         args.cosine_threshold,
         z_corte=z_corte,
         faixa=eixo["faixa"],
+        janela_mundo=janela_mundo,
+        plano=plano_mundo,
     )
     log(f"faces alvo ({eixo['rotulo']}): {len(faces_alvo)}")
     if not faces_alvo:
@@ -525,7 +663,10 @@ def main() -> int:
                 f"(IoU={estimativa.iou:.3f}, confianca={estimativa.confianca:.3f})"
             )
 
-    aplicar_uv_projecao(frasco, faces_alvo, imagem, eixo, angulo_graus=angulo)
+    aplicar_uv_projecao(
+        frasco, faces_alvo, imagem, eixo,
+        angulo_graus=angulo, janela_mundo=janela_mundo,
+    )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     log(f"exportando: {args.output}")

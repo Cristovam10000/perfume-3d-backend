@@ -36,6 +36,12 @@ _log = get_logger("captures.view_router")
 
 CARDINAL_VIEWS: tuple[str, ...] = ("front", "left", "back", "right")
 
+# `front` e cardeal, e tambem e a unica foto consultada pelo estagio de label:
+# a label vive na frente e a projecao usa o eixo -Y. Varrer as outras vistas em
+# busca de label deu falso positivo — no job do Camille a base lisa do vidro
+# vista de lado venceu, e virou uma mancha bege colada no frasco.
+FRONT_VIEW: str = "front"
+
 # `back` e cardeal (vai para o Hunyuan como as outras), mas tambem e consumida
 # pelo pos-processamento: o gerador produz a geometria com as 4 vistas e a
 # textura com UMA, entao o verso sai inventado e a foto real e reprojetada.

@@ -38,9 +38,13 @@ _DEFAULT_BLENDER_EXECUTABLE = Path(
 # FRONT_AXES em project_label.py, logo o verso do frasco e +Y.
 AXIS_TOP = "z_pos"
 AXIS_BACK = "y_pos"
-VALID_AXES: frozenset[str] = frozenset({AXIS_TOP, AXIS_BACK})
+# Frente. Usado pela label, sempre com `window` — a label ocupa um retangulo da
+# frente, nao a frente inteira. Substituiu o plano flutuante de 4 vertices que
+# nao acompanhava a curvatura do frasco.
+AXIS_FRONT = "y_neg"
+VALID_AXES: frozenset[str] = frozenset({AXIS_TOP, AXIS_BACK, AXIS_FRONT})
 
-_ROTULOS = {AXIS_TOP: "topo", AXIS_BACK: "costas"}
+_ROTULOS = {AXIS_TOP: "topo", AXIS_BACK: "costas", AXIS_FRONT: "label"}
 
 
 @dataclass(frozen=True)
@@ -50,6 +54,11 @@ class ViewTextureProjectionInput:
     output_glb: Path
     axis: str = AXIS_TOP
     cosine_threshold: float = 0.45
+    # (u0, v0, u1, v1) normalizados na bbox da projecao do frasco inteiro, com
+    # `v` crescendo para cima. Restringe as faces alvo e a normalizacao do UV a
+    # esse retangulo. Topo e costas cobrem o alvo inteiro e vao sem janela; a
+    # label precisa dela para cair no lugar e no tamanho certos.
+    window: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +125,8 @@ class BlenderViewTextureProjector(ViewTextureProjector):
             "--axis",   input.axis,
             "--cosine-threshold", str(input.cosine_threshold),
         ]
+        if input.window is not None:
+            args += ["--window", ",".join(f"{v:.6f}" for v in input.window)]
 
         returncode, _stdout, stderr = await self._run_blender(args)
         rotulo = _ROTULOS.get(input.axis, input.axis)

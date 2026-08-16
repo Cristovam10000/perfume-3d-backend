@@ -77,9 +77,12 @@ class Settings(BaseSettings):
     label_extractor_type: Literal["disabled", "homography"] = "homography"
     label_upscaler_type: Literal["disabled", "lanczos"] = "lanczos"
     label_projector_type: Literal["disabled", "blender"] = "blender"
-    label_front_axis: str = "front_y_neg"
     label_min_confidence: float = 0.3
     label_target_size: int = 2048
+    # Cosseno minimo entre a normal da face e o eixo -Y para a face receber a
+    # label. Mesmo valor do topo/costas: 0.45 aceita a curvatura da barriga do
+    # frasco sem invadir as laterais.
+    label_cosine_threshold: float = 0.45
 
     # Projeta a foto do topo na tampa. O Hunyuan nao reconstroi o topo (as 4
     # vistas cardeais nao o enxergam) e entrega um disco liso sem textura.
@@ -120,6 +123,10 @@ class Settings(BaseSettings):
     # COLOR_DETECTOR_TYPE servia ao TemplateProcessor (removido). Mantido
     # apenas para nao quebrar .env antigos; nao e lido por nenhum stage.
     color_detector_type: Literal["disabled", "average"] = "disabled"
+    # LABEL_FRONT_AXIS parametrizava o plano flutuante da label, que foi
+    # substituido pela projecao no eixo `y_neg` do project_view_texture.py. A
+    # convencao "frente = -Y" agora vive no dicionario EIXOS daquele script.
+    label_front_axis: str = "front_y_neg"
     # CLIP_MODEL e mantido como sinonimo de CACHE_EMBEDDING_MODEL (lido se presente).
     clip_model: str = "openai/clip-vit-base-patch32"
     # CLASSIFIER_TYPE e PROCESSOR_TYPE vinham do MVP de templates. O
