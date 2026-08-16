@@ -30,6 +30,7 @@ A composicao concreta dos stages e responsabilidade do main.build_pipeline().
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from pathlib import Path
 
@@ -45,11 +46,6 @@ from .glb_optimizer import (
 )
 from .image_preprocessor import ImagePreprocessor
 from .label_extractor import LabelExtractor
-from .label_projector import (
-    BlenderLabelProjector,
-    LabelProjectionInput,
-    LabelProjector,
-)
 from .label_upscaler import LabelUpscaler
 from .mesh_refiner import MeshRefiner, RefinementInput
 from .preview_renderer import (
@@ -67,6 +63,7 @@ from .processor import (
 from .top_photo_check import checar_foto_de_topo
 from .view_texture_projector import (
     AXIS_BACK,
+    AXIS_FRONT,
     AXIS_TOP,
     DisabledViewTextureProjector,
     ViewTextureProjectionInput,
@@ -81,9 +78,11 @@ from .transparency_classifier import (
 from .view_router import (
     BACK_VIEW,
     CARDINAL_VIEWS,
+    FRONT_VIEW,
     TOP_VIEW,
     PositionalViewRouter,
     ViewRouter,
+    ViewRoutingResult,
 )
 
 _log = get_logger("captures.pipeline")
@@ -106,7 +105,7 @@ class IntegratedPipeline(Processor):
         mesh_refiner: MeshRefiner,
         label_extractor: LabelExtractor,
         label_upscaler: LabelUpscaler,
-        label_projector: LabelProjector,
+        label_projector: ViewTextureProjector,
         storage: LocalStorage,
         *,
         view_router: ViewRouter | None = None,
@@ -115,7 +114,7 @@ class IntegratedPipeline(Processor):
         back_projector: ViewTextureProjector | None = None,
         glb_optimizer: GlbOptimizer | None = None,
         preview_renderer: PreviewRenderer | None = None,
-        front_axis: str = "front_y_neg",
+        label_cosine_threshold: float = 0.45,
         top_cosine_threshold: float = 0.45,
         top_elongation_max: float = 1.35,
         back_cosine_threshold: float = 0.45,
@@ -143,7 +142,7 @@ class IntegratedPipeline(Processor):
         self.back_projector = back_projector or DisabledViewTextureProjector()
         self.glb_optimizer = glb_optimizer or DisabledGlbOptimizer()
         self.preview_renderer = preview_renderer or DisabledPreviewRenderer()
-        self.front_axis = front_axis
+        self.label_cosine_threshold = label_cosine_threshold
         self.top_cosine_threshold = top_cosine_threshold
         self.top_elongation_max = top_elongation_max
         self.back_cosine_threshold = back_cosine_threshold
@@ -207,9 +206,13 @@ class IntegratedPipeline(Processor):
         # (7) label extract + upscale + project
         com_label = await self._safe_apply_label(
             refined,
+            input.image_paths,
             preprocessed,
             masked,
+            routing,
+            input.label_box,
             workspace,
+            avisos,
         )
         # (7.4) textura das costas — troca o verso alucinado pelo pixel medido
         com_costas = await self._safe_apply_back(
@@ -477,82 +480,230 @@ class IntegratedPipeline(Processor):
     async def _safe_apply_label(
         self,
         refined: Path,
+        originais: list[Path],
         preprocessed: list[Path],
         masked: list[Path],
+        routing: ViewRoutingResult,
+        label_box: str | None,
         workspace: Path,
+        avisos: list[str],
     ) -> Path:
+        """Projeta a label na frente do frasco, nas faces reais.
+
+        Duas origens possiveis para a regiao:
+
+        - `label_box` marcada no app — vence sempre. Nenhum detector resolve
+          frasco com texto gravado direto no vidro, porque nao ha regiao para
+          segmentar; e um recorte errado projetado no modelo e pior que nenhum.
+        - `HomographyLabelExtractor` — quando o usuario nao marcou.
+
+        **So a foto frontal.** A label vive na frente, e o eixo da projecao e
+        `-Y`. Antes o pipeline varria as cinco fotos e ficava com a primeira que
+        passasse: no job do Camille venceu a base lisa do vidro vista de lado
+        (score 0,86), que virou uma mancha bege colada no frasco.
+        """
         with_label = workspace / "with_label.glb"
         label_raw = workspace / "label_raw.png"
         label_upscaled = workspace / "label_upscaled.png"
 
-        # Extrai a melhor label entre todas as fotos disponiveis.
-        melhor_label: Path | None = None
-        melhor_conf = 0.0
-        melhor_altura: float | None = None
-        for foto, mascara in zip(preprocessed, masked):
+        indice = self._indice_frontal(routing, masked)
+        if indice is None:
+            _log.info("Sem foto frontal identificada; pulando a label")
+            return refined
+        foto, mascara = preprocessed[indice], masked[indice]
+        original = originais[indice] if indice < len(originais) else None
+
+        if label_box is not None:
+            recorte = await self._recortar_label_marcada(
+                label_box, foto, original, label_raw
+            )
+            if recorte is None:
+                avisos.append("marcação da label não pôde ser recortada")
+                return refined
+            caixa_px, origem = recorte, "marcada no app"
+        else:
             try:
                 extraida = await self.label_extractor.extract(
-                    foto,
-                    mascara,
-                    label_raw,
+                    foto, mascara, label_raw, hires_path=original
                 )
             except Exception as exc:
-                _log.warning(
-                    "Label extractor falhou em %s (%s); proximo",
-                    foto,
-                    exc,
-                )
-                continue
-            if extraida is None:
-                continue
-            if extraida.confidence > melhor_conf:
-                melhor_conf = extraida.confidence
-                melhor_label = extraida.image_path
-                # A altura vem da mesma foto da label — o projetor a usa para
-                # posicionar o decal na altura certa do frasco.
-                melhor_altura = extraida.vertical_position
-                if extraida.confidence >= self.label_min_confidence:
-                    # Acima do threshold; usa essa e para de procurar.
-                    break
+                _log.warning("Label extractor falhou em %s (%s); sem label", foto, exc)
+                return refined
+            if extraida is None or extraida.confidence < self.label_min_confidence:
+                _log.info("Sem label confiavel na frontal; refined.glb e o final")
+                return refined
+            caixa_px, origem = extraida.box_px, f"detectada ({extraida.confidence:.2f})"
 
-        if melhor_label is None or melhor_conf < self.label_min_confidence:
-            _log.info(
-                "Sem label confiavel (melhor=%.3f, threshold=%.3f); refined.glb e o final",
-                melhor_conf,
-                self.label_min_confidence,
-            )
+        janela = self._janela_da_silhueta(mascara, caixa_px)
+        if janela is None:
+            _log.warning("Label %s cai fora da silhueta do frasco; pulando", origem)
+            avisos.append("região da label fora do frasco")
             return refined
+        _log.info("Label %s: box=%s janela=%s", origem, caixa_px, janela)
 
-        # Upscale + projetar.
         try:
             await self.label_upscaler.upscale(
-                melhor_label,
-                label_upscaled,
-                self.label_target_size,
+                label_raw, label_upscaled, self.label_target_size
             )
         except Exception as exc:
             _log.warning("Label upscale falhou (%s); seguindo sem label", exc)
             return refined
 
         try:
-            # Usa BlenderLabelProjector quando disponivel; outras impls seguem
-            # o mesmo contrato.
             await self.label_projector.project(
-                LabelProjectionInput(
+                ViewTextureProjectionInput(
                     input_glb=refined,
-                    label_image=label_upscaled,
+                    photo=label_upscaled,
                     output_glb=with_label,
-                    front_axis=self.front_axis,
-                    vertical_position=melhor_altura,
+                    axis=AXIS_FRONT,
+                    cosine_threshold=self.label_cosine_threshold,
+                    window=janela,
                 )
             )
             return with_label
         except Exception as exc:
-            _log.warning(
-                "Label projector falhou (%s); refined.glb e o final",
-                exc,
-            )
+            _log.warning("Label projector falhou (%s); refined.glb e o final", exc)
             return refined
+
+    def _indice_frontal(
+        self, routing: ViewRoutingResult, masked: list[Path]
+    ) -> int | None:
+        """Posicao da foto frontal em `preprocessed`/`masked`.
+
+        As listas sao paralelas e o roteamento guarda o caminho da mascara, nao
+        o indice — entao a posicao vem de procurar aquele caminho na lista.
+        Sem atribuicao de front (cliente legado, roteamento posicional) cai na
+        primeira foto, que e a convencao do upload posicional.
+        """
+        if not masked:
+            return None
+        frontal = routing.assignments.get(FRONT_VIEW)
+        if frontal is None:
+            return 0
+        try:
+            return masked.index(frontal)
+        except ValueError:
+            _log.warning("Frontal %s nao esta na lista mascarada; usando a primeira",
+                         frontal)
+            return 0
+
+    async def _recortar_label_marcada(
+        self,
+        label_box: str,
+        foto: Path,
+        original: Path | None,
+        destino: Path,
+    ) -> tuple[int, int, int, int] | None:
+        """Recorta o retangulo marcado no app e devolve a caixa em pixels.
+
+        A caixa chega normalizada na foto inteira porque o app nao tem a
+        mascara — quem sabe onde o frasco esta e o backend. O recorte sai do
+        upload original quando ele existe (o app marcou sobre a mesma imagem,
+        e proporcao normalizada nao muda com o redimensionamento).
+
+        A caixa devolvida fica em coordenadas da **preprocessada**, que e onde
+        a mascara vive e, portanto, onde a janela e calculada.
+        """
+        return await asyncio.to_thread(
+            self._recortar_label_marcada_sync, label_box, foto, original, destino
+        )
+
+    def _recortar_label_marcada_sync(
+        self,
+        label_box: str,
+        foto: Path,
+        original: Path | None,
+        destino: Path,
+    ) -> tuple[int, int, int, int] | None:
+        import cv2
+
+        try:
+            x_rel, y_rel, w_rel, h_rel = (float(v) for v in label_box.split(","))
+        except ValueError:
+            _log.warning("label_box malformada no pipeline: %r", label_box)
+            return None
+
+        preproc = cv2.imread(str(foto))
+        if preproc is None:
+            _log.warning("Nao consegui abrir a frontal %s", foto)
+            return None
+        altura_p, largura_p = preproc.shape[:2]
+        caixa_preproc = (
+            int(round(x_rel * largura_p)),
+            int(round(y_rel * altura_p)),
+            max(int(round(w_rel * largura_p)), 1),
+            max(int(round(h_rel * altura_p)), 1),
+        )
+
+        fonte = preproc
+        if original is not None and original.exists():
+            hires = cv2.imread(str(original), cv2.IMREAD_COLOR)
+            if hires is not None and hires.shape[1] > largura_p:
+                fonte = hires
+
+        altura_f, largura_f = fonte.shape[:2]
+        x0 = max(int(round(x_rel * largura_f)), 0)
+        y0 = max(int(round(y_rel * altura_f)), 0)
+        x1 = min(int(round((x_rel + w_rel) * largura_f)), largura_f)
+        y1 = min(int(round((y_rel + h_rel) * altura_f)), altura_f)
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            _log.warning("Recorte da label degenerado: %r", label_box)
+            return None
+
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(destino), fonte[y0:y1, x0:x1])
+        _log.info(
+            "Label marcada recortada de %s (%dx%d)",
+            "original" if fonte is not preproc else "preprocessada",
+            x1 - x0,
+            y1 - y0,
+        )
+        return caixa_preproc
+
+    def _janela_da_silhueta(
+        self, mascara: Path, caixa_px: tuple[int, int, int, int]
+    ) -> tuple[float, float, float, float] | None:
+        """Converte a caixa em pixels para a janela normalizada da projecao.
+
+        A projecao normaliza na bounding box do frasco, nao no quadro da foto,
+        entao a caixa precisa ser reexpressa nessa mesma referencia. E `v` e
+        invertido: em foto o y cresce para baixo, no mundo o z cresce para cima.
+
+        Devolve None quando a caixa nao intersecta a silhueta — sinal de que a
+        marcacao (ou a deteccao) caiu no fundo da imagem.
+        """
+        import cv2
+
+        mascara_rgba = cv2.imread(str(mascara), cv2.IMREAD_UNCHANGED)
+        if mascara_rgba is None:
+            return None
+        canal = (
+            mascara_rgba[:, :, 3]
+            if mascara_rgba.ndim == 3 and mascara_rgba.shape[2] == 4
+            else (mascara_rgba[:, :, 0] if mascara_rgba.ndim == 3 else mascara_rgba)
+        )
+        _, silhueta = cv2.threshold(canal, 127, 255, cv2.THRESH_BINARY)
+        pontos = cv2.findNonZero(silhueta)
+        if pontos is None:
+            return None
+        bx, by, bw, bh = cv2.boundingRect(pontos)
+        if bw <= 0 or bh <= 0:
+            return None
+
+        x, y, w, h = caixa_px
+        u0 = (x - bx) / bw
+        u1 = (x + w - bx) / bw
+        # y da foto desce, v do mundo sobe.
+        v0 = 1.0 - (y + h - by) / bh
+        v1 = 1.0 - (y - by) / bh
+
+        # Aparar na silhueta em vez de rejeitar: uma label pode encostar na
+        # borda do frasco, e o script recusa janela fora de [0,1].
+        u0, u1 = max(u0, 0.0), min(u1, 1.0)
+        v0, v1 = max(v0, 0.0), min(v1, 1.0)
+        if u1 - u0 < 0.02 or v1 - v0 < 0.02:
+            return None
+        return (u0, v0, u1, v1)
 
     async def _safe_apply_top(
         self,
@@ -718,6 +869,4 @@ class IntegratedPipeline(Processor):
             return entrada
 
 
-# ruff/pyright nao usa BlenderLabelProjector na ABC, mas o import esta acima
 # para que a doc citacao seja navegavel; suprimimos a marcacao.
-_ = BlenderLabelProjector

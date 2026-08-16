@@ -37,6 +37,30 @@ from app.modules.captures.label_extractor import (
 # ---------------------------------------------------------- helpers de fixtures
 
 
+def _imprimir_na_placa(imagem, placa: tuple[int, int, int, int], cor_placa: int) -> None:
+    """Desenha texto dentro da placa, como impressão de rótulo de verdade.
+
+    Duas linhas de altura diferente imitam nome do perfume + "EAU DE PARFUM",
+    que é o que gera a alta frequência que o portão de conteúdo procura.
+    """
+    import cv2
+
+    x0, y0, x1, y1 = placa
+    largura, altura = x1 - x0, y1 - y0
+    tinta = (max(cor_placa - 190, 0),) * 3
+    escala = altura / 70.0
+    cv2.putText(
+        imagem, "VIVACITE", (x0 + int(largura * 0.07), y0 + int(altura * 0.52)),
+        cv2.FONT_HERSHEY_SIMPLEX, escala * 0.95, tinta, max(int(escala * 2), 1),
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        imagem, "EAU DE PARFUM", (x0 + int(largura * 0.10), y0 + int(altura * 0.84)),
+        cv2.FONT_HERSHEY_SIMPLEX, escala * 0.42, tinta, max(int(escala), 1),
+        cv2.LINE_AA,
+    )
+
+
 def _frasco_com_placa(
     path_rgb: Path,
     path_mascara: Path,
@@ -46,8 +70,9 @@ def _frasco_com_placa(
     cor_corpo: int = 70,
     cor_placa: int = 225,
     ruido: int = 0,
+    com_texto: bool = True,
 ) -> None:
-    """Frasco sintético realista: corpo escuro + placa clara PREENCHIDA.
+    """Frasco sintético realista: corpo escuro + placa clara PREENCHIDA e IMPRESSA.
 
     Diferente do teste antigo, a placa é uma região sólida — é assim que um
     rótulo aparece numa foto, não como um contorno de 3 px.
@@ -55,6 +80,14 @@ def _frasco_com_placa(
     As proporções seguem o caso real medido (La vivacité): a placa ocupa ~9% da
     silhueta do frasco e tem proporção ~2,5. Uma placa muito maior que isso é
     penalizada pelo score, que foi calibrado para rótulo de perfume.
+
+    O texto dentro da placa **não é enfeite**: o extrator tem um portão de
+    conteúdo (variância do laplaciano + densidade de bordas) porque uma região
+    lisa pontua igual a um rótulo em todos os critérios geométricos — foi
+    assim que a base de vidro do Camille venceu a placa real da vivacité. Uma
+    placa em branco aqui testaria a premissa em vez da realidade, exatamente o
+    erro que a versão anterior desta suíte cometia com o retângulo de Canny.
+    Use `com_texto=False` para exercitar justamente a rejeição.
     """
     import cv2
     import numpy as np
@@ -67,6 +100,8 @@ def _frasco_com_placa(
     imagem = np.zeros((tamanho, tamanho, 3), dtype=np.uint8)
     cv2.rectangle(imagem, (x0, y0), (x1, y1), (cor_corpo,) * 3, thickness=cv2.FILLED)
     cv2.rectangle(imagem, placa[:2], placa[2:], (cor_placa,) * 3, thickness=cv2.FILLED)
+    if com_texto:
+        _imprimir_na_placa(imagem, placa, cor_placa)
     if ruido:
         barulho = rng.integers(-ruido, ruido + 1, imagem.shape, dtype=np.int16)
         imagem = np.clip(imagem.astype(np.int16) + barulho, 0, 255).astype(np.uint8)
@@ -234,9 +269,14 @@ class TestDeteccaoPorRegiao:
 class TestPosicaoVertical:
     @pytest.mark.asyncio
     async def test_placa_alta_tem_posicao_menor_que_placa_baixa(self, tmp_path: Path):
-        """`vertical_position` cresce de cima para baixo (0=topo, 1=base)."""
+        """`vertical_position` cresce de cima para baixo (0=topo, 1=base).
+
+        As duas alturas ficam dentro da faixa aceita (0,30–0,92 da silhueta):
+        o objetivo aqui é a ordem do valor, não o portão de posição, que tem
+        teste próprio.
+        """
         pytest.importorskip("cv2")
-        casos = {"alta": (130, 90, 270, 146), "baixa": (130, 280, 270, 336)}
+        casos = {"alta": (130, 160, 270, 216), "baixa": (130, 290, 270, 346)}
 
         resultados = {}
         for nome, rect in casos.items():
@@ -251,6 +291,82 @@ class TestPosicaoVertical:
         assert resultados["alta"] < resultados["baixa"]
         assert 0.0 <= resultados["alta"] <= 1.0
         assert 0.0 <= resultados["baixa"] <= 1.0
+
+    @pytest.mark.asyncio
+    async def test_regiao_na_tampa_e_rejeitada(self, tmp_path: Path):
+        """Portão de posição: label vive no corpo, não na tampa.
+
+        Sem este corte a tampa transparente da La vivacité (altura 0,10) vencia
+        a label real dela (0,53) — o que o Otsu enxerga ali é o azulejo do
+        fundo através do vidro, e ele tem bordas de sobra para passar no portão
+        de conteúdo.
+        """
+        pytest.importorskip("cv2")
+        img, msk, out = tmp_path / "i.png", tmp_path / "m.png", tmp_path / "l.png"
+        # Silhueta vai de y=40 a y=380; centro em y=90 dá ~0,15 da altura.
+        _frasco_com_placa(img, msk, placa=(130, 62, 270, 118))
+
+        assert await HomographyLabelExtractor().extract(img, msk, out) is None
+
+
+class TestPortaoDeConteudo:
+    """Uma região lisa pontua igual a um rótulo em todos os critérios de forma.
+
+    Foi assim que a base de vidro do Camille (score 0,86) venceu a placa real
+    da La vivacité (0,78) e virou uma mancha bege no modelo. O portão mede
+    detalhe interno: impressão gera alta frequência, vidro liso não.
+    """
+
+    @pytest.mark.asyncio
+    async def test_placa_lisa_e_rejeitada(self, tmp_path: Path):
+        pytest.importorskip("cv2")
+        img, msk, out = tmp_path / "i.png", tmp_path / "m.png", tmp_path / "l.png"
+        _frasco_com_placa(img, msk, com_texto=False)
+
+        assert await HomographyLabelExtractor().extract(img, msk, out) is None
+
+    @pytest.mark.asyncio
+    async def test_placa_impressa_passa(self, tmp_path: Path):
+        pytest.importorskip("cv2")
+        img, msk, out = tmp_path / "i.png", tmp_path / "m.png", tmp_path / "l.png"
+        _frasco_com_placa(img, msk, com_texto=True)
+
+        assert await HomographyLabelExtractor().extract(img, msk, out) is not None
+
+    @pytest.mark.asyncio
+    async def test_limiar_frouxo_aceita_a_lisa(self, tmp_path: Path):
+        """Confirma que é o portão que rejeita, não outro filtro do caminho."""
+        pytest.importorskip("cv2")
+        img, msk, out = tmp_path / "i.png", tmp_path / "m.png", tmp_path / "l.png"
+        _frasco_com_placa(img, msk, com_texto=False)
+
+        frouxo = HomographyLabelExtractor(
+            min_laplaciano=0.0, min_densidade_bordas=0.0
+        )
+        assert await frouxo.extract(img, msk, out) is not None
+
+
+class TestBoxPx:
+    @pytest.mark.asyncio
+    async def test_box_esta_em_coordenadas_da_foto_inteira(self, tmp_path: Path):
+        """`box_px` alimenta a janela da projeção; offset errado desloca a label.
+
+        O contorno é achado dentro do recorte da bounding box do frasco, então
+        a origem dela precisa voltar para a soma.
+        """
+        pytest.importorskip("cv2")
+        img, msk, out = tmp_path / "i.png", tmp_path / "m.png", tmp_path / "l.png"
+        placa = (130, 150, 270, 206)
+        _frasco_com_placa(img, msk, placa=placa)
+
+        r = await HomographyLabelExtractor().extract(img, msk, out)
+        assert r is not None
+        x, y, w, h = r.box_px
+        # Tolerância: o contorno vem de binarização, não do retângulo exato.
+        assert abs(x - placa[0]) <= 6, f"x={x} longe de {placa[0]}"
+        assert abs(y - placa[1]) <= 6, f"y={y} longe de {placa[1]}"
+        assert abs(w - (placa[2] - placa[0])) <= 10
+        assert abs(h - (placa[3] - placa[1])) <= 10
 
 
 class TestScore:

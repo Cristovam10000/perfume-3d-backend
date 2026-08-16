@@ -48,11 +48,23 @@ async def create_capture(
             "Omitido ou `auto` deixa a decisao com o ClipTransparencyClassifier."
         ),
     ),
+    label_box: str | None = Form(
+        default=None,
+        alias="labelBox",
+        description=(
+            "Retangulo da label na foto **frontal**, como `x,y,w,h` normalizados "
+            "em [0,1] relativos a foto inteira. Quando enviado, o backend pula o "
+            "detector automatico e projeta exatamente essa regiao. Omitido, o "
+            "HomographyLabelExtractor tenta achar sozinho e desiste em silencio "
+            "se nao encontrar nada confiavel."
+        ),
+    ),
     service: CaptureService = Depends(get_capture_service),
 ) -> CreateCaptureResponse:
     """Recebe o lote de imagens e cria um job de reconstrucao 3D."""
     normalized_views: list[str | None] = _normalize_views(views, len(images))
     normalized_material = _normalize_material(material)
+    normalized_label_box = _normalize_label_box(label_box)
 
     incoming = [
         IncomingImage(
@@ -66,6 +78,7 @@ async def create_capture(
         incoming,
         product_id=product_id,
         material=normalized_material,
+        label_box=normalized_label_box,
     )
     return CreateCaptureResponse(job_id=job_id)
 
@@ -123,6 +136,53 @@ def _normalize_material(material: str | None) -> str | None:
             f"{sorted(VALID_MATERIALS)}, 'auto' ou vazio."
         )
     return cleaned
+
+
+# Menor lado aceito para a marcacao, em fracao da foto. Abaixo disso a regiao
+# tem poucos pixels para virar textura e provavelmente foi toque acidental.
+_LABEL_BOX_MIN_LADO = 0.02
+
+
+def _normalize_label_box(label_box: str | None) -> str | None:
+    """Valida `x,y,w,h` normalizados da marcacao manual da label.
+
+    - Ausente ou vazio => None (cai no detector automatico).
+    - Fora de [0,1], degenerado ou estourando a borda => 422.
+
+    Devolve string porque e assim que fica no banco: a coluna guarda o que o
+    app mandou, e quem converte para numeros e o pipeline. Reformatar aqui
+    normaliza a representacao (sem espacos, 6 casas) sem perder precisao util.
+    """
+    cleaned = (label_box or "").strip()
+    if not cleaned:
+        return None
+
+    partes = [p.strip() for p in cleaned.split(",")]
+    if len(partes) != 4:
+        raise ValidationError(
+            f"labelBox inválido: {label_box!r}. Esperado 'x,y,w,h' normalizados."
+        )
+    try:
+        x, y, w, h = (float(p) for p in partes)
+    except ValueError:
+        raise ValidationError(
+            f"labelBox com valor não numérico: {label_box!r}."
+        ) from None
+
+    if not all(0.0 <= v <= 1.0 for v in (x, y, w, h)):
+        raise ValidationError(
+            f"labelBox fora de [0,1]: {label_box!r}."
+        )
+    if w < _LABEL_BOX_MIN_LADO or h < _LABEL_BOX_MIN_LADO:
+        raise ValidationError(
+            f"labelBox pequeno demais: {label_box!r}. "
+            f"Largura e altura mínimas: {_LABEL_BOX_MIN_LADO}."
+        )
+    if x + w > 1.0 or y + h > 1.0:
+        raise ValidationError(
+            f"labelBox ultrapassa a borda da foto: {label_box!r}."
+        )
+    return f"{x:.6f},{y:.6f},{w:.6f},{h:.6f}"
 
 
 @router.get(

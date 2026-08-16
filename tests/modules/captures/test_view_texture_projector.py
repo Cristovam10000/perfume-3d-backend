@@ -18,6 +18,7 @@ import pytest
 
 from app.modules.captures.view_texture_projector import (
     AXIS_BACK,
+    AXIS_FRONT,
     AXIS_TOP,
     BlenderViewTextureProjector,
     DisabledViewTextureProjector,
@@ -227,3 +228,49 @@ def test_script_default_existe_no_repo():
     """O caminho default precisa apontar para o script renomeado."""
     assert SCRIPT_PATH.exists(), f"script não encontrado: {SCRIPT_PATH}"
     assert BlenderViewTextureProjector().script_path == SCRIPT_PATH
+
+
+@pytest.mark.asyncio
+async def test_monta_argumentos_do_eixo_frontal_com_janela(cenario, tmp_path: Path):
+    """A label usa o mesmo projetor, no eixo -Y e sempre com janela.
+
+    A janela é o que diferencia a label de topo e costas: aqueles cobrem o alvo
+    inteiro, a label ocupa um retângulo da frente. Sem ela a imagem esticaria
+    sobre o frasco todo.
+    """
+    entrada, foto, blender = cenario
+    runner, capturados = _fake_runner()
+
+    with patch.object(BlenderViewTextureProjector, "_run_blender_sync", runner):
+        await BlenderViewTextureProjector(blender_executable=blender).project(
+            ViewTextureProjectionInput(
+                input_glb=entrada,
+                photo=foto,
+                output_glb=tmp_path / "with_label.glb",
+                axis=AXIS_FRONT,
+                window=(0.25, 0.4, 0.75, 0.55),
+            )
+        )
+
+    args = capturados[0]
+    assert args[args.index("--axis") + 1] == AXIS_FRONT
+    assert args[args.index("--window") + 1] == "0.250000,0.400000,0.750000,0.550000"
+
+
+@pytest.mark.asyncio
+async def test_sem_janela_nao_passa_o_argumento(cenario, tmp_path: Path):
+    """Topo e costas seguem idênticos — a janela é opcional por construção."""
+    entrada, foto, blender = cenario
+    runner, capturados = _fake_runner()
+
+    with patch.object(BlenderViewTextureProjector, "_run_blender_sync", runner):
+        await BlenderViewTextureProjector(blender_executable=blender).project(
+            ViewTextureProjectionInput(
+                input_glb=entrada,
+                photo=foto,
+                output_glb=tmp_path / "with_top.glb",
+                axis=AXIS_TOP,
+            )
+        )
+
+    assert "--window" not in capturados[0]

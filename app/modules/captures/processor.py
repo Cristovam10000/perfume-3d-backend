@@ -48,6 +48,9 @@ class ProcessingInput:
     # presente, decide o body_mode do refiner sem consultar o CLIP. None = não
     # informado, o pipeline classifica.
     material: str | None = None
+    # Retangulo da label marcado no app: "x,y,w,h" normalizado na foto
+    # frontal. None = o detector automatico decide.
+    label_box: str | None = None
 
 
 @dataclass(frozen=True)

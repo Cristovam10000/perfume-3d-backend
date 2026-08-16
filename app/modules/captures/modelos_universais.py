@@ -98,6 +98,10 @@ async def ensure_captures_schema(engine: AsyncEngine) -> None:
         # capture_jobs. NULL = nao informado, o pipeline usa o CLIP.
         "ALTER TABLE IF EXISTS capture_jobs "
         "ADD COLUMN IF NOT EXISTS material varchar(16)",
+        # retangulo da label marcado no app, "x,y,w,h" normalizado. NULL = nao
+        # marcou, e o detector automatico tenta sozinho.
+        "ALTER TABLE IF EXISTS capture_jobs "
+        "ADD COLUMN IF NOT EXISTS label_box varchar(64)",
     ]
 
     # A constraint de FK e adicionada separadamente porque Postgres nao tem

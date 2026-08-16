@@ -31,6 +31,7 @@ class _JobPreparado:
     product_id: int | None
     views: list[str | None]
     material: str | None
+    label_box: str | None
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,7 @@ class CaptureService:
         *,
         product_id: int | None = None,
         material: str | None = None,
+        label_box: str | None = None,
     ) -> str:
         """Cria job, persiste imagens em disco + DB, e enfileira processamento."""
         if not images:
@@ -84,6 +86,7 @@ class CaptureService:
                 job_id,
                 product_id=product_id,
                 material=material,
+                label_box=label_box,
             )
 
             for image in images:
@@ -122,6 +125,7 @@ class CaptureService:
                     product_id=prep.product_id,
                     views=prep.views,
                     material=prep.material,
+                    label_box=prep.label_box,
                 )
             )
         except Exception as exc:
@@ -148,6 +152,7 @@ class CaptureService:
                 product_id=job.product_id,
                 views=[img.view for img in job.images],
                 material=job.material,
+                label_box=job.label_box,
             )
 
             await repo.update_status(

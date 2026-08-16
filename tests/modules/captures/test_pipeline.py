@@ -29,11 +29,6 @@ from app.modules.captures.label_extractor import (
     ExtractedLabel,
     LabelExtractor,
 )
-from app.modules.captures.label_projector import (
-    LabelProjectionInput,
-    LabelProjectionResult,
-    LabelProjector,
-)
 from app.modules.captures.label_upscaler import LabelUpscaler
 from app.modules.captures.glb_optimizer import (
     GlbOptimizationInput,
@@ -47,6 +42,7 @@ from app.modules.captures.preview_renderer import (
 )
 from app.modules.captures.view_texture_projector import (
     AXIS_BACK,
+    AXIS_FRONT,
     AXIS_TOP,
     ViewTextureProjectionInput,
     ViewTextureProjectionResult,
@@ -200,15 +196,22 @@ class NoLabelExtractor(LabelExtractor):
 
 
 class FakeLabelExtractor(LabelExtractor):
-    """Devolve uma label com confidence alta."""
+    """Devolve uma label com confidence alta, no meio da silhueta sintetica."""
 
-    async def extract(self, image_path, mask_path, output_path):
+    def __init__(self):
+        self.chamadas: list[Path] = []
+
+    async def extract(self, image_path, mask_path, output_path, hires_path=None):
+        self.chamadas.append(image_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"PNG-stub")
         return ExtractedLabel(
             image_path=output_path,
             confidence=0.9,
             aspect_ratio=1.5,
+            vertical_position=0.5,
+            # Casa com `_imagem_frasco`: silhueta em x=[20,80), y=[10,90).
+            box_px=(30, 40, 40, 16),
         )
 
 
@@ -219,15 +222,19 @@ class CopyLabelUpscaler(LabelUpscaler):
         return output
 
 
-class CopyLabelProjector(LabelProjector):
-    async def project(self, input: LabelProjectionInput) -> LabelProjectionResult:
+class CopyLabelProjector(ViewTextureProjector):
+    """A label passou a usar o mesmo projetor de topo/costas, no eixo y_neg."""
+
+    def __init__(self):
+        self.chamadas: list[ViewTextureProjectionInput] = []
+
+    async def project(
+        self, input: ViewTextureProjectionInput
+    ) -> ViewTextureProjectionResult:
+        self.chamadas.append(input)
         input.output_glb.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(input.input_glb, input.output_glb)
-        return LabelProjectionResult(
-            output_glb=input.output_glb,
-            target_face_index=0,
-            coverage_ratio=0.5,
-        )
+        return ViewTextureProjectionResult(output_glb=input.output_glb)
 
 
 class SpyViewTextureProjector(ViewTextureProjector):
@@ -298,13 +305,26 @@ def storage(tmp_path: Path) -> LocalStorage:
 @pytest.fixture
 def fotos(tmp_path: Path) -> list[Path]:
     pasta = tmp_path / "uploads"
-    pasta.mkdir(parents=True, exist_ok=True)
-    paths = []
-    for i in range(2):
-        p = pasta / f"{i:02d}.jpg"
-        p.write_bytes(b"\xff\xd8jpeg-stub")
-        paths.append(p)
-    return paths
+    return [_imagem_frasco(pasta / f"{i:02d}.jpg") for i in range(2)]
+
+
+def _imagem_frasco(destino: Path) -> Path:
+    """PNG RGBA minúsculo com uma silhueta opaca de 60x80 num quadro 100x100.
+
+    Os stubs eram bytes arbitrários, o que bastava enquanto nenhum stage lia o
+    conteúdo. O estágio de label lê: ele converte a caixa da label para a
+    bounding box do frasco na máscara. Sem silhueta o passo devolve None e a
+    label some sem ninguém perceber — foi exatamente assim que a suíte passou
+    verde depois da reescrita, exercitando nada.
+    """
+    import numpy as np
+    from PIL import Image
+
+    quadro = np.zeros((100, 100, 4), dtype=np.uint8)
+    quadro[10:90, 20:80] = (180, 160, 140, 255)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(quadro, mode="RGBA").save(destino, format="PNG")
+    return destino
 
 
 def _make_pipeline(
@@ -319,6 +339,7 @@ def _make_pipeline(
     back_projector: ViewTextureProjector | None = None,
     view_router: "ViewRouter | None" = None,
     top_elongation_max: float = 1.35,
+    label_projector: "ViewTextureProjector | None" = None,
     glb_optimizer: "GlbOptimizer | None" = None,
     preview_renderer: "PreviewRenderer | None" = None,
 ):
@@ -331,7 +352,7 @@ def _make_pipeline(
         mesh_refiner=mesh_refiner or CopyMeshRefiner(),
         label_extractor=label_extractor or FakeLabelExtractor(),
         label_upscaler=CopyLabelUpscaler(),
-        label_projector=CopyLabelProjector(),
+        label_projector=label_projector or CopyLabelProjector(),
         storage=storage,
         transparency_classifier=transparency_classifier,
         top_projector=top_projector,
@@ -584,13 +605,7 @@ async def test_hunyuan_failure_raises(
 def fotos_com_topo(tmp_path: Path) -> list[Path]:
     """5 fotos: 4 cardeais + 1 do topo, na ordem que o app enviaria."""
     pasta = tmp_path / "uploads_topo"
-    pasta.mkdir(parents=True, exist_ok=True)
-    caminhos = []
-    for i in range(5):
-        p = pasta / f"{i:02d}.jpg"
-        p.write_bytes(b"\xff\xd8jpeg-stub")
-        caminhos.append(p)
-    return caminhos
+    return [_imagem_frasco(pasta / f"{i:02d}.jpg") for i in range(5)]
 
 
 _HINTS_COM_TOPO = ["front", "left", "back", "right", "top"]
@@ -902,13 +917,7 @@ async def test_foto_de_topo_compacta_e_aceita(storage: LocalStorage, tmp_path: P
 
 
 def _lote_cardeais(pasta: Path) -> list[Path]:
-    pasta.mkdir(parents=True, exist_ok=True)
-    caminhos = []
-    for i in range(4):
-        p = pasta / f"{i:02d}.jpg"
-        p.write_bytes(b"\xff\xd8jpeg-stub")
-        caminhos.append(p)
-    return caminhos
+    return [_imagem_frasco(pasta / f"{i:02d}.jpg") for i in range(4)]
 
 
 _HINTS_CARDEAIS = ["front", "left", "back", "right"]
@@ -1124,3 +1133,166 @@ async def test_falha_no_preview_nao_derruba_o_job(
 
     assert resultado.preview_path is None
     assert saida.exists()
+
+
+# --------------------------------------------------- estagio de label (frente)
+
+
+@pytest.mark.asyncio
+async def test_label_projeta_na_frente_com_janela(
+    storage: LocalStorage, tmp_path: Path
+):
+    """A label vira textura nas faces reais da frente, dentro de uma janela.
+
+    Era um plano flutuante de 4 vertices colado no GLB, que nao acompanhava a
+    curvatura e aparecia como adesivo.
+    """
+    projetor = CopyLabelProjector()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        label_projector=projetor,
+        view_router=LabeledViewRouter(),
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="job-label",
+            image_paths=_lote_cardeais(tmp_path / "quatro_label"),
+            output_path=tmp_path / "out.glb",
+            views=_HINTS_CARDEAIS,
+        )
+    )
+
+    assert len(projetor.chamadas) == 1
+    chamada = projetor.chamadas[0]
+    assert chamada.axis == AXIS_FRONT
+    assert chamada.window is not None
+    u0, v0, u1, v1 = chamada.window
+    assert 0.0 <= u0 < u1 <= 1.0
+    assert 0.0 <= v0 < v1 <= 1.0
+
+
+@pytest.mark.asyncio
+async def test_label_so_consulta_a_foto_frontal(
+    storage: LocalStorage, tmp_path: Path
+):
+    """Antes o pipeline varria as 4 fotos e ficava com a primeira aceita.
+
+    No job do Camille venceu a base lisa do vidro vista de lado, que virou uma
+    mancha bege. A label vive na frente e a projecao usa o eixo -Y; olhar as
+    outras vistas so pode gerar falso positivo.
+    """
+    extrator = FakeLabelExtractor()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        label_extractor=extrator,
+        view_router=LabeledViewRouter(),
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="job-label-frontal",
+            image_paths=_lote_cardeais(tmp_path / "quatro_frontal"),
+            output_path=tmp_path / "out.glb",
+            views=_HINTS_CARDEAIS,
+        )
+    )
+
+    assert len(extrator.chamadas) == 1, "so a frontal deve ser consultada"
+    assert extrator.chamadas[0].stem.startswith("01_")
+
+
+@pytest.mark.asyncio
+async def test_label_box_do_app_curto_circuita_o_detector(
+    storage: LocalStorage, tmp_path: Path
+):
+    """Marcacao manual vence: nenhum detector acha texto gravado no vidro."""
+    extrator = FakeLabelExtractor()
+    projetor = CopyLabelProjector()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        label_extractor=extrator,
+        label_projector=projetor,
+        view_router=LabeledViewRouter(),
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="job-label-marcada",
+            image_paths=_lote_cardeais(tmp_path / "quatro_marcada"),
+            output_path=tmp_path / "out.glb",
+            views=_HINTS_CARDEAIS,
+            label_box="0.30,0.40,0.40,0.16",
+        )
+    )
+
+    assert extrator.chamadas == [], "com marcacao o detector nao roda"
+    assert len(projetor.chamadas) == 1
+    assert projetor.chamadas[0].window is not None
+
+
+@pytest.mark.asyncio
+async def test_label_fora_da_silhueta_e_pulada_com_aviso(
+    storage: LocalStorage, tmp_path: Path
+):
+    """Marcacao no fundo da foto nao vira projecao — e o motivo chega ao app."""
+    projetor = CopyLabelProjector()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        label_projector=projetor,
+        view_router=LabeledViewRouter(),
+    )
+
+    # A silhueta sintetica vai de x=0.20 a 0.80; esta caixa fica toda a esquerda.
+    resultado = await pipe.process(
+        ProcessingInput(
+            job_id="job-label-fora",
+            image_paths=_lote_cardeais(tmp_path / "quatro_fora"),
+            output_path=tmp_path / "out.glb",
+            views=_HINTS_CARDEAIS,
+            label_box="0.01,0.40,0.05,0.16",
+        )
+    )
+
+    assert projetor.chamadas == []
+    assert "fora do frasco" in resultado.message
+
+
+@pytest.mark.asyncio
+async def test_label_roda_tambem_em_frasco_de_vidro(
+    storage: LocalStorage, tmp_path: Path
+):
+    """Diferente do verso: a janela limita a projecao a placa, que e opaca.
+
+    Num frasco de vidro projetar o verso inteiro mataria a transmissao, por isso
+    aquele estagio e pulado. A label nao — placa de perfume e opaca na vida
+    real (caso La vivacite: placa metalica sobre vidro).
+    """
+    projetor = CopyLabelProjector()
+    pipe = _make_pipeline(
+        storage,
+        cache=FakeCache(hit=None),
+        hunyuan=StubHunyuan(),
+        label_projector=projetor,
+        view_router=LabeledViewRouter(),
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="job-label-vidro",
+            image_paths=_lote_cardeais(tmp_path / "quatro_vidro"),
+            output_path=tmp_path / "out.glb",
+            views=_HINTS_CARDEAIS,
+            material="glass",
+        )
+    )
+
+    assert len(projetor.chamadas) == 1

@@ -322,3 +322,69 @@ class TestMaterialField:
             "/captures", files=files, data={"material": "plastico"}
         )
         assert response.status_code == 422
+
+
+class TestLabelBoxField:
+    """Campo `labelBox` do POST /captures — marcação manual da label.
+
+    Existe porque nenhum detector resolve frasco com o texto gravado direto no
+    vidro: não há região para segmentar. E porque um recorte errado projetado
+    no modelo é pior que nenhum — foi o que aconteceu no job do Camille, onde a
+    base lisa do vidro virou uma mancha bege colada no frasco.
+    """
+
+    @pytest.mark.asyncio
+    async def test_aceita_e_persiste(self, harness: _Harness):
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        response = await harness.client.post(
+            "/captures", files=files, data={"labelBox": "0.25,0.4,0.5,0.15"}
+        )
+
+        assert response.status_code == 201
+        job = await harness.service.get_job(response.json()["jobId"])
+        assert job is not None
+        assert job.label_box == "0.250000,0.400000,0.500000,0.150000"
+
+    @pytest.mark.asyncio
+    async def test_omitido_fica_null(self, harness: _Harness):
+        """Sem marcação o detector automático assume."""
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        response = await harness.client.post("/captures", files=files)
+
+        assert response.status_code == 201
+        job = await harness.service.get_job(response.json()["jobId"])
+        assert job is not None
+        assert job.label_box is None
+
+    @pytest.mark.asyncio
+    async def test_vazio_fica_null(self, harness: _Harness):
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        response = await harness.client.post(
+            "/captures", files=files, data={"labelBox": "  "}
+        )
+
+        assert response.status_code == 201
+        job = await harness.service.get_job(response.json()["jobId"])
+        assert job is not None
+        assert job.label_box is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "valor, motivo",
+        [
+            ("0.1,0.2,0.3", "faltam componentes"),
+            ("0.1,0.2,0.3,0.4,0.5", "componentes demais"),
+            ("a,b,c,d", "nao numerico"),
+            ("-0.1,0.2,0.3,0.4", "x negativo"),
+            ("0.1,0.2,1.4,0.4", "largura acima de 1"),
+            ("0.1,0.2,0.001,0.4", "largura degenerada"),
+            ("0.9,0.2,0.5,0.4", "estoura a borda direita"),
+            ("0.1,0.9,0.3,0.5", "estoura a borda de baixo"),
+        ],
+    )
+    async def test_rejeita_invalidos(self, harness: _Harness, valor: str, motivo: str):
+        files = [("images", ("01.jpg", b"a", "image/jpeg"))]
+        response = await harness.client.post(
+            "/captures", files=files, data={"labelBox": valor}
+        )
+        assert response.status_code == 422, f"deveria rejeitar: {motivo}"

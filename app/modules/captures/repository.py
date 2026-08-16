@@ -19,6 +19,7 @@ class CaptureRepository:
         *,
         product_id: int | None = None,
         material: str | None = None,
+        label_box: str | None = None,
     ) -> CaptureJob:
         job = CaptureJob(
             id=job_id,
@@ -26,6 +27,7 @@ class CaptureRepository:
             message="Aguardando processamento",
             product_id=product_id,
             material=material,
+            label_box=label_box,
         )
         self.session.add(job)
         await self.session.flush()
