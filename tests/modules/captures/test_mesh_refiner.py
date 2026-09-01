@@ -151,6 +151,55 @@ class TestBlenderMeshRefinerMocked:
         assert args[args.index("--liquid-color") + 1] == "#FFAA00"
 
     @pytest.mark.asyncio
+    async def test_glass_roughness_omitido_por_padrao(self, tmp_path: Path):
+        """Sem valor explicito o script mantem seu default (vidro polido)."""
+        refiner = _make_refiner(tmp_path)
+        run, captured = _make_fake_runner()
+        inp = _make_input(tmp_path)
+
+        with patch.object(refiner, "_run_blender", side_effect=run):
+            await refiner.refine(inp)
+
+        assert "--glass-roughness" not in captured["calls"][0]
+
+    @pytest.mark.asyncio
+    async def test_glass_roughness_is_passed_when_provided(self, tmp_path: Path):
+        refiner = _make_refiner(tmp_path)
+        run, captured = _make_fake_runner()
+        inp = _make_input(tmp_path, body_mode="glass", glass_roughness=0.35)
+
+        with patch.object(refiner, "_run_blender", side_effect=run):
+            await refiner.refine(inp)
+
+        args = captured["calls"][0]
+        assert "--glass-roughness" in args
+        assert args[args.index("--glass-roughness") + 1] == "0.35"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("valor", [-0.1, 1.5])
+    async def test_glass_roughness_fora_da_faixa_levanta(
+        self, tmp_path: Path, valor: float
+    ):
+        refiner = _make_refiner(tmp_path)
+        inp = _make_input(tmp_path, glass_roughness=valor)
+
+        with pytest.raises(MeshRefinementError, match="glass_roughness fora de"):
+            await refiner.refine(inp)
+
+    @pytest.mark.asyncio
+    async def test_glass_roughness_zero_e_valido(self, tmp_path: Path):
+        """0.0 e espelho perfeito, extremo valido — nao pode cair no guard."""
+        refiner = _make_refiner(tmp_path)
+        run, captured = _make_fake_runner()
+        inp = _make_input(tmp_path, glass_roughness=0.0)
+
+        with patch.object(refiner, "_run_blender", side_effect=run):
+            await refiner.refine(inp)
+
+        args = captured["calls"][0]
+        assert args[args.index("--glass-roughness") + 1] == "0.0"
+
+    @pytest.mark.asyncio
     async def test_body_mode_defaults_to_auto(self, tmp_path: Path):
         refiner = _make_refiner(tmp_path)
         run, captured = _make_fake_runner()

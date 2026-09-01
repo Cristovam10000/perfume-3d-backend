@@ -76,6 +76,21 @@ class Settings(BaseSettings):
     transparency_threshold: float = 0.30
     label_extractor_type: Literal["disabled", "homography"] = "homography"
     label_upscaler_type: Literal["disabled", "lanczos"] = "lanczos"
+
+    # Separa o texto da label do vidro fotografado em volta, gerando o alpha.
+    # Sem isso o recorte e projetado opaco e o fundo da foto vira um retangulo
+    # chapado no frasco. Com alpha, o projetor assa so as letras dentro da
+    # textura base. `disabled` volta ao retangulo.
+    label_matte_type: Literal["disabled", "background_subtraction"] = (
+        "background_subtraction"
+    )
+
+    # Apaga a label da foto de referencia ANTES de gerar o modelo. O
+    # texturizador do Hunyuan usa uma foto so e sintetiza as demais vistas dela,
+    # entao o rotulo saia pintado na malha, fora do lugar — e o frasco terminava
+    # com a label duas vezes, ja que o pipeline assa a real depois. Exige
+    # `label_box` marcada no app. `disabled` volta ao fantasma.
+    label_eraser_type: Literal["disabled", "inpaint"] = "inpaint"
     label_projector_type: Literal["disabled", "blender"] = "blender"
     label_min_confidence: float = 0.3
     label_target_size: int = 2048
@@ -102,6 +117,14 @@ class Settings(BaseSettings):
     # que faz o verso do frasco sair inventado. Ver docs/16.
     back_projector_type: Literal["disabled", "blender"] = "blender"
     back_cosine_threshold: float = 0.45
+
+    # Rugosidade do shader de vidro aplicado ao corpo. `None` mantem o default
+    # do script Blender (0.05, vidro polido). Frascos jateados precisam de valor
+    # acima de 0.1: com o polido, um cone fosco sai molhado e escuro em vez de
+    # leitoso — ver o caso 3a3adbc8 em docs/17. Global por enquanto: nao ha
+    # deteccao de acabamento por frasco, entao mexer aqui afeta todo frasco
+    # classificado como vidro.
+    glass_roughness: float | None = None
 
     # Comprime o GLB final com Draco (KHR_draco_mesh_compression). Medido em
     # 5,5x no job 15ef21e9: 77,1 MB -> 13,9 MB, sem perda visivel. Desligue

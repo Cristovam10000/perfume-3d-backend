@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from ...core.logging import get_logger
@@ -45,7 +46,9 @@ from .glb_optimizer import (
     GlbOptimizer,
 )
 from .image_preprocessor import ImagePreprocessor
+from .label_eraser import DisabledLabelEraser, LabelEraser
 from .label_extractor import LabelExtractor
+from .label_matte import DisabledLabelMatte, LabelMatte
 from .label_upscaler import LabelUpscaler
 from .mesh_refiner import MeshRefiner, RefinementInput
 from .preview_renderer import (
@@ -88,6 +91,20 @@ from .view_router import (
 _log = get_logger("captures.pipeline")
 
 
+@dataclass(frozen=True)
+class _RegiaoLabel:
+    """Onde a label esta na foto frontal, resolvido uma vez so.
+
+    Compartilhado entre o apagador (que limpa a referencia antes do gerador) e
+    a projecao (que assa a label real depois). Resolver duas vezes correria o
+    risco de as duas discordarem.
+    """
+
+    caixa_px: tuple[int, int, int, int]  # (x, y, w, h) na foto preprocessada
+    origem: str                          # "marcada no app" | "detectada (0.87)"
+    recorte: Path                        # label_raw.png ja gravado
+
+
 class IntegratedPipeline(Processor):
     """Pipeline composto: preprocess -> rembg -> cache -> Hunyuan -> pos-proc.
 
@@ -110,6 +127,8 @@ class IntegratedPipeline(Processor):
         *,
         view_router: ViewRouter | None = None,
         transparency_classifier: TransparencyClassifier | None = None,
+        label_matte: LabelMatte | None = None,
+        label_eraser: LabelEraser | None = None,
         top_projector: ViewTextureProjector | None = None,
         back_projector: ViewTextureProjector | None = None,
         glb_optimizer: GlbOptimizer | None = None,
@@ -123,6 +142,7 @@ class IntegratedPipeline(Processor):
         preview_resolution: int = 512,
         label_min_confidence: float = 0.3,
         label_target_size: int = 2048,
+        glass_roughness: float | None = None,
     ):
         self.preprocessor = preprocessor
         self.background_remover = background_remover
@@ -132,6 +152,8 @@ class IntegratedPipeline(Processor):
         self.mesh_refiner = mesh_refiner
         self.label_extractor = label_extractor
         self.label_upscaler = label_upscaler
+        self.label_matte = label_matte or DisabledLabelMatte()
+        self.label_eraser = label_eraser or DisabledLabelEraser()
         self.label_projector = label_projector
         self.storage = storage
         self.view_router = view_router or PositionalViewRouter()
@@ -151,6 +173,7 @@ class IntegratedPipeline(Processor):
         self.preview_resolution = preview_resolution
         self.label_min_confidence = label_min_confidence
         self.label_target_size = label_target_size
+        self.glass_roughness = glass_roughness
 
     # ----------------------------------------------------------------- public
 
@@ -179,6 +202,16 @@ class IntegratedPipeline(Processor):
             "View router (%s) reordenou %d imagens para o Hunyuan",
             routing.source,
             len(ordered_for_hunyuan),
+        )
+        # A regiao da label e resolvida AQUI, antes do gerador, porque a mesma
+        # caixa serve a dois estagios: apagar a label da referencia (senao o
+        # Hunyuan pinta o rotulo na malha, fora do lugar, e o frasco termina com
+        # ele duas vezes) e assar a label real depois, no lugar certo.
+        regiao_label = await self._resolver_regiao_label(
+            input.image_paths, preprocessed, masked, routing, input.label_box, workspace
+        )
+        ordered_for_hunyuan = await self._safe_apagar_label_da_referencia(
+            ordered_for_hunyuan, routing, workspace, regiao_label
         )
 
         # (4) Hunyuan ou fallback
@@ -210,7 +243,7 @@ class IntegratedPipeline(Processor):
             preprocessed,
             masked,
             routing,
-            input.label_box,
+            regiao_label,
             workspace,
             avisos,
         )
@@ -409,6 +442,115 @@ class IntegratedPipeline(Processor):
         ]
         return escolhidas or preprocessed
 
+    async def _resolver_regiao_label(
+        self,
+        originais: list[Path],
+        preprocessed: list[Path],
+        masked: list[Path],
+        routing: ViewRoutingResult,
+        label_box: str | None,
+        workspace: Path,
+    ) -> "_RegiaoLabel | None":
+        """Descobre onde a label esta na frontal, em pixels daquela foto.
+
+        Roda **antes do Hunyuan**, porque a caixa serve a dois estagios: apagar
+        a label da referencia (para o gerador nao pintar o rotulo fantasma) e,
+        mais tarde, assar a label real no lugar certo.
+
+        Duas origens, nesta ordem:
+
+        - `label_box` marcada no app — vence sempre. Em frasco com texto gravado
+          direto no vidro nao ha regiao para segmentar, e nenhum detector
+          resolve; medido no 3a3adbc8, o extractor devolveu None.
+        - `HomographyLabelExtractor` — quando o app nao marcou, que e o caso da
+          grande maioria dos jobs.
+
+        Devolve None quando nao ha frontal, quando a marcacao nao pode ser
+        recortada ou quando a deteccao nao passa da confianca minima.
+        """
+        indice = self._indice_frontal(routing, masked)
+        if indice is None:
+            _log.info("Sem foto frontal identificada; sem regiao de label")
+            return None
+
+        foto, mascara = preprocessed[indice], masked[indice]
+        original = originais[indice] if indice < len(originais) else None
+        label_raw = workspace / "label_raw.png"
+
+        if label_box is not None:
+            recorte = await self._recortar_label_marcada(
+                label_box, foto, original, label_raw
+            )
+            if recorte is None:
+                return None
+            return _RegiaoLabel(recorte, "marcada no app", label_raw)
+
+        try:
+            extraida = await self.label_extractor.extract(
+                foto, mascara, label_raw, hires_path=original
+            )
+        except Exception as exc:
+            _log.warning("Label extractor falhou em %s (%s); sem label", foto, exc)
+            return None
+        if extraida is None or extraida.confidence < self.label_min_confidence:
+            _log.info("Sem label confiavel na frontal")
+            return None
+        return _RegiaoLabel(
+            extraida.box_px, f"detectada ({extraida.confidence:.2f})", label_raw
+        )
+
+    async def _safe_apagar_label_da_referencia(
+        self,
+        ordenadas: list[Path],
+        routing: ViewRoutingResult,
+        workspace: Path,
+        regiao: "_RegiaoLabel | None",
+    ) -> list[Path]:
+        """Troca a frontal por uma copia sem a label, antes de gerar o modelo.
+
+        O texturizador do Hunyuan usa UMA referencia e sintetiza as demais
+        vistas a partir dela, entao o rotulo daquela foto acaba pintado na malha,
+        fora do lugar. Como o pipeline assa a label real depois, o frasco
+        terminava com o rotulo duas vezes. Apagando a label da referencia, o
+        atlas gerado sai sem texto e sobra so a label verdadeira.
+
+        As demais vistas seguem intactas: elas alimentam a **geometria**, e o
+        texto nao tem relevo — medido, a malha do 3a3adbc8 e lisa sob as letras.
+
+        Nunca derruba o job: qualquer falha devolve a lista original, que produz
+        o comportamento anterior (com fantasma) em vez de nenhum modelo.
+        """
+        if regiao is None:
+            _log.info("Sem regiao de label; referencia do Hunyuan segue como esta")
+            return ordenadas
+        if not ordenadas:
+            return ordenadas
+
+        frontal = routing.assignments.get(FRONT_VIEW) or ordenadas[0]
+        try:
+            indice = ordenadas.index(frontal)
+        except ValueError:
+            _log.warning("Frontal nao esta na lista do Hunyuan; referencia intacta")
+            return ordenadas
+
+        destino = workspace / "referencia_sem_label.png"
+        try:
+            limpa = await self.label_eraser.apagar(frontal, destino, regiao.caixa_px)
+        except Exception as exc:
+            _log.warning(
+                "Apagar label da referencia falhou (%s); seguindo com a foto original",
+                exc,
+            )
+            return ordenadas
+
+        if limpa is None:
+            return ordenadas
+
+        novas = list(ordenadas)
+        novas[indice] = limpa
+        _log.info("Referencia do Hunyuan trocada pela versao sem label")
+        return novas
+
     async def _safe_classify_transparency(
         self,
         fotos: list[Path],
@@ -460,6 +602,9 @@ class IntegratedPipeline(Processor):
         body_mode: str = "auto",
     ) -> Path:
         refined = workspace / "refined.glb"
+        # Em body_mode="keep" o script nao toca nos materiais do corpo, entao
+        # mandar rugosidade so poluiria o log com um valor sem efeito.
+        rugosidade = self.glass_roughness if body_mode != "keep" else None
         try:
             await self.mesh_refiner.refine(
                 RefinementInput(
@@ -467,6 +612,7 @@ class IntegratedPipeline(Processor):
                     output_glb=refined,
                     liquid_color=input.liquid_color,
                     body_mode=body_mode,
+                    glass_roughness=rugosidade,
                 )
             )
             return refined
@@ -484,18 +630,17 @@ class IntegratedPipeline(Processor):
         preprocessed: list[Path],
         masked: list[Path],
         routing: ViewRoutingResult,
-        label_box: str | None,
+        regiao: "_RegiaoLabel | None",
         workspace: Path,
         avisos: list[str],
     ) -> Path:
         """Projeta a label na frente do frasco, nas faces reais.
 
-        Duas origens possiveis para a regiao:
-
-        - `label_box` marcada no app — vence sempre. Nenhum detector resolve
-          frasco com texto gravado direto no vidro, porque nao ha regiao para
-          segmentar; e um recorte errado projetado no modelo e pior que nenhum.
-        - `HomographyLabelExtractor` — quando o usuario nao marcou.
+        `regiao` ja vem resolvida por `_resolver_regiao_label`, que roda **antes
+        do Hunyuan** porque a mesma caixa alimenta o `LabelEraser`. Resolver ali
+        e reaproveitar aqui evita extrair duas vezes e, pior, evita que as duas
+        extracoes discordem — o apagador limparia um lugar e a projecao colaria
+        a label em outro.
 
         **So a foto frontal.** A label vive na frente, e o eixo da projecao e
         `-Y`. Antes o pipeline varria as cinco fotos e ficava com a primeira que
@@ -505,6 +650,7 @@ class IntegratedPipeline(Processor):
         with_label = workspace / "with_label.glb"
         label_raw = workspace / "label_raw.png"
         label_upscaled = workspace / "label_upscaled.png"
+        label_com_alpha = workspace / "label_matte.png"
 
         indice = self._indice_frontal(routing, masked)
         if indice is None:
@@ -513,26 +659,10 @@ class IntegratedPipeline(Processor):
         foto, mascara = preprocessed[indice], masked[indice]
         original = originais[indice] if indice < len(originais) else None
 
-        if label_box is not None:
-            recorte = await self._recortar_label_marcada(
-                label_box, foto, original, label_raw
-            )
-            if recorte is None:
-                avisos.append("marcação da label não pôde ser recortada")
-                return refined
-            caixa_px, origem = recorte, "marcada no app"
-        else:
-            try:
-                extraida = await self.label_extractor.extract(
-                    foto, mascara, label_raw, hires_path=original
-                )
-            except Exception as exc:
-                _log.warning("Label extractor falhou em %s (%s); sem label", foto, exc)
-                return refined
-            if extraida is None or extraida.confidence < self.label_min_confidence:
-                _log.info("Sem label confiavel na frontal; refined.glb e o final")
-                return refined
-            caixa_px, origem = extraida.box_px, f"detectada ({extraida.confidence:.2f})"
+        if regiao is None:
+            avisos.append("região da label não pôde ser resolvida")
+            return refined
+        caixa_px, origem = regiao.caixa_px, regiao.origem
 
         janela = self._janela_da_silhueta(mascara, caixa_px)
         if janela is None:
@@ -549,15 +679,30 @@ class IntegratedPipeline(Processor):
             _log.warning("Label upscale falhou (%s); seguindo sem label", exc)
             return refined
 
+        # O recorte ainda e opaco e carrega o vidro em volta do texto. Sem o
+        # matte, esse fundo vira um retangulo de foto chapado no frasco.
+        foto_label, assar = label_upscaled, False
+        try:
+            await self.label_matte.aplicar(label_upscaled, label_com_alpha)
+            foto_label, assar = label_com_alpha, True
+        except Exception as exc:
+            # Sem alpha o bake nao tem o que compor, entao o fallback tem que
+            # ser o caminho antigo inteiro — projetar o matte falho com bake
+            # ligado apagaria a label.
+            _log.warning(
+                "Matte da label falhou (%s); projetando recorte opaco", exc
+            )
+
         try:
             await self.label_projector.project(
                 ViewTextureProjectionInput(
                     input_glb=refined,
-                    photo=label_upscaled,
+                    photo=foto_label,
                     output_glb=with_label,
                     axis=AXIS_FRONT,
                     cosine_threshold=self.label_cosine_threshold,
                     window=janela,
+                    bake=assar,
                 )
             )
             return with_label

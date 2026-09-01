@@ -157,6 +157,17 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="desliga a estimativa de rotacao por silhueta (util para comparar)",
     )
+    parser.add_argument(
+        "--assar",
+        action="store_true",
+        help=(
+            "compoe a imagem dentro da textura base em vez de criar material "
+            "separado. Necessario quando a imagem tem alpha e as faces alvo ja "
+            "tem textura util por baixo (o caso da label): glTF so admite um "
+            "material por primitiva, entao um decal sobreposto seria descartado "
+            "na exportacao"
+        ),
+    )
     return parser.parse_args(get_argv_after_double_dash())
 
 
@@ -401,10 +412,6 @@ def criar_material_projecao(
 
     saida = nodes.new("ShaderNodeOutputMaterial")
     saida.location = (500, 0)
-    mix = nodes.new("ShaderNodeMixShader")
-    mix.location = (300, 0)
-    transparent = nodes.new("ShaderNodeBsdfTransparent")
-    transparent.location = (100, -80)
     bsdf = nodes.new("ShaderNodeBsdfPrincipled")
     bsdf.location = (100, 80)
     tex = nodes.new("ShaderNodeTexImage")
@@ -415,13 +422,18 @@ def criar_material_projecao(
     no_uv.location = (-420, 80)
     no_uv.uv_map = uv_layer
 
-    # Conecta: UV explicito → textura → BSDF (cor) + alpha → Mix (transparencia)
+    # Conecta: UV explicito → textura → BSDF (cor + alpha).
+    #
+    # O alpha vai no input Alpha do Principled, e nao num Mix Shader com um
+    # Transparent BSDF. Os dois sao equivalentes no viewport, mas so este e
+    # reconhecido pelo exportador glTF: medido no Blender 5.1.1, o grafo com
+    # Mix exporta o material **sem** `alphaMode`, e ausente significa OPAQUE
+    # pela especificacao — a transparencia sumia no app. Com o alpha direto, o
+    # exportador emite `alphaMode: BLEND`.
     links.new(no_uv.outputs["UV"], tex.inputs["Vector"])
     links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
-    links.new(tex.outputs["Alpha"], mix.inputs["Fac"])
-    links.new(transparent.outputs["BSDF"], mix.inputs[1])
-    links.new(bsdf.outputs["BSDF"], mix.inputs[2])
-    links.new(mix.outputs["Shader"], saida.inputs["Surface"])
+    links.new(tex.outputs["Alpha"], bsdf.inputs["Alpha"])
+    links.new(bsdf.outputs["BSDF"], saida.inputs["Surface"])
 
     try:
         mat.surface_render_method = "BLENDED"
@@ -434,6 +446,188 @@ def criar_material_projecao(
     return mat
 
 
+def _imagem_base_das_faces(obj, indices_faces: set):
+    """Image Texture ligada ao Base Color do material que cobre as faces alvo.
+
+    Devolve `(imagem, nome_do_uv)` ou `(None, None)`. O UV importa: a textura
+    pode amostrar um UV map explicito, e assar no UV errado escreve a label em
+    outro lugar da imagem.
+    """
+    contagem: dict[int, int] = {}
+    for face in obj.data.polygons:
+        if face.index in indices_faces:
+            contagem[face.material_index] = contagem.get(face.material_index, 0) + 1
+    if not contagem:
+        return None, None
+
+    idx = max(contagem, key=contagem.get)
+    if idx >= len(obj.data.materials):
+        return None, None
+    mat = obj.data.materials[idx]
+    if mat is None or not mat.use_nodes:
+        return None, None
+
+    bsdf = next(
+        (n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None
+    )
+    if bsdf is None or not bsdf.inputs["Base Color"].links:
+        return None, None
+    no_tex = bsdf.inputs["Base Color"].links[0].from_node
+    if no_tex.type != "TEX_IMAGE" or no_tex.image is None:
+        return None, None
+
+    nome_uv = None
+    if no_tex.inputs["Vector"].links:
+        origem = no_tex.inputs["Vector"].links[0].from_node
+        if origem.type == "UVMAP" and origem.uv_map:
+            nome_uv = origem.uv_map
+    return no_tex.image, nome_uv
+
+
+def assar_na_textura_base(
+    obj,
+    indices_faces: set,
+    uv_proj,
+    img_path: Path,
+    nome_uv_base: str | None,
+) -> bool:
+    """Compoe a label dentro da textura base, no espaco de UV dela.
+
+    Por que assar em vez de criar material: glTF admite **um material PBR por
+    primitiva**. Um decal sobreposto ao material do corpo existe no viewport do
+    Blender e e descartado em silencio na exportacao — medido, o GLB saia com
+    uma unica imagem e a label sumia. Compondo os pixels antes de exportar, o
+    resultado sobrevive porque nao ha nada de extra para o exportador entender.
+
+    Cada face alvo e rasterizada no espaco da textura base; para cada pixel
+    coberto, a coordenada da projecao e interpolada por baricentricas, a label e
+    amostrada ali e composta sobre o pixel original. Pixels fora das faces alvo
+    nao sao tocados — por isso nao aparece retangulo.
+
+    Devolve True se assou, False se faltou algum insumo (o chamador cai no
+    caminho antigo em vez de exportar um GLB sem label).
+    """
+    import numpy as np
+
+    imagem_base, _ = _imagem_base_das_faces(obj, indices_faces)
+    if imagem_base is None:
+        log("AVISO: material base sem Image Texture — nao da para assar")
+        return False
+
+    uv_base = None
+    if nome_uv_base and nome_uv_base in obj.data.uv_layers:
+        uv_base = obj.data.uv_layers[nome_uv_base]
+    else:
+        # O UV da textura e o primeiro que nao seja de projecao nossa.
+        nomes_projecao = {e["uv_layer"] for e in EIXOS.values()}
+        uv_base = next(
+            (c for c in obj.data.uv_layers if c.name not in nomes_projecao), None
+        )
+    if uv_base is None:
+        log("AVISO: nenhum UV base encontrado — nao da para assar")
+        return False
+
+    largura, altura = imagem_base.size
+    if largura == 0 or altura == 0:
+        log("AVISO: textura base vazia — nao da para assar")
+        return False
+
+    base = np.empty(largura * altura * 4, dtype=np.float32)
+    imagem_base.pixels.foreach_get(base)
+    base = base.reshape(altura, largura, 4)
+
+    decal = bpy.data.images.load(str(img_path))
+    dl, da = decal.size
+    px_decal = np.empty(dl * da * 4, dtype=np.float32)
+    decal.pixels.foreach_get(px_decal)
+    px_decal = px_decal.reshape(da, dl, 4)
+
+    log(
+        f"assando label: textura base {largura}x{altura}, decal {dl}x{da}, "
+        f"uv base '{uv_base.name}'"
+    )
+
+    dados_base, dados_proj = uv_base.data, uv_proj.data
+    escritos = 0
+
+    for face in obj.data.polygons:
+        if face.index not in indices_faces:
+            continue
+        loops = list(face.loop_indices)
+        # Leque a partir do primeiro vertice: o Hunyuan entrega triangulos, mas
+        # a malha pode ter quads depois de operacoes de limpeza.
+        for k in range(1, len(loops) - 1):
+            tri = (loops[0], loops[k], loops[k + 1])
+            uvb = np.array([dados_base[i].uv for i in tri], dtype=np.float64)
+            uvp = np.array([dados_proj[i].uv for i in tri], dtype=np.float64)
+
+            # UV -> pixel da textura base. Blender indexa de baixo para cima, e
+            # o v do UV tambem cresce para cima, entao nao ha inversao aqui.
+            xs = uvb[:, 0] * largura
+            ys = uvb[:, 1] * altura
+
+            x0 = max(int(np.floor(xs.min())), 0)
+            x1 = min(int(np.ceil(xs.max())) + 1, largura)
+            y0 = max(int(np.floor(ys.min())), 0)
+            y1 = min(int(np.ceil(ys.max())) + 1, altura)
+            if x1 <= x0 or y1 <= y0:
+                continue
+
+            det = (ys[1] - ys[2]) * (xs[0] - xs[2]) + (xs[2] - xs[1]) * (ys[0] - ys[2])
+            if abs(det) < 1e-12:
+                continue  # triangulo degenerado na textura
+
+            gx, gy = np.meshgrid(
+                np.arange(x0, x1) + 0.5, np.arange(y0, y1) + 0.5, indexing="xy"
+            )
+            l0 = (
+                (ys[1] - ys[2]) * (gx - xs[2]) + (xs[2] - xs[1]) * (gy - ys[2])
+            ) / det
+            l1 = (
+                (ys[2] - ys[0]) * (gx - xs[2]) + (xs[0] - xs[2]) * (gy - ys[2])
+            ) / det
+            l2 = 1.0 - l0 - l1
+            dentro = (l0 >= -1e-6) & (l1 >= -1e-6) & (l2 >= -1e-6)
+            if not dentro.any():
+                continue
+
+            pu = l0 * uvp[0, 0] + l1 * uvp[1, 0] + l2 * uvp[2, 0]
+            pv = l0 * uvp[0, 1] + l1 * uvp[1, 1] + l2 * uvp[2, 1]
+            # Fora de [0,1] e area que a projecao nao cobre (CLIP).
+            dentro &= (pu >= 0.0) & (pu < 1.0) & (pv >= 0.0) & (pv < 1.0)
+            if not dentro.any():
+                continue
+
+            sx = np.clip((pu[dentro] * dl).astype(np.int32), 0, dl - 1)
+            sy = np.clip((pv[dentro] * da).astype(np.int32), 0, da - 1)
+            amostra = px_decal[sy, sx]
+            alpha = amostra[:, 3:4]
+            if not (alpha > 0.0).any():
+                continue
+
+            ty = gy[dentro].astype(np.int32)
+            tx = gx[dentro].astype(np.int32)
+            atual = base[ty, tx, :3]
+            base[ty, tx, :3] = atual * (1.0 - alpha) + amostra[:, :3] * alpha
+            escritos += int((alpha > 0.0).sum())
+
+    if escritos == 0:
+        log("AVISO: bake nao escreveu nenhum pixel — label nao aplicada")
+        bpy.data.images.remove(decal)
+        return False
+
+    imagem_base.pixels.foreach_set(base.ravel())
+    imagem_base.update()
+    try:
+        imagem_base.pack()
+    except RuntimeError:
+        pass
+    bpy.data.images.remove(decal)
+
+    log(f"label assada na textura base: {escritos} pixels compostos")
+    return True
+
+
 def aplicar_uv_projecao(
     obj: bpy.types.Object,
     faces_alvo: list[bpy.types.MeshPolygon],
@@ -441,6 +635,7 @@ def aplicar_uv_projecao(
     eixo: dict,
     angulo_graus: float = 0.0,
     janela_mundo: tuple[float, float, float, float] | None = None,
+    assar: bool = False,
 ) -> None:
     """
     Projeta UV ortograficamente nas faces alvo, descartando a coordenada do
@@ -531,6 +726,16 @@ def aplicar_uv_projecao(
         else:
             for loop_i in face.loop_indices:
                 uv_layer.data[loop_i].uv = (0.0, 0.0)
+
+    if assar:
+        _, nome_uv_base = _imagem_base_das_faces(obj, indices_faces)
+        if assar_na_textura_base(obj, indices_faces, uv_layer, img_path, nome_uv_base):
+            # O UV da projecao ja cumpriu seu papel como coordenada de leitura
+            # durante o bake; deixa-lo no mesh so incharia o GLB.
+            obj.data.uv_layers.remove(obj.data.uv_layers[uv_nome])
+            log(f"projecao assada: {len(faces_alvo)} faces, sem material extra")
+            return
+        log("bake indisponivel; caindo no material separado")
 
     # Adiciona material novo ao objeto
     material = criar_material_projecao(img_path, eixo["material"], uv_nome)
@@ -630,9 +835,18 @@ def main() -> int:
     if not faces_alvo:
         raise RuntimeError(f"nenhuma face voltada para {args.axis} encontrada")
 
-    imagem = recortar_para_alpha(
-        args.photo, args.output.parent / f"{args.output.stem}_{args.axis}_crop.png"
-    )
+    # O recorte existe para a foto do topo, que vem do BackgroundRemover com o
+    # frasco ocupando um pedaco do quadro: sem ele a tampa receberia sobretudo
+    # area vazia. A label e o oposto — o alpha marca as letras dentro de um
+    # quadro que **ja** corresponde a janela pedida, entao recortar ao texto o
+    # esticaria sobre a janela inteira e a label sairia maior e deslocada.
+    if args.assar:
+        imagem = args.photo
+        log("recorte alpha desligado: no bake o quadro ja casa com a janela")
+    else:
+        imagem = recortar_para_alpha(
+            args.photo, args.output.parent / f"{args.output.stem}_{args.axis}_crop.png"
+        )
 
     # Estimativa de rotacao pela silhueta — so no topo. `permitir_espelho` fica
     # desligado: a projecao ortografica e a foto de cima tem a mesma
@@ -666,6 +880,7 @@ def main() -> int:
     aplicar_uv_projecao(
         frasco, faces_alvo, imagem, eixo,
         angulo_graus=angulo, janela_mundo=janela_mundo,
+        assar=args.assar,
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)

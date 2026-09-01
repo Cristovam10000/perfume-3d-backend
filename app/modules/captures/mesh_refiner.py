@@ -34,6 +34,11 @@ class RefinementInput:
     # glass = força vidro, preservando textura se houver (frasco transparente)
     # keep  = não toca nos materiais do corpo (frasco opaco)
     body_mode: str = "auto"
+    # Rugosidade do shader de vidro. None mantém o default do script (polido).
+    # Frascos jateados/foscos precisam de valor acima de 0.1 — com o polido o
+    # corpo sai molhado e escuro em vez de leitoso. Só tem efeito quando o
+    # body_mode mexe no corpo, isto é, em "glass" ou "auto".
+    glass_roughness: float | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +105,11 @@ class BlenderMeshRefiner(MeshRefiner):
                 f"(esperado um de {_VALID_BODY_MODES})"
             )
 
+        if input.glass_roughness is not None and not 0.0 <= input.glass_roughness <= 1.0:
+            raise MeshRefinementError(
+                f"glass_roughness fora de [0,1]: {input.glass_roughness!r}"
+            )
+
         args = [
             str(self.blender_executable),
             "--background",
@@ -111,6 +121,8 @@ class BlenderMeshRefiner(MeshRefiner):
         ]
         if input.liquid_color is not None:
             args.extend(["--liquid-color", input.liquid_color])
+        if input.glass_roughness is not None:
+            args.extend(["--glass-roughness", str(input.glass_roughness)])
 
         returncode, _stdout, stderr = await self._run_blender(args)
 

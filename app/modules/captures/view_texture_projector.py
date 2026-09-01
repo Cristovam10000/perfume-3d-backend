@@ -59,6 +59,12 @@ class ViewTextureProjectionInput:
     # esse retangulo. Topo e costas cobrem o alvo inteiro e vao sem janela; a
     # label precisa dela para cair no lugar e no tamanho certos.
     window: tuple[float, float, float, float] | None = None
+    # Compoe a foto DENTRO da textura base em vez de criar material separado.
+    # Obrigatorio quando a foto tem alpha e as faces alvo ja tem textura util
+    # por baixo — o caso da label. glTF admite um material PBR por primitiva,
+    # entao um decal sobreposto e descartado na exportacao: medido no job
+    # 3a3adbc8, o GLB saia com uma imagem so e a label sumia sem erro nenhum.
+    bake: bool = False
 
 
 @dataclass(frozen=True)
@@ -127,6 +133,8 @@ class BlenderViewTextureProjector(ViewTextureProjector):
         ]
         if input.window is not None:
             args += ["--window", ",".join(f"{v:.6f}" for v in input.window)]
+        if input.bake:
+            args += ["--assar"]
 
         returncode, _stdout, stderr = await self._run_blender(args)
         rotulo = _ROTULOS.get(input.axis, input.axis)

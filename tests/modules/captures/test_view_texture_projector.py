@@ -274,3 +274,47 @@ async def test_sem_janela_nao_passa_o_argumento(cenario, tmp_path: Path):
         )
 
     assert "--window" not in capturados[0]
+
+
+@pytest.mark.asyncio
+async def test_bake_passa_assar_para_o_script(cenario, tmp_path: Path):
+    """A label precisa assar: glTF so admite um material PBR por primitiva.
+
+    Sem `--assar` o script cria material separado, e o exportador descarta o
+    decal em silencio — medido no job 3a3adbc8, o GLB saia com uma imagem so.
+    """
+    entrada, foto, blender = cenario
+    runner, capturados = _fake_runner()
+
+    with patch.object(BlenderViewTextureProjector, "_run_blender_sync", runner):
+        await BlenderViewTextureProjector(blender_executable=blender).project(
+            ViewTextureProjectionInput(
+                input_glb=entrada,
+                photo=foto,
+                output_glb=tmp_path / "with_label.glb",
+                axis=AXIS_FRONT,
+                window=(0.25, 0.4, 0.75, 0.55),
+                bake=True,
+            )
+        )
+
+    assert "--assar" in capturados[0]
+
+
+@pytest.mark.asyncio
+async def test_sem_bake_nao_passa_assar(cenario, tmp_path: Path):
+    """Topo e costas substituem o material de proposito e nao devem assar."""
+    entrada, foto, blender = cenario
+    runner, capturados = _fake_runner()
+
+    with patch.object(BlenderViewTextureProjector, "_run_blender_sync", runner):
+        await BlenderViewTextureProjector(blender_executable=blender).project(
+            ViewTextureProjectionInput(
+                input_glb=entrada,
+                photo=foto,
+                output_glb=tmp_path / "with_top.glb",
+                axis=AXIS_TOP,
+            )
+        )
+
+    assert "--assar" not in capturados[0]

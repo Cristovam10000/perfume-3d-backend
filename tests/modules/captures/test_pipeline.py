@@ -136,9 +136,13 @@ class StubHunyuan(Hunyuan3DProcessor):
     def __init__(self):
         super().__init__()
         self.called = 0
+        # Quais fotos chegaram ao gerador: e o que prova que a referencia foi
+        # trocada pela versao sem label.
+        self.recebidas: list[Path] = []
 
     async def process(self, input: ProcessingInput) -> ProcessingResult:
         self.called += 1
+        self.recebidas = list(input.image_paths)
         input.output_path.parent.mkdir(parents=True, exist_ok=True)
         input.output_path.write_bytes(b"glTF\x02\x00\x00\x00raw")
         return ProcessingResult(
@@ -191,7 +195,7 @@ class FakeTransparencyClassifier(TransparencyClassifier):
 class NoLabelExtractor(LabelExtractor):
     """Sem label encontrada — exercita o degrade."""
 
-    async def extract(self, image_path, mask_path, output_path):
+    async def extract(self, image_path, mask_path, output_path, hires_path=None):
         return None
 
 
@@ -342,6 +346,7 @@ def _make_pipeline(
     label_projector: "ViewTextureProjector | None" = None,
     glb_optimizer: "GlbOptimizer | None" = None,
     preview_renderer: "PreviewRenderer | None" = None,
+    label_eraser=None,
 ):
     return IntegratedPipeline(
         preprocessor=CopyPreprocessor(),
@@ -361,6 +366,7 @@ def _make_pipeline(
         top_elongation_max=top_elongation_max,
         glb_optimizer=glb_optimizer,
         preview_renderer=preview_renderer,
+        label_eraser=label_eraser,
     )
 
 
@@ -1296,3 +1302,126 @@ async def test_label_roda_tambem_em_frasco_de_vidro(
     )
 
     assert len(projetor.chamadas) == 1
+
+
+# ------------------------------------------- apagar a label da referencia
+
+
+class _EraserFake:
+    """Registra a chamada e devolve um arquivo novo, como o real faria."""
+
+    def __init__(self, resultado: str | None = "limpa.png"):
+        self.resultado = resultado
+        self.chamadas: list[tuple[Path, tuple]] = []
+
+    async def apagar(self, entrada: Path, saida: Path, caixa_px):
+        self.chamadas.append((entrada, caixa_px))
+        if self.resultado is None:
+            return None
+        destino = saida.parent / self.resultado
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        destino.write_bytes(entrada.read_bytes())
+        return destino
+
+
+class _EraserQueQuebra:
+    async def apagar(self, entrada: Path, saida: Path, caixa_px):
+        raise RuntimeError("falha simulada no inpaint")
+
+
+@pytest.mark.asyncio
+async def test_referencia_do_hunyuan_e_trocada_pela_sem_label(
+    storage: LocalStorage, fotos: list[Path], tmp_path: Path
+):
+    """Sem isso o gerador pinta o rotulo na malha e o frasco fica com ele 2x."""
+    hunyuan = StubHunyuan()
+    eraser = _EraserFake()
+    pipe = _make_pipeline(
+        storage, cache=DisabledModelCache(), hunyuan=hunyuan, label_eraser=eraser
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="e-1",
+            image_paths=fotos,
+            output_path=tmp_path / "out.glb",
+            label_box="0.4,0.3,0.2,0.15",
+        )
+    )
+
+    assert len(eraser.chamadas) == 1
+    caixa = eraser.chamadas[0][1]
+    assert len(caixa) == 4 and all(isinstance(v, int) for v in caixa)
+    assert any(p.name == "limpa.png" for p in hunyuan.recebidas)
+
+
+@pytest.mark.asyncio
+async def test_sem_label_box_o_detector_supre_a_regiao(
+    storage: LocalStorage, fotos: list[Path], tmp_path: Path
+):
+    """19 dos 20 jobs reais nao tem labelBox — sem isto o fantasma voltaria neles."""
+    hunyuan = StubHunyuan()
+    eraser = _EraserFake()
+    pipe = _make_pipeline(
+        storage, cache=DisabledModelCache(), hunyuan=hunyuan, label_eraser=eraser
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="e-2", image_paths=fotos, output_path=tmp_path / "out.glb"
+        )
+    )
+
+    assert eraser.chamadas[0][1] == (30, 40, 40, 16)  # veio do FakeLabelExtractor
+    assert any(p.name == "limpa.png" for p in hunyuan.recebidas)
+
+
+@pytest.mark.asyncio
+async def test_sem_regiao_alguma_a_referencia_segue_intacta(
+    storage: LocalStorage, fotos: list[Path], tmp_path: Path
+):
+    """Detector nao achou label e o app nao marcou: nao ha o que apagar."""
+    hunyuan = StubHunyuan()
+    eraser = _EraserFake()
+    pipe = _make_pipeline(
+        storage,
+        cache=DisabledModelCache(),
+        hunyuan=hunyuan,
+        label_extractor=NoLabelExtractor(),
+        label_eraser=eraser,
+    )
+
+    await pipe.process(
+        ProcessingInput(
+            job_id="e-4", image_paths=fotos, output_path=tmp_path / "out.glb"
+        )
+    )
+
+    assert eraser.chamadas == []
+    assert not any(p.name == "limpa.png" for p in hunyuan.recebidas)
+
+
+@pytest.mark.asyncio
+async def test_falha_ao_apagar_nao_derruba_o_job(
+    storage: LocalStorage, fotos: list[Path], tmp_path: Path
+):
+    """Degradar para o fantasma e melhor que nao entregar modelo nenhum."""
+    hunyuan = StubHunyuan()
+    pipe = _make_pipeline(
+        storage,
+        cache=DisabledModelCache(),
+        hunyuan=hunyuan,
+        label_eraser=_EraserQueQuebra(),
+    )
+
+    resultado = await pipe.process(
+        ProcessingInput(
+            job_id="e-3",
+            image_paths=fotos,
+            output_path=tmp_path / "out.glb",
+            label_box="0.4,0.3,0.2,0.15",
+        )
+    )
+
+    assert resultado.output_path.exists()
+    assert len(hunyuan.recebidas) == len(fotos)

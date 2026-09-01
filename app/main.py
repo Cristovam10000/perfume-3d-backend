@@ -52,6 +52,16 @@ from .modules.captures.view_texture_projector import (
     DisabledViewTextureProjector,
     ViewTextureProjector,
 )
+from .modules.captures.label_eraser import (
+    DisabledLabelEraser,
+    InpaintLabelEraser,
+    LabelEraser,
+)
+from .modules.captures.label_matte import (
+    BackgroundSubtractionLabelMatte,
+    DisabledLabelMatte,
+    LabelMatte,
+)
 from .modules.captures.label_upscaler import (
     DisabledLabelUpscaler,
     LabelUpscaler,
@@ -131,6 +141,18 @@ def build_label_upscaler(config: Settings = settings) -> LabelUpscaler:
     if config.label_upscaler_type == "disabled":
         return DisabledLabelUpscaler()
     return LanczosLabelUpscaler(target_size=config.label_target_size)
+
+
+def build_label_eraser(config: Settings = settings) -> LabelEraser:
+    if config.label_eraser_type == "disabled":
+        return DisabledLabelEraser()
+    return InpaintLabelEraser()
+
+
+def build_label_matte(config: Settings = settings) -> LabelMatte:
+    if config.label_matte_type == "disabled":
+        return DisabledLabelMatte()
+    return BackgroundSubtractionLabelMatte()
 
 
 def build_label_projector(config: Settings = settings) -> ViewTextureProjector:
@@ -245,6 +267,8 @@ def build_pipeline(
         label_extractor=build_label_extractor(config),
         label_upscaler=build_label_upscaler(config),
         label_projector=build_label_projector(config),
+        label_matte=build_label_matte(config),
+        label_eraser=build_label_eraser(config),
         label_cosine_threshold=config.label_cosine_threshold,
         storage=storage,
         view_router=build_view_router(config),
@@ -259,6 +283,7 @@ def build_pipeline(
         top_cosine_threshold=config.top_cosine_threshold,
         top_elongation_max=config.top_elongation_max,
         back_cosine_threshold=config.back_cosine_threshold,
+        glass_roughness=config.glass_roughness,
         label_min_confidence=config.label_min_confidence,
         label_target_size=config.label_target_size,
     )

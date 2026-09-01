@@ -468,6 +468,14 @@ def parse_args() -> argparse.Namespace:
         "--liquid-color", type=str, default=None,
         help="cor hex tipo '#FFAA00' aplicada ao material 'water' ou mesh 'Liquid'",
     )
+    parser.add_argument(
+        "--glass-roughness", type=float, default=None,
+        help=(
+            "rugosidade do shader de vidro em [0,1]. Omitido usa "
+            f"{GLASS_PARAMS['roughness']} (polido). Acima de 0.1 o vidro vira "
+            "fosco, que e o acabamento de frascos jateados"
+        ),
+    )
     return parser.parse_args(get_argv_after_double_dash())
 
 
@@ -478,6 +486,17 @@ def main() -> int:
     log(f"output       = {args.output}")
     log(f"body-mode    = {args.body_mode}")
     log(f"liquid-color = {args.liquid_color}")
+    log(f"glass-rough  = {args.glass_roughness}")
+
+    # Sobrescreve antes de qualquer aplicação de material: as duas funções de
+    # vidro leem GLASS_PARAMS direto, então trocar aqui atinge os dois caminhos
+    # (o que recria a árvore de nós e o que só ajusta o BSDF existente).
+    if args.glass_roughness is not None:
+        if not 0.0 <= args.glass_roughness <= 1.0:
+            raise ValueError(
+                f"--glass-roughness deve estar em [0,1]: {args.glass_roughness}"
+            )
+        GLASS_PARAMS["roughness"] = args.glass_roughness
 
     if not args.input.exists():
         raise FileNotFoundError(f"GLB de entrada não encontrado: {args.input}")
